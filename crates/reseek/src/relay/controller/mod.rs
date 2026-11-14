@@ -141,6 +141,13 @@ struct Registry {
   refused_devices: BTreeMap<(String, Uuid), Refused>,
 }
 
+impl Registry {
+  /// The agents logged in, by name.
+  fn records(&self) -> Vec<RelayAgentState> {
+    self.agents.values().map(|r| r.record.clone()).collect()
+  }
+}
+
 /// The relay controller.
 pub struct Controller {
   config: Watcher<Options>,
@@ -195,11 +202,7 @@ impl Controller {
 
   /// The agents logged in, by name.
   pub fn agents(&self) -> Vec<RelayAgentState> {
-    lock(&self.registry)
-      .agents
-      .values()
-      .map(|r| r.record.clone())
-      .collect()
+    lock(&self.registry).records()
   }
 
   /// Whether the agent `name` is logged in and its shares are loaded.
@@ -486,7 +489,7 @@ impl Controller {
     let (agents, refused): (Vec<_>, Vec<_>) = {
       let registry = lock(&self.registry);
       (
-        registry.agents.values().map(|r| r.record.clone()).collect(),
+        registry.records(),
         registry
           .refused_devices
           .values()
