@@ -2,7 +2,8 @@
 //! asking and waits, and one whose try finds them offline does not count the try: both wait
 //! until the user is heard of again, from a status the server sends, a new login or the status
 //! the waiting downloads ask for now and then, and then try again. A user the server says does
-//! not exist ends their downloads.
+//! not exist ends their downloads. A user who left a file's ask unsettled, neither offering it
+//! nor saying its place, is not waited for again while their downloads follow them.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -27,6 +28,8 @@ struct Followed {
   heard: watch::Sender<Heard>,
   /// when their status was last asked for by one of their downloads, held while one asks
   asked: Arc<tokio::sync::Mutex<Option<Instant>>>,
+  /// they neither offered a file nor said its place within the window of its ask
+  silent: bool,
 }
 
 /// By user, the last word on them, for the downloads that follow them. A user no download
@@ -44,6 +47,7 @@ impl Away {
       .or_insert_with(|| Followed {
         heard: watch::Sender::new(Heard::Nothing),
         asked: Arc::default(),
+        silent: false,
       })
       .heard
       .subscribe()
@@ -93,6 +97,22 @@ impl Away {
         *was == Heard::Offline && std::mem::replace(was, Heard::Nothing) != Heard::Nothing
       });
     }
+  }
+
+  /// Takes word that `username` left the ask of a file unsettled for its whole window; true the
+  /// first time, while downloads follow them.
+  pub fn went_silent(&self, username: &str) -> bool {
+    lock(&self.users)
+      .get_mut(username)
+      .is_some_and(|user| !std::mem::replace(&mut user.silent, true))
+  }
+
+  /// Whether `username` left the ask of a file unsettled for its whole window, while downloads
+  /// followed them.
+  pub fn silent(&self, username: &str) -> bool {
+    lock(&self.users)
+      .get(username)
+      .is_some_and(|user| user.silent)
   }
 
   /// The turn of a download of `username` to ask for their status, with when one of their

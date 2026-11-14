@@ -1665,46 +1665,52 @@ async fn idle_users_get_no_more_requests_than_there_are_slots() {
 
 /// With one download slot, a file whose peer neither offers it nor says its place holds the
 /// slot for the settle window from its question, and no longer: the next file is asked then.
+/// That peer's next file is not waited for again, so the file after it is asked at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_silent_peer_holds_the_asking_slot_for_the_window_only() {
+async fn a_silent_peer_holds_the_asking_slot_for_the_window_only_and_once() {
   use super::attempt::SETTLED_AFTER;
 
-  // peer connections stay open well past the window, so bob is asked on the one his enqueue
-  // made
+  // peer connections stay open well past the window, so each peer is asked on the one its
+  // enqueue made
   let config = format!(
     "[transfers.download]\nslots = 1\n[soulseek.connection.timeout]\ninactivity = \"60s\"\n{TRUSTED}"
   );
   let app = crate::testing::soulseek::app(&config).await;
   let peers = Peers::start(&app, &["alice", "bob"]).await;
-  let (alices, bobs) = ("@@a\\1.flac", "@@b\\1.flac");
-  enqueued(&app, "alice", alices).await;
+  let alices = ["@@a\\1.flac", "@@a\\2.flac"];
+  let bobs = "@@b\\1.flac";
+  enqueued(&app, "alice", alices[0]).await;
   let mut alice = peers.connected("alice").await;
-  alice.asked_for(alices).await;
+  alice.asked_for(alices[0]).await;
   let asked = tokio::time::Instant::now();
+  enqueued(&app, "alice", alices[1]).await;
   enqueued(&app, "bob", bobs).await;
   let mut bob = peers.connected("bob").await;
   let margin = std::time::Duration::from_secs(2);
   let until = |at: tokio::time::Instant| at.saturating_duration_since(tokio::time::Instant::now());
   let (quiet, closed) = bob.quiet_for(until(asked + SETTLED_AFTER - margin)).await;
-  assert!(quiet, "asked within the window");
+  assert!(quiet, "bob asked within alice's window");
   assert!(!closed, "the connection closed in the window");
-  match bob.next_within(until(asked + SETTLED_AFTER + margin)).await {
-    Some(soulseek_proto::PeerMessage::QueueDownload(request)) => {
-      assert_eq!(request.filename.as_str(), bobs);
-    }
-    other => panic!("not asked once the window passed: {other:?}"),
-  }
+  alice.asked_for(alices[1]).await;
   let after = asked.elapsed();
   assert!(
     after <= SETTLED_AFTER + margin,
     "asked {after:?} after the first, past the window"
   );
-  let second = tokio::time::timeout(
+  let second = tokio::time::Instant::now();
+  match bob.next_within(margin).await {
+    Some(soulseek_proto::PeerMessage::QueueDownload(request)) => {
+      assert_eq!(request.filename.as_str(), bobs);
+    }
+    other => panic!("alice's second file was waited for: {other:?}"),
+  }
+  assert!(second.elapsed() <= margin);
+  let again = tokio::time::timeout(
     std::time::Duration::from_millis(200),
     peers.listeners["bob"].accept(),
   )
   .await;
-  assert!(second.is_err(), "bob was reached on a second connection");
+  assert!(again.is_err(), "bob was reached on a second connection");
 }
 
 /// A user the server says does not exist ends their downloads, failed with a reason that says

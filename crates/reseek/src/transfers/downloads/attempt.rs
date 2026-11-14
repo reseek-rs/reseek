@@ -44,7 +44,7 @@ const HARD_LIMITED: &str = "Download failed to enqueue remotely after hard time 
 /// neither offers it nor says its place, from the question to the end of the wait. A peer with
 /// a free upload slot offers the file as it takes the request, and one that waits to look at
 /// its queue again does so within ten seconds, so an offer is not waited for past that and a
-/// margin.
+/// margin. A peer that lets the window pass is not waited for on its next files.
 pub(super) const SETTLED_AFTER: Duration = Duration::from_secs(12);
 
 /// Progress not written, which a failing database would repeat four times a second.
@@ -389,6 +389,14 @@ impl Downloads {
         }
         let queued = matches!(record.state, State::QueuedRemotely { .. });
         if queued && asking && settling.is_none() {
+          // a peer that left an earlier ask unsettled is not waited for again: its slot goes
+          // to the next file at once
+          if self.away.silent(&record.username) {
+            if let Some(gate) = gate {
+              gate.pending = None;
+            }
+            continue;
+          }
           settling = Some(self.settling(record, &stop));
         }
         tokio::select! {
@@ -403,8 +411,13 @@ impl Downloads {
             if let Some(gate) = gate {
               gate.pending = None;
             }
-            if let Some(place) = place {
-              self.place_answered(record, place).await;
+            match place {
+              Some(place) => self.place_answered(record, place).await,
+              None => {
+                if self.away.went_silent(&record.username) {
+                  debug!("the peer neither offered the file nor said its place; its next asks hold no slot");
+                }
+              }
             }
           }
           // a user who goes offline before their file moves is waited for; one who offered a
