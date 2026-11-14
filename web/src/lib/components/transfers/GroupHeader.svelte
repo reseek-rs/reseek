@@ -12,6 +12,7 @@
   import Tooltip from "#lib/components/ui/Tooltip.svelte";
   import Username from "#lib/components/users/Username.svelte";
   import { formatBytes, formatCount, formatDuration, namedOf, plural } from "#lib/format.js";
+  import { wakeOnPointer } from "#lib/lists/wake.js";
   import { groupProgress } from "#lib/transfers/grid/progress.js";
   import type { Group } from "#lib/transfers/grid/view.js";
   import { type GroupHandlers, groupActions } from "#lib/transfers/groupActions.js";
@@ -55,9 +56,16 @@
   const usage = $derived(waiting && waits.get(waiting.id) ? quota(waits.get(waiting.id)!) : null);
 
   const actions = $derived(groupActions(group, store, direction, { onremove, oncancel, onblock }));
+
+  /** the header's tooltips wait for a mouse or a pen to come to it, as a row's do */
+  let dormant = $state(true);
+  const pointed = wakeOnPointer(() => (dormant = false));
 </script>
 
+<!-- the pointer only wakes the header's tooltips here; it takes no input of its own -->
+<!-- svelte-ignore a11y_interactive_supports_focus -->
 <div
+  onpointerenter={pointed}
   class="flex h-full items-center px-2 text-sm"
   style:padding-left={`${lineStart(group.depth)}rem`}
   style:column-gap={`${GAP_REM}rem`}
@@ -72,7 +80,8 @@
     key={group.key}
     siblings={group.siblings}
     inside={group.inside}
-    name={group.label} />
+    name={group.label}
+    {dormant} />
   {#if group.kind === "folder"}
     {#if folded}<FolderIcon class="size-4 shrink-0 text-fg-muted" />{:else}<FolderOpenIcon
         class="size-4 shrink-0 text-fg-muted" />{/if}
@@ -81,7 +90,7 @@
     {#if group.kind === "user"}
       <Username name={group.username} />
     {:else if group.kind === "folder"}
-      <Tooltip text={group.folder ?? group.label}>
+      <Tooltip text={group.folder ?? group.label} {dormant}>
         {#snippet child({ props })}
           <span {...props} class="flex min-w-0 font-mono text-xs">
             <MiddleTruncate text={group.label} path />
@@ -105,7 +114,10 @@
   </div>
   <!-- a phone leaves the progress to the file rows, which show it too -->
   {#if !viewport.phone && (progress.running || (progress.moved > 0 && progress.moved < progress.size))}
-    <Tooltip text={`${formatBytes(progress.moved)} of ${formatBytes(progress.size)}`} dense>
+    <Tooltip
+      text={`${formatBytes(progress.moved)} of ${formatBytes(progress.size)}`}
+      dense
+      {dormant}>
       {#snippet child({ props })}
         <span
           {...props}
@@ -123,7 +135,7 @@
   {/if}
   <!-- the quota takes only the room the name leaves, from no width of its own -->
   {#if usage}
-    <Tooltip text={usage.text} clipped>
+    <Tooltip text={usage.text} clipped {dormant}>
       {#snippet child({ props })}
         <span
           {...props}
@@ -158,7 +170,7 @@
         {#if a.text}
           <Button variant="ghost" size="sm" onclick={a.run}><a.icon />{a.label}</Button>
         {:else}
-          <Tooltip text={a.label}>
+          <Tooltip text={a.label} {dormant}>
             {#snippet child({ props })}
               <Button
                 {...props}

@@ -325,6 +325,19 @@ describe("the transfers table", () => {
       expect(row(b.id)).toBeNull();
     });
 
+    it("mount a group header's tooltips once a mouse comes to it", async () => {
+      signIn();
+      Object.assign(views.download, { layout: "tree", groupBy: "user" });
+      listing = [transfer({ username: "alice" }), transfer({ username: "bob" })];
+      await start();
+      const header = (name: string) => row(`user:${name}`)!.querySelector("[role=rowheader]")!;
+      const tipped = (name: string) => !!header(name).querySelector("[data-tooltip-trigger]");
+      expect([tipped("alice"), tipped("bob")]).toEqual([false, false]);
+      header("alice").dispatchEvent(new PointerEvent("pointerenter", { pointerType: "mouse" }));
+      await flushFaked();
+      expect([tipped("alice"), tipped("bob")]).toEqual([true, false]);
+    });
+
     it("name a job's users as usernames in its header", async () => {
       Object.assign(views.download, { layout: "tree", groupBy: "job" });
       listing = [

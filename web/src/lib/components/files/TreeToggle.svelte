@@ -19,6 +19,8 @@
     name: string;
     /** after it opened or closed, with the keys that changed */
     ontoggle?: (open: boolean, keys: string[]) => void;
+    /** its tooltip waits for its line to wake, as `Tooltip`'s `dormant` */
+    dormant?: boolean;
     class?: string;
   };
 
@@ -29,6 +31,7 @@
     inside = () => [],
     name,
     ontoggle,
+    dormant = false,
     class: className
   }: Props = $props();
 
@@ -36,7 +39,8 @@
 </script>
 
 <Tooltip
-  text={`${mac ? "Option" : "Alt"}-click for the folders beside it too, ${mac ? "Cmd" : "Ctrl"}-click for every folder inside`}>
+  text={`${mac ? "Option" : "Alt"}-click for the folders beside it too, ${mac ? "Cmd" : "Ctrl"}-click for every folder inside`}
+  {dormant}>
   {#snippet child({ props })}
     <button
       {...props}
