@@ -4,7 +4,7 @@
 //! their address confirms unless everyone may, the file is no larger than allowed and not one the
 //! download filters skip, the sender is sending fewer files than allowed (counted by the address
 //! they send from when their name is not checked), no download of the file from them is unfinished
-//! and none was canceled within the hour. A file taken is downloaded like any other, but always at
+//! and none was canceled within [`CANCEL_REMEMBERED`], cleared from the list or not. A file taken is downloaded like any other, but always at
 //! the size it was offered with and never in place of a file. The files one sender sends close
 //! together are one job they started, whose downloads' first tries take the offers; a file whose
 //! job cannot be listed is refused, since the job is what marks its download as sent unasked.
@@ -13,7 +13,6 @@ mod senders;
 
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use api_types::jobs::{JobKind, JobStarter, JobStarterKind, JobState};
 use api_types::transfers::TransferDirection;
@@ -33,14 +32,10 @@ use crate::db::timestamp;
 use crate::jobs::NewJob;
 use crate::safety::Os;
 use crate::transfers::categories::{CANCELLED, UNFINISHED};
-use crate::transfers::{NEWEST_FIRST, Record, direction_text};
+use crate::transfers::{CANCEL_REMEMBERED, NEWEST_FIRST, Record, direction_text};
 use reseek_shares::lock;
 use senders::{Joined, Sender};
 pub(super) use senders::{Senders, Sending};
-
-/// How long after a download from a user was canceled their offer of the same file is taken as
-/// them catching up with the cancel, and refused.
-const CANCEL_HEARD: Duration = Duration::from_secs(3600);
 
 /// Why a file a user offers unasked is refused by who may send files and how large, `None`
 /// when those let it in: its sender's groups, `in_group` telling of each, and its `size`.
@@ -159,14 +154,16 @@ impl Downloads {
 
   /// Why the file `filename` that `username` sends unasked is refused for its download from
   /// them: one not finished, such as one paused or waiting to retry, or one canceled within
-  /// [`CANCEL_HEARD`], which the offer is the peer catching up with. Records removed from the
-  /// list do not count.
+  /// [`CANCEL_REMEMBERED`], whose file they are not to send. The newest download of the file
+  /// decides, cleared from the list or not, so one made after a cancel lifts it.
   async fn downloaded_before(
     &self,
     username: &str,
     filename: &str,
   ) -> Result<Option<&'static str>, ClientError> {
-    let since = timestamp(Utc::now() - CANCEL_HEARD);
+    let remembered =
+      chrono::Duration::from_std(CANCEL_REMEMBERED).expect("a day is a chrono duration");
+    let since = timestamp(Utc::now() - remembered);
     let (name, file) = (username.to_string(), filename.to_string());
     let latest = self
       .db
@@ -174,7 +171,7 @@ impl Downloads {
         conn
           .prepare_cached(&format!(
             "SELECT {UNFINISHED}, {CANCELLED} AND EndedAt > ?4 FROM Transfers \
-             WHERE Username = ?1 AND Direction = ?2 AND Filename = ?3 AND Removed = 0 \
+             WHERE Username = ?1 AND Direction = ?2 AND Filename = ?3 \
              ORDER BY {NEWEST_FIRST} LIMIT 1"
           ))?
           .query_row(

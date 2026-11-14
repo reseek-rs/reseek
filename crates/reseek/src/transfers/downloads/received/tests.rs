@@ -1,5 +1,5 @@
 //! What lets a file sent unasked in, and what the engine does with offers: a file whose
-//! download from its sender is unfinished, or was canceled within the hour, is refused before any
+//! download from its sender is unfinished, or was canceled within a day, is refused before any
 //! job is made, and a sender is held to the files they may send at once even when their offers
 //! all come together.
 
@@ -45,7 +45,7 @@ fn canceled(filename: &str, ago: chrono::Duration) -> Record {
 }
 
 #[tokio::test]
-async fn a_file_not_finished_or_canceled_lately_is_refused_before_any_job() {
+async fn a_file_not_finished_or_canceled_within_a_day_is_refused_before_any_job() {
   let app = app(&everyone(), &[]).await;
   let downloads = &app.state.downloads;
   let mut paused = Record::download("alice", "@@s\\paused.flac", 3);
@@ -53,10 +53,18 @@ async fn a_file_not_finished_or_canceled_lately_is_refused_before_any_job() {
   insert(&app, &paused).await;
   insert(
     &app,
-    &canceled("@@s\\canceled.flac", chrono::Duration::minutes(5)),
+    &canceled("@@s\\canceled.flac", chrono::Duration::hours(20)),
   )
   .await;
-  for file in ["@@s\\paused.flac", "@@s\\canceled.flac"] {
+  // cleared from the list after the cancel, which the check still sees
+  let mut cleared = canceled("@@s\\cleared.flac", chrono::Duration::minutes(5));
+  cleared.removed = true;
+  insert(&app, &cleared).await;
+  for file in [
+    "@@s\\paused.flac",
+    "@@s\\canceled.flac",
+    "@@s\\cleared.flac",
+  ] {
     let refused = downloads.receive("alice", HERE.into(), file, 3).await;
     assert!(
       matches!(refused, Err(ClientError::TransferRejected(_))),
@@ -67,13 +75,20 @@ async fn a_file_not_finished_or_canceled_lately_is_refused_before_any_job() {
 
   insert(
     &app,
-    &canceled("@@s\\long ago.flac", chrono::Duration::hours(2)),
+    &canceled("@@s\\long ago.flac", chrono::Duration::hours(25)),
   )
   .await;
-  let mut removed = canceled("@@s\\removed.flac", chrono::Duration::minutes(5));
-  removed.removed = true;
-  insert(&app, &removed).await;
-  for file in ["@@s\\long ago.flac", "@@s\\removed.flac"] {
+  // canceled, then downloaded again, whose row was cleared
+  insert(
+    &app,
+    &canceled("@@s\\again.flac", chrono::Duration::minutes(10)),
+  )
+  .await;
+  let mut again = Record::download("alice", "@@s\\again.flac", 3);
+  again.complete(TransferOutcome::Succeeded, None).unwrap();
+  again.removed = true;
+  insert(&app, &again).await;
+  for file in ["@@s\\long ago.flac", "@@s\\again.flac"] {
     let taken = downloads.receive("alice", HERE.into(), file, 3).await;
     assert!(taken.is_ok(), "{file}: {taken:?}");
   }
@@ -82,6 +97,50 @@ async fn a_file_not_finished_or_canceled_lately_is_refused_before_any_job() {
     1,
     "files sent close together are one job"
   );
+}
+
+#[tokio::test]
+async fn a_buddy_is_refused_a_file_canceled_from_them_too() {
+  use soulseek_proto::server::GetPeerAddressResponse;
+  use soulseek_proto::{ServerRequest, ServerResponse};
+
+  let config = format!("{TRUSTED}[transfers.download.received]\nfrom = [\"buddies\"]\n");
+  let app = crate::testing::soulseek::app(&config).await;
+  // the server reports alice where her offers come from, which confirms her name
+  let server = crate::testing::soulseek::Server::start(|request| match request {
+    ServerRequest::GetPeerAddress(asked) => {
+      vec![ServerResponse::GetPeerAddress(GetPeerAddressResponse {
+        username: asked.username.clone(),
+        ip: HERE.into(),
+        port: 2234,
+        obfuscation: None,
+      })]
+    }
+    _ => Vec::new(),
+  })
+  .await;
+  server.login(&app).await;
+  app
+    .state
+    .users
+    .set_buddy("alice", Default::default())
+    .await
+    .unwrap();
+  let mut cleared = canceled("@@s\\canceled.flac", chrono::Duration::hours(3));
+  cleared.removed = true;
+  insert(&app, &cleared).await;
+  let downloads = &app.state.downloads;
+  let refused = downloads
+    .receive("alice", HERE.into(), "@@s\\canceled.flac", 3)
+    .await;
+  assert!(
+    matches!(refused, Err(ClientError::TransferRejected(_))),
+    "{refused:?}"
+  );
+  let taken = downloads
+    .receive("alice", HERE.into(), "@@s\\other.flac", 3)
+    .await;
+  assert!(taken.is_ok(), "the buddy may send: {taken:?}");
 }
 
 #[tokio::test]

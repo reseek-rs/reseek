@@ -54,6 +54,10 @@ const STATES: usize = 16;
 /// How often a transfer's progress is written and pushed at most.
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
+/// How long a canceled download is remembered, cleared from the list or not: its user's offer
+/// of the file unasked is refused meanwhile, and the purge of removed transfers keeps its row.
+pub const CANCEL_REMEMBERED: Duration = Duration::from_secs(24 * 3600);
+
 /// Opens `transfers.db` in `location`.
 pub async fn open(location: &Location) -> Result<Database, DbError> {
   Database::open(&SCHEMA, location).await

@@ -63,8 +63,9 @@ pub struct TransfersRetention {
   pub upload: TransferRetention,
   /// Finished downloads.
   pub download: TransferRetention,
-  /// Time after a transfer is removed from the lists before it is deleted for good. When not set,
-  /// removed transfers stay in the history. Minimum: 5 minutes.
+  /// Time after a transfer is removed from the lists before it is deleted for good; a canceled
+  /// download stays until a day after its cancel. When not set, removed transfers stay in the
+  /// history. Minimum: 5 minutes.
   #[serde(with = "crate::config::duration")]
   pub purge_removed_after: Option<Duration>,
 }

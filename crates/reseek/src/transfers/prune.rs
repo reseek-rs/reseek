@@ -6,10 +6,12 @@ use std::time::Duration;
 
 use api_types::transfers::TransferDirection;
 use chrono::Utc;
+use rusqlite::params;
 use tracing::debug;
 
 use super::categories::{CANCELLED, Condition, ERRORED, FAILED, SUCCESSFUL};
 use super::removal::{self, Removed};
+use super::{CANCEL_REMEMBERED, direction_text};
 use crate::config::{TransferRetention, TransfersRetention};
 use crate::db::{Database, DbError, shifted, timestamp};
 use crate::live::Live;
@@ -117,23 +119,29 @@ async fn expire(
   .await
 }
 
-/// Deletes the transfers removed more than `after` ago with their state history; returns how
-/// many were deleted.
+/// Deletes the transfers removed more than `after` ago with their state history, but for a
+/// download canceled within [`CANCEL_REMEMBERED`], which its user's offer of the file unasked
+/// is checked against; returns how many were deleted.
 async fn purge(db: &Database, after: Duration) -> Result<usize, DbError> {
   let cutoff = before_now(after);
+  let canceled_since = before_now(CANCEL_REMEMBERED);
   db.write(move |conn| {
     let tx = conn.transaction()?;
-    let removed_long_ago = "Removed = 1 AND RemovedAt IS NOT NULL AND RemovedAt < ?1";
+    let removed_long_ago = format!(
+      "Removed = 1 AND RemovedAt IS NOT NULL AND RemovedAt < ?1 \
+       AND NOT (Direction = ?3 AND {CANCELLED} AND EndedAt > ?2)"
+    );
+    let download = direction_text(TransferDirection::Download);
     tx.execute(
       &format!(
         "DELETE FROM transfers_state_history WHERE transfer_id IN \
          (SELECT Id FROM Transfers WHERE {removed_long_ago})"
       ),
-      [&cutoff],
+      params![cutoff, canceled_since, download],
     )?;
     let deleted = tx.execute(
       &format!("DELETE FROM Transfers WHERE {removed_long_ago}"),
-      [&cutoff],
+      params![cutoff, canceled_since, download],
     )?;
     tx.commit()?;
     Ok(deleted)
@@ -276,5 +284,39 @@ mod tests {
       .await
       .unwrap();
     assert!(history.is_empty());
+  }
+
+  #[tokio::test]
+  async fn a_canceled_download_removed_long_enough_is_kept_until_a_day_after_its_cancel() {
+    let db = transfers().await;
+    let live = Live::new(CancellationToken::new());
+    let canceled = TransferStates::Completed(TransferOutcome::Cancelled);
+    let mut lately = ended("lately", canceled, 3);
+    lately.removed = true;
+    let mut long_ago = ended("long-ago", canceled, 25);
+    long_ago.removed = true;
+    let mut upload = ended("upload", canceled, 3);
+    upload.direction = TransferDirection::Upload;
+    upload.removed = true;
+    let ids = [lately.id, long_ago.id, upload.id];
+    insert(&db, vec![lately, long_ago, upload]).await;
+    db.write(move |conn| {
+      let three_hours_ago = timestamp(Utc::now() - chrono::Duration::hours(3));
+      for id in ids {
+        conn.execute(
+          "UPDATE Transfers SET RemovedAt = ?2 WHERE Id = ?1",
+          rusqlite::params![id.to_string(), three_hours_ago],
+        )?;
+      }
+      Ok(())
+    })
+    .await
+    .unwrap();
+    let retention = TransfersRetention {
+      purge_removed_after: Some(HOUR),
+      ..TransfersRetention::default()
+    };
+    assert!(prune(&db, &live, &retention).await.error.is_none());
+    assert_eq!(removed(&db).await, ["lately"]);
   }
 }
