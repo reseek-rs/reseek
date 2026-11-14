@@ -251,13 +251,15 @@ fn device_id(file: &Path) -> Result<Uuid, String> {
     }),
     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
       let device = Uuid::new_v4();
-      // written beside it, synced, renamed and the directory synced, so a stop or a power cut
-      // partway leaves no file or a whole one
+      // written beside it, synced, closed, renamed and the directory synced, so a stop or a
+      // power cut partway leaves no file or a whole one
       let written = file.with_extension("tmp");
       let write = || -> std::io::Result<()> {
-        let mut out = std::fs::File::create(&written)?;
-        writeln!(out, "{device}")?;
-        out.sync_all()?;
+        {
+          let mut out = std::fs::File::create(&written)?;
+          writeln!(out, "{device}")?;
+          out.sync_all()?;
+        }
         std::fs::rename(&written, file)?;
         sync_directory(file)
       };
