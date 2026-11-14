@@ -29,6 +29,9 @@
 //! let reading = reading::read(&measured, &ReadingThresholds::default());
 //! println!("{:?}: {}", reading.verdict, reading.summary);
 //! ```
+//!
+//! `examples/analyze.rs` prints a reading of each file it is given as JSON, under one or more
+//! sets of thresholds.
 
 pub mod aggregate;
 pub mod decode;

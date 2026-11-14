@@ -29,6 +29,7 @@ mp3lame-encoder = { version = "0.3", optional = true }
 flacenc = { version = "0.5", default-features = false }
 mp3lame-encoder = "0.3"
 proptest.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]

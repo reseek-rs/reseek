@@ -177,6 +177,7 @@ dependencies = [
  "proptest",
  "realfft",
  "serde",
+ "serde_json",
  "symphonia",
  "symphonia-common",
  "tempfile",
