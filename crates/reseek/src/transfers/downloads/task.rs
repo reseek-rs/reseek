@@ -269,10 +269,19 @@ impl Downloads {
       let grant = match first.take() {
         Some(grant) => Some(grant),
         None if offered => None,
-        None => tokio::select! {
-          grant = self.starts.wait(id, &record.username, position, None) => Some(grant),
-          () = cancel.cancelled() => return self.canceled(id, Some(incomplete)).await,
-        },
+        None => {
+          // a try stopped for a user who is back already still holds the state it was in
+          if record.state != State::WAITING {
+            record
+              .enter(State::WAITING)
+              .expect("a download between tries may wait here");
+            self.save(&record, true).await;
+          }
+          tokio::select! {
+            grant = self.starts.wait(id, &record.username, position, None) => Some(grant),
+            () = cancel.cancelled() => return self.canceled(id, Some(incomplete)).await,
+          }
+        }
       };
       let (mut gate, ask) = grant.map(Gate::of).unzip();
       self.watch_user(&record.username);

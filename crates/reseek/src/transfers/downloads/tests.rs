@@ -1541,6 +1541,90 @@ async fn a_download_whose_try_finds_its_user_offline_waits_for_them() {
   bob.asked_for(file).await;
 }
 
+/// Tells the downloads a user who went offline is back, as the server's word would, as soon as
+/// a download's try says it stops asking for them: the one step between the try seeing them go
+/// and its end, where nothing waits that a test could hold.
+struct BackAsTheTryStops {
+  downloads: std::sync::Arc<std::sync::OnceLock<std::sync::Arc<super::Downloads>>>,
+  username: &'static str,
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for BackAsTheTryStops {
+  fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+    struct Message(bool);
+    impl tracing::field::Visit for Message {
+      fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+          self.0 = format!("{value:?}") == "the user went offline; the download stops asking";
+        }
+      }
+    }
+    let mut stops = Message(false);
+    event.record(&mut stops);
+    if let (true, Some(downloads)) = (stops.0, self.downloads.get()) {
+      downloads.presence(self.username, api_types::users::UserPresence::Online);
+    }
+  }
+}
+
+/// A try stopped for its user going offline, who is back before the try has ended, waits for
+/// its turn here behind a file that holds the only slot, and reads so, not as queued at the
+/// peer it no longer asks.
+#[test]
+fn a_try_stopped_for_a_user_back_already_reads_queued_here_while_it_waits() {
+  use soulseek_proto::peer::TransferResponse;
+  use tracing_subscriber::layer::SubscriberExt;
+
+  let downloads = std::sync::Arc::<std::sync::OnceLock<_>>::default();
+  let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(BackAsTheTryStops {
+    downloads: downloads.clone(),
+    username: "bob",
+  }));
+  let threads = dispatch.clone();
+  let runtime = tokio::runtime::Builder::new_multi_thread()
+    .worker_threads(4)
+    .enable_all()
+    // the layer stays for each worker's life
+    .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&threads)))
+    .build()
+    .unwrap();
+  let _here = tracing::dispatcher::set_default(&dispatch);
+  runtime.block_on(async {
+    let config = format!(
+      "[transfers.download]\nslots = 1\n[transfers.download.retry]\ndelay = \"1h\"\n\
+       max_delay = \"1h\"\n{TRUSTED}"
+    );
+    let app = crate::testing::soulseek::app(&config).await;
+    downloads.set(app.state.downloads.clone()).ok().unwrap();
+    let peers = Peers::start(&app, &["alice", "bob"]).await;
+    let (alices, bobs) = ("@@a\\1.flac", "@@b\\1.flac");
+    let id = enqueued(&app, "bob", bobs).await;
+    let mut bob = peers.connected("bob").await;
+    bob.asked_for(bobs).await;
+    bob.place_asked(bobs, 3).await;
+    enqueued(&app, "alice", alices).await;
+    let mut alice = peers.connected("alice").await;
+    alice.asked_for(alices).await;
+    assert!(matches!(
+      alice.offer(alices, 1).await,
+      TransferResponse::Allowed { token: 1, .. }
+    ));
+    let _moving = sending(&app, "alice", 1, 4).await;
+    assert!(matches!(
+      read(&app, id).await.state,
+      State::QueuedRemotely { .. }
+    ));
+
+    peers.presence("bob", false);
+    let waiting = read_until(&app, id, |r| r.state == State::WAITING).await;
+    assert!(!waiting.waits_for_user(), "bob is back");
+    assert_eq!(
+      waiting.attempts, 1,
+      "the try bob was gone for does not count"
+    );
+  });
+}
+
 /// A login has the downloads waiting for a user who was offline try them again, since the
 /// session that said so is over.
 #[tokio::test]
