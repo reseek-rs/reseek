@@ -10,6 +10,7 @@ import {
   fakeFolder,
   fakeReports,
   fakeSearch,
+  manyDownloads,
   SEARCH_ID
 } from "./support/fakes";
 import { fits, holds, layerHolds, shows } from "./support/fits";
@@ -223,4 +224,31 @@ test("a toast's countdown runs along its foot and holds under the pointer", asyn
   await expect.poll(countdown).toBe("paused");
   await page.mouse.move(0, 0);
   await expect.poll(countdown).toBe("running");
+});
+
+test.describe("on a touch screen", () => {
+  test.use({ hasTouch: true, isMobile: true });
+
+  test("a tap on a row's More opens its menu while another row's is open", async ({ page }) => {
+    await manyDownloads(page, 300);
+    await visit(page, "/downloads");
+    const menu = page.getByRole("menu");
+    const more = page.getByRole("button", { name: /^More for / });
+    await expect(more.first()).toBeVisible();
+    // a row low on the screen, whose menu opens upward and leaves a row above clear
+    const ys = await more.evaluateAll((all) => all.map((b) => b.getBoundingClientRect().y));
+    await more.nth(ys.findIndex((y) => y > 780)).tap();
+    await expect(menu).toBeVisible();
+    await menu.evaluate((e) => Promise.all(e.getAnimations().map((a) => a.finished)));
+    const top = (await menu.boundingBox())!.y;
+    const first = (await more.first().boundingBox())!;
+    expect(first.y + first.height, "the first row's button is clear of the menu").toBeLessThan(top);
+    await page.touchscreen.tap(first.x + first.width / 2, first.y + first.height / 2);
+    // the menu open is the first row's, which hangs under its button, the other one closing
+    const opened = page.locator("[role=menu][data-state=open]");
+    await expect(opened).toHaveCount(1);
+    const box = (await opened.boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(first.y + first.height);
+    expect(box.y).toBeLessThan(first.y + first.height + 20);
+  });
 });

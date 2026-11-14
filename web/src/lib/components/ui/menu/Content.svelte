@@ -9,7 +9,8 @@
   let { sideOffset = 4, class: className, ...rest }: DropdownMenu.ContentProps = $props();
 
   // in a LazyRoot there is no trigger of the menu's own: it hangs from the button that opened
-  // it, which gets focus back on close
+  // it, which gets focus back on close. A row's menu leaves the page under it taking presses, so
+  // a tap on another row's button opens that row's menu rather than only closing this one
   const anchor = anchorOf();
 </script>
 
@@ -22,6 +23,7 @@
       className
     )}
     customAnchor={anchor?.()}
+    preventScroll={anchor ? false : undefined}
     onCloseAutoFocus={(e) => {
       if (!anchor) return;
       e.preventDefault();
