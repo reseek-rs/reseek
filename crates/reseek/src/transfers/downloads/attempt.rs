@@ -1,21 +1,20 @@
 //! One try of a download: where in the incomplete file it starts, the client's download with
 //! each state written as it comes and the progress at most every [`PROGRESS_EVERY`], the slot
-//! it claims once its peer offers the file, and what its outcome means for the record.
+//! it holds once its peer's offer is accepted, and what its outcome means for the record.
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
 use api_types::live::LiveFrame;
 use api_types::transfers::{TransferOutcome, TransferStates};
 use chrono::Utc;
-use reseek_shares::lock;
 use soulseek_client::{
   ClientError, DownloadOutput, DownloadRequest, DownloadSink, LogLimiter, OutputFactory,
-  ProgressUpdated, RequestStyle, SizeMismatchResolver, SlotAwaiter, StateChanged,
-  Transfer as Snapshot, TransferOptions,
+  ProgressUpdated, RequestStyle, SizeMismatchResolver, StateChanged, Transfer as Snapshot,
+  TransferOptions,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
@@ -50,32 +49,11 @@ pub(super) enum Attempted {
   Succeeded(WriteGuard),
   /// the try failed
   Failed(Failure),
-  /// the try ended in a way that does not count as one, and the download waits for this
-  Waits(Waits),
+  /// the try ended because its user is offline, which does not count as a try: the download
+  /// waits for them to come back
+  UserOffline,
   /// the daemon is stopping
   Abandoned,
-}
-
-/// What a try that does not count leaves its download waiting for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Waits {
-  /// its user, who is offline, to come back
-  User,
-  /// a free download slot: the peer offered the file while every one was taken, and the
-  /// offer was declined
-  Slot,
-}
-
-/// What a try's offer did with the download slots.
-#[derive(Default)]
-enum Claim {
-  /// no offer came
-  #[default]
-  Unoffered,
-  /// the offer took a slot, held to the end of the try
-  Held { _slot: Slot },
-  /// every slot was taken, and the offer was declined
-  Declined,
 }
 
 /// Why a try failed: the outcome it ends in, the reason shown, and whether trying again can
@@ -264,26 +242,6 @@ impl Downloads {
       .is_ok_and(|metadata| whole(metadata.len(), file.size))
   }
 
-  /// The slot awaiter of a try that asks for its file: once the peer offers it, a free slot is
-  /// claimed and kept in `claim`, or, every one being taken, the offer is declined.
-  fn slot_awaiter(&self, claim: &Arc<Mutex<Claim>>) -> SlotAwaiter {
-    let (starts, claim) = (self.starts.clone(), claim.clone());
-    Arc::new(move |_, _| {
-      let slot = starts.claim();
-      let free = slot.is_some();
-      *lock(&claim) = slot.map_or(Claim::Declined, |slot| Claim::Held { _slot: slot });
-      Box::pin(async move {
-        if free {
-          Ok(())
-        } else {
-          Err(ClientError::InvalidOperation(
-            "every download slot is taken".into(),
-          ))
-        }
-      })
-    })
-  }
-
   /// One try of the download `record` into `incomplete`, stopped by `cancel`, or by the
   /// request's hard limit while it holds `gate`; with `offered`, a try that takes the offer its
   /// user made unasked rather than asking for the file. A try of a file `pushed` unasked fails
@@ -361,9 +319,6 @@ impl Downloads {
         warn!(error = %e, "download state not recorded");
       }
     });
-    // the slot claimed at the offer of a try that asks for its file; an offer taken unasked
-    // holds none, since its sender waits for the answer
-    let claim = Arc::new(Mutex::new(Claim::default()));
     let (progress_sent, mut progress) = watch::channel((start, 0.0));
     let progress_updated: ProgressUpdated = Arc::new(move |_, snapshot: &Snapshot| {
       progress_sent.send_replace((snapshot.bytes_transferred, snapshot.average_speed));
@@ -379,7 +334,6 @@ impl Downloads {
         state_changed: Some(state_changed),
         progress_updated: Some(progress_updated),
         size_mismatch_resolver: (!pushed).then(peers_size),
-        slot_awaiter: (!offered).then(|| self.slot_awaiter(&claim)),
         request_style: if offered {
           RequestStyle::Offered
         } else {
@@ -399,10 +353,10 @@ impl Downloads {
     let first = std::future::poll_fn(|cx| Poll::Ready(running.as_mut().poll(cx))).await;
     drop(ask);
     // a turn the download no longer holds never fires
-    let deadline = tokio::time::sleep_until(gate.as_ref().map_or_else(
-      || Instant::now() + Duration::from_secs(86_400),
-      |g| g.deadline,
-    ));
+    let limited = gate.as_ref().and_then(|g| g.deadline);
+    let deadline = tokio::time::sleep_until(
+      limited.unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400)),
+    );
     tokio::pin!(deadline);
     let throttle = tokio::time::sleep(Duration::ZERO);
     tokio::pin!(throttle);
@@ -410,6 +364,8 @@ impl Downloads {
     let mut hard_limited = false;
     let mut went_offline = false;
     let mut ended: Option<Snapshot> = None;
+    // the slot it holds once its offer is accepted, to the end of the try
+    let mut moving: Option<Slot> = None;
     // only word that comes during the try stops it
     away.borrow_and_update();
     let result = if let Poll::Ready(result) = first {
@@ -418,7 +374,9 @@ impl Downloads {
       loop {
         tokio::select! {
           biased;
-          Some(snapshot) = states.recv() => self.state_changed(record, snapshot, gate, &mut ended).await,
+          Some(snapshot) = states.recv() => {
+            self.state_changed(record, snapshot, gate, &mut moving, &mut ended).await;
+          }
           result = &mut running => break result,
           // a user who goes offline before their file moves is waited for; one who offered a
           // file unasked is online
@@ -433,7 +391,7 @@ impl Downloads {
               stop.cancel();
             }
           }
-          () = &mut deadline, if gate.is_some() => {
+          () = &mut deadline, if gate.as_ref().is_some_and(|g| g.deadline.is_some()) => {
             let history = self.history(record.id).await;
             warn!(
               state = %record.state,
@@ -456,11 +414,12 @@ impl Downloads {
     };
     // the states the client reported before its task ended are all queued by now
     while let Ok(snapshot) = states.try_recv() {
-      self.state_changed(record, snapshot, gate, &mut ended).await;
+      self
+        .state_changed(record, snapshot, gate, &mut moving, &mut ended)
+        .await;
     }
     gate.take();
-    // the slot an offer claimed is free again once the try has ended
-    let declined = matches!(std::mem::take(&mut *lock(&claim)), Claim::Declined);
+    drop(moving);
     if self.shutdown.is_cancelled() {
       return Attempted::Abandoned;
     }
@@ -509,9 +468,7 @@ impl Downloads {
         let offline = (went_offline && !cancel.is_cancelled())
           || (failed.retryable && (found_offline || *away.borrow()));
         if offline {
-          Attempted::Waits(Waits::User)
-        } else if declined {
-          Attempted::Waits(Waits::Slot)
+          Attempted::UserOffline
         } else {
           Attempted::Failed(failed)
         }
@@ -521,12 +478,13 @@ impl Downloads {
 
   /// Takes a state the client reported into `record` and writes it; a final state is kept in
   /// `ended` for the task to write with the outcome. A state past the peer's queue ends the
-  /// download's turn in `gate`.
+  /// download's ask in `gate`, and an accepted offer takes a slot into `moving`.
   async fn state_changed(
     &self,
     record: &mut Record,
     snapshot: Snapshot,
     gate: &mut Option<Gate>,
+    moving: &mut Option<Slot>,
     ended: &mut Option<Snapshot>,
   ) {
     let state = state::reported(snapshot.state);
@@ -536,6 +494,13 @@ impl Downloads {
     );
     if !asking {
       gate.take();
+    }
+    let accepted = matches!(
+      state,
+      TransferStates::Initializing | TransferStates::InProgress
+    );
+    if accepted && moving.is_none() {
+      *moving = Some(self.starts.moving());
     }
     if state.is_completed() {
       *ended = Some(snapshot);

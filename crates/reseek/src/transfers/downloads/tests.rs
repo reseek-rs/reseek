@@ -685,7 +685,7 @@ async fn a_reorder_of_the_local_queue_is_written_to_the_database() {
     let position = read(&app, record.id).await.queue_position.unwrap();
     let wait = downloads
       .starts
-      .wait(record.id, "alice", position, Some((request, 0)), false);
+      .wait(record.id, "alice", position, Some((request, 0)));
     _waiting.push(wait);
     ids.push(record.id);
   }
@@ -1482,21 +1482,25 @@ async fn a_download_whose_try_finds_its_user_offline_waits_for_them() {
   bob.asked_for(file).await;
 }
 
-/// With one download slot, files waiting in their users' queues hold none: both are asked for,
-/// the first offered takes the slot, one offered while it is held is declined, and that one is
-/// asked for again once the slot is free.
+/// With one download slot: files waiting in their users' queues hold none, so alice's and bob's
+/// are both asked; an offer is accepted though the slot is taken, so both move; and a file
+/// enqueued meanwhile is not asked until neither moves.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_download_slot_is_taken_only_by_a_file_offered_and_one_declined_is_asked_again() {
+async fn an_offer_is_taken_past_the_slots_and_nothing_new_is_asked_until_one_is_free() {
   use soulseek_proto::peer::TransferResponse;
 
   let config = format!("[transfers.download]\nslots = 1\n{TRUSTED}");
   let app = crate::testing::soulseek::app(&config).await;
-  let peers = Peers::start(&app, &["alice", "bob"]).await;
-  let (alices, bobs) = ("@@a\\Album\\1.flac", "@@b\\Album\\1.flac");
+  let peers = Peers::start(&app, &["alice", "bob", "carol"]).await;
+  let (alices, bobs, carols) = (
+    "@@a\\Album\\1.flac",
+    "@@b\\Album\\1.flac",
+    "@@c\\Album\\1.flac",
+  );
   let first = enqueued(&app, "alice", alices).await;
   let mut alice = peers.connected("alice").await;
   alice.asked_for(alices).await;
-  enqueued(&app, "bob", bobs).await;
+  let second = enqueued(&app, "bob", bobs).await;
   let mut bob = peers.connected("bob").await;
   bob.asked_for(bobs).await;
 
@@ -1504,25 +1508,25 @@ async fn a_download_slot_is_taken_only_by_a_file_offered_and_one_declined_is_ask
     alice.offer(alices, 1).await,
     TransferResponse::Allowed { token: 1, .. }
   ));
-  assert_eq!(
+  read_until(&app, first, |r| r.state == State::Initializing).await;
+  assert!(matches!(
     bob.offer(bobs, 2).await,
-    TransferResponse::Denied {
-      token: 2,
-      message: "Queued".into(),
-    }
-  );
-  let early = bob.next_within(std::time::Duration::from_secs(1)).await;
-  assert!(
-    !matches!(early, Some(soulseek_proto::PeerMessage::QueueDownload(_))),
-    "asked again while the slot is held: {early:?}"
-  );
-  app
-    .state
-    .downloads
-    .cancel("alice", first, false)
-    .await
-    .unwrap();
-  bob.asked_for(bobs).await;
+    TransferResponse::Allowed { token: 2, .. }
+  ));
+  read_until(&app, second, |r| r.state == State::Initializing).await;
+
+  enqueued(&app, "carol", carols).await;
+  let mut carol = peers.connected("carol").await;
+  let idle = std::time::Duration::from_secs(1);
+  let early = carol.next_within(idle).await;
+  assert!(early.is_none(), "asked while two move: {early:?}");
+  let downloads = &app.state.downloads;
+  downloads.cancel("alice", first, false).await.unwrap();
+  read_until(&app, first, Record::is_completed).await;
+  let early = carol.next_within(idle).await;
+  assert!(early.is_none(), "asked while one moves: {early:?}");
+  downloads.cancel("bob", second, false).await.unwrap();
+  carol.asked_for(carols).await;
 }
 
 #[tokio::test]

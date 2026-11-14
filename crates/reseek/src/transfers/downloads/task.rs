@@ -1,11 +1,11 @@
 //! One download's task: it waits its turn in the local queue, checks its record, then tries
 //! the download, waiting longer before each new try, until the file arrives, the download fails
-//! for good or it is canceled, and writes how it ended. A try that finds its user offline, or
-//! that their going offline stops, does not count: the download waits for them to be back and
-//! tries again. Nor does one whose offer came while every download slot was taken: it waits for
-//! a free slot and asks again. A file its user offered unasked is tried at once, taking the
-//! offer, since the sender waits for our answer; a later try asks for it like any other. A stop
-//! of the daemon leaves the record as it is, for the stop to end.
+//! for good or it is canceled, and writes how it ended. Each try that asks its peer waits for
+//! a free download slot in the local queue first. A try that finds its user offline, or that
+//! their going offline stops, does not count: the download waits for them to be back and tries
+//! again. A file its user offered unasked is tried at once, taking the offer, since the sender
+//! waits for our answer; a later try asks for it like any other. A stop of the daemon leaves the
+//! record as it is, for the stop to end.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,9 +21,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 use uuid::Uuid;
 
-use super::attempt::{Attempted, Failure, Waits};
+use super::attempt::{Attempted, Failure};
 use super::destination::incomplete_path;
-use super::starts::{Grant, Turn};
+use super::starts::{Ask, Grant, Pending, Turn};
 use super::{Downloads, InFlight};
 use crate::files::WriteGuard;
 use crate::safety::Os;
@@ -36,12 +36,27 @@ use crate::transfers::{Record, removal, store};
 /// it queued.
 const HARD_LIMIT: Duration = Duration::from_secs(180);
 
-/// A download's turn among the files of its request, held from the start of its task until
-/// its peer has it queued or it ends, and for [`HARD_LIMIT`] at most.
+/// What a try that asks its peer holds until the peer has it queued, or offered it, or the
+/// try ends: the free slot it asks in, and for the first try its turn among the files of its
+/// request, which it may hold for [`HARD_LIMIT`] at most.
 pub(super) struct Gate {
-  _turn: Turn,
-  /// when the download is stopped if it still holds the turn
-  pub deadline: Instant,
+  _pending: Pending,
+  _turn: Option<Turn>,
+  /// when the download is stopped if it still holds its request's turn
+  pub deadline: Option<Instant>,
+}
+
+impl Gate {
+  /// What `grant` gives a try to hold while it asks.
+  fn of(grant: Grant) -> (Self, Ask) {
+    let deadline = grant.turn.is_some().then(|| Instant::now() + HARD_LIMIT);
+    let gate = Self {
+      _pending: grant.pending,
+      _turn: grant.turn,
+      deadline,
+    };
+    (gate, grant.ask)
+  }
 }
 
 /// How a download task ended.
@@ -70,17 +85,6 @@ impl Ended {
       incomplete,
     })
   }
-}
-
-/// What a download's next try waits for first.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Next {
-  /// nothing: it is tried as soon as its turn comes
-  Now,
-  /// the wait before a retry
-  Retry(Duration),
-  /// a free download slot, the last try's offer having come while every one was taken
-  Slot,
 }
 
 /// The wait before try `attempt`, the second or a later one: `delay`, doubled for every try
@@ -112,7 +116,7 @@ impl Downloads {
     let first = (!offered).then(|| {
       self
         .starts
-        .wait(record.id, &record.username, position, Some(request), false)
+        .wait(record.id, &record.username, position, Some(request))
     });
     self.tasks.spawn(
       async move { this.run(record.id, position, first, cancel, offered).await }.instrument(span),
@@ -158,19 +162,12 @@ impl Downloads {
     cancel: &CancellationToken,
     mut offered: bool,
   ) -> Ended {
-    let (mut first_ask, mut gate) = match first {
-      None => (None, None),
-      Some(first) => {
-        let first = tokio::select! {
-          grant = first => grant,
-          () = cancel.cancelled() => return self.canceled(id, None).await,
-        };
-        let gate = first.turn.map(|turn| Gate {
-          _turn: turn,
-          deadline: Instant::now() + HARD_LIMIT,
-        });
-        (Some(first.ask), gate)
-      }
+    let mut first = match first {
+      None => None,
+      Some(first) => Some(tokio::select! {
+        grant = first => grant,
+        () = cancel.cancelled() => return self.canceled(id, None).await,
+      }),
     };
     let mut record = match self.db.read(move |conn| store::get(conn, id)).await {
       Ok(Some(record)) => record,
@@ -221,10 +218,10 @@ impl Downloads {
     record.attempts = 1;
     self.save(&record, false).await;
     let mut attempt = 1;
-    // what the try about to start waits for first, nothing before the first
-    let mut next = Next::Now;
+    // the wait before the try about to start, none before the first
+    let mut delay: Option<Duration> = None;
     loop {
-      if let Next::Retry(delay) = next {
+      if let Some(delay) = delay.take() {
         info!(
           attempt,
           seconds = delay.as_secs_f64().ceil() as u64,
@@ -241,24 +238,22 @@ impl Downloads {
       }
       // a user known to be offline is not asked; an offer they made unasked is taken
       if !offered && *away.borrow_and_update() {
-        // the turns of the first grant are given up, so the user's other files go on to wait
-        // for them too, and the hard limit does not run while they are away
-        first_ask = None;
-        gate = None;
+        // the first grant is given up, so its slot and turn go to others while the user is
+        // away, and the hard limit does not run meanwhile
+        first = None;
         if !self.wait_for_user(&mut record, &mut away, cancel).await {
           return self.canceled(id, Some(incomplete)).await;
         }
       }
-      let ask = match first_ask.take() {
-        Some(ask) => Some(ask),
+      let grant = match first.take() {
+        Some(grant) => Some(grant),
         None if offered => None,
         None => tokio::select! {
-          grant = self.starts.wait(id, &record.username, position, None, next == Next::Slot) => {
-            Some(grant.ask)
-          }
+          grant = self.starts.wait(id, &record.username, position, None) => Some(grant),
           () = cancel.cancelled() => return self.canceled(id, Some(incomplete)).await,
         },
       };
+      let (mut gate, ask) = grant.map(Gate::of).unzip();
       self.watch_user(&record.username);
       let taking = std::mem::take(&mut offered);
       let attempted = self
@@ -273,19 +268,11 @@ impl Downloads {
           &mut away,
         )
         .await;
-      next = match attempted {
+      match attempted {
         Attempted::Succeeded(writing) => return Ended::Succeeded(record, incomplete, writing),
         Attempted::Abandoned => return Ended::Abandoned,
         // the wait for the user is written at the top of the loop
-        Attempted::Waits(Waits::User) => Next::Now,
-        Attempted::Waits(Waits::Slot) => {
-          info!("download offered while every slot is taken; it asks again once one is free");
-          record
-            .enter(State::WAITING)
-            .expect("a download being tried may wait here again");
-          self.save(&record, true).await;
-          Next::Slot
-        }
+        Attempted::UserOffline => {}
         Attempted::Failed(failure) => {
           warn!(
             attempt,
@@ -317,9 +304,9 @@ impl Downloads {
           record.attempts = attempt;
           record.exception = Some(failure.message);
           self.save(&record, true).await;
-          Next::Retry(wait)
+          delay = Some(wait);
         }
-      };
+      }
     }
   }
 

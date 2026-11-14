@@ -3509,7 +3509,7 @@
       "envVar": "RESEEK_DOWNLOAD_SLOTS",
       "cliFlag": "--download-slots",
       "kind": "integer",
-      "doc": "Maximum number of downloads moving bytes at once; one waiting in a user's queue takes none. A file offered while every slot is taken is declined and asked for again once one is free. No limit when not set. Lowering it lets running downloads finish.",
+      "doc": "Number of downloads moving bytes at once. While that many move, no new file is asked for; below it, one waiting file is asked for per free slot, in queue order. A file waiting in a user's queue takes none, and its offer is always accepted, so more may move for a while. No limit when not set.",
       "choices": null,
       "default": null,
       "apply": "live",

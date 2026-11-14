@@ -5,10 +5,13 @@
 //! download's place comes with its record, and the places a reorder gives are written back, so
 //! the order outlives a restart.
 //!
-//! The download slots of `transfers.download.slots` count only downloads moving bytes: a
-//! download claims one when its peer offers to send the file, and holds it until the try ends.
-//! One offered while every slot is taken is declined and waits here, in its place, for a slot
-//! to be free before it asks again; it holds none while it asks.
+//! The download slots of `transfers.download.slots` count the downloads moving bytes: a
+//! download takes one once its peer's offer is accepted, and holds it until the try ends. An
+//! offer is always accepted, so a peer never loses a file's place in its queue, and the count
+//! can go over the limit for a while. While it is at or over, nothing new is asked of a peer:
+//! the downloads wait here in order. Below it, one is asked per free slot, each counted with the
+//! moving ones until its peer has queued it, offered it or the try ended; a file waiting in a
+//! peer's queue holds nothing.
 //!
 //! A user's downloads are asked of them in the order they were granted: the client takes a
 //! download's place among its user's downloads when it is first polled, so each waits for the
@@ -29,8 +32,6 @@ struct Waiting {
   /// the request whose turn it needs, with how many of its files may hold one at once; none
   /// on a retry that holds its turn already
   request: Option<(u64, usize)>,
-  /// declined at its offer for want of a slot, it asks again only once one is free
-  for_slot: bool,
   granted: oneshot::Sender<Grant>,
 }
 
@@ -41,7 +42,9 @@ struct State {
   /// the downloads waiting, in queue order
   waiting: Vec<Waiting>,
   /// the slots held by downloads moving bytes
-  slots: usize,
+  moving: usize,
+  /// the downloads granted and still asking their peer, which a free slot let ask
+  pending: usize,
   /// the slots there are, none for no limit
   limit: Option<usize>,
   /// how many turns each request with any holds
@@ -61,11 +64,19 @@ pub(super) struct Starts {
   asked: Arc<Notify>,
 }
 
-/// What a download was granted: its request's turn when it waited for one, and its place
-/// among its user's downloads to be asked of the peer. Each is given back when dropped.
+/// What a download was granted: its request's turn when it waited for one, its place among
+/// its user's downloads to be asked of the peer, and the free slot it asks in. Each is given
+/// back when dropped.
 pub(super) struct Grant {
   pub turn: Option<Turn>,
   pub ask: Ask,
+  pub pending: Pending,
+}
+
+/// A granted download asking its peer, counted with the moving downloads against the slots
+/// until its peer has queued it, offered it or the try ended.
+pub(super) struct Pending {
+  starts: Starts,
 }
 
 /// A granted download's place among its user's downloads to be asked of the peer, held until
@@ -75,7 +86,7 @@ pub(super) struct Ask {
   number: u64,
 }
 
-/// A download slot, claimed when the peer offered the file and held while it moves.
+/// A download slot, taken once the peer's offer is accepted and held while the file moves.
 pub(super) struct Slot {
   starts: Starts,
 }
@@ -89,7 +100,15 @@ pub(super) struct Turn {
 impl Drop for Slot {
   fn drop(&mut self) {
     let mut state = lock(&self.starts.state);
-    state.slots = state.slots.saturating_sub(1);
+    state.moving -= 1;
+    self.starts.grant(&mut state);
+  }
+}
+
+impl Drop for Pending {
+  fn drop(&mut self) {
+    let mut state = lock(&self.starts.state);
+    state.pending -= 1;
     self.starts.grant(&mut state);
   }
 }
@@ -142,24 +161,25 @@ impl Ask {
 }
 
 impl State {
-  /// Whether a download slot is free.
+  /// Whether a download slot is free for one more to ask in.
   fn slot_free(&self) -> bool {
-    self.limit.is_none_or(|limit| self.slots < limit)
+    self
+      .limit
+      .is_none_or(|limit| self.moving + self.pending < limit)
   }
 }
 
 impl Starts {
-  /// Grants every waiting download what it waits for, in queue order: its request's turn, and
-  /// for one declined for want of a slot, a free slot to ask again for. `state` is this
-  /// queue's, locked.
+  /// Grants waiting downloads, in queue order, what they wait for: a free slot each, while
+  /// there is one, and its request's turn. `state` is this queue's, locked.
   fn grant(&self, state: &mut State) {
     let mut at = 0;
-    while at < state.waiting.len() {
+    while at < state.waiting.len() && state.slot_free() {
       let ready = match state.waiting[at].request {
         Some((request, limit)) => state.held.get(&request).copied().unwrap_or(0) < limit,
         None => true,
       };
-      if !ready || (state.waiting[at].for_slot && !state.slot_free()) {
+      if !ready {
         at += 1;
         continue;
       }
@@ -174,6 +194,9 @@ impl Starts {
           starts: self.clone(),
           number,
         },
+        pending: Pending {
+          starts: self.clone(),
+        },
       };
       if let Err(unwanted) = waiting.granted.send(grant) {
         // the waiter left. Nothing was counted for these handles yet, and dropping them would
@@ -184,6 +207,7 @@ impl Starts {
       if let Some((request, _)) = waiting.request {
         *state.held.entry(request).or_default() += 1;
       }
+      state.pending += 1;
       state.next_ask += 1;
       state.asking.insert(number, waiting.username);
     }
@@ -203,17 +227,12 @@ impl Starts {
     state.waiting.retain(|waiting| waiting.id != id);
   }
 
-  /// A download slot for a download its peer offers to send now, none when every slot is
-  /// taken.
-  pub fn claim(&self) -> Option<Slot> {
-    let mut state = lock(&self.state);
-    if !state.slot_free() {
-      return None;
-    }
-    state.slots += 1;
-    Some(Slot {
+  /// A slot for a download whose offer was accepted, taken whatever the limit.
+  pub fn moving(&self) -> Slot {
+    lock(&self.state).moving += 1;
+    Slot {
       starts: self.clone(),
-    })
+    }
   }
 
   /// Sets how many slots there are, none for no limit, and grants what that frees.
@@ -225,15 +244,13 @@ impl Starts {
 
   /// Puts the download `id` of `username` in the queue at `position`, or at the place a
   /// reorder gave it since it first waited, at once; the future waits for its turn there: a
-  /// turn of `request` when given, whose files may hold that many at once, and a free slot when
-  /// it waits `for_slot`.
+  /// free slot, and a turn of `request` when given, whose files may hold that many at once.
   pub fn wait(
     &self,
     id: Uuid,
     username: &str,
     position: f64,
     request: Option<(u64, usize)>,
-    for_slot: bool,
   ) -> impl Future<Output = Grant> + Send + use<> {
     let (granted, grant_rx) = oneshot::channel();
     {
@@ -250,7 +267,6 @@ impl Starts {
           id,
           username: username.to_string(),
           request,
-          for_slot,
           granted,
         },
       );
@@ -330,17 +346,16 @@ mod tests {
 
   use super::*;
 
-  /// Starts `id` waiting in `queue` with a turn of `request` when given, for a free slot with
-  /// `for_slot`, and hands back its grant once it has one.
+  /// Starts `id` waiting in `queue` with a turn of `request` when given, and hands back its
+  /// grant once it has one.
   fn waiter(
     queue: &Starts,
     id: Uuid,
     request: Option<(u64, usize)>,
-    for_slot: bool,
   ) -> tokio::task::JoinHandle<Grant> {
     let queue = queue.clone();
     let position = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) as f64;
-    tokio::spawn(async move { queue.wait(id, "alice", position, request, for_slot).await })
+    tokio::spawn(async move { queue.wait(id, "alice", position, request).await })
   }
 
   /// The places the waiters take, in the order they are made.
@@ -358,13 +373,13 @@ mod tests {
     let queue = Starts::default();
     let request = queue.request();
     let ids: Vec<Uuid> = (0..4).map(|_| Uuid::new_v4()).collect();
-    let mut first = waiter(&queue, ids[0], Some((request, 1)), false);
+    let mut first = waiter(&queue, ids[0], Some((request, 1)));
     let running = granted(&mut first)
       .await
       .expect("the request's turn is free at once");
     let mut waiters: Vec<_> = Vec::new();
     for id in &ids[1..] {
-      waiters.push(waiter(&queue, *id, Some((request, 1)), false));
+      waiters.push(waiter(&queue, *id, Some((request, 1))));
       tokio::task::yield_now().await;
     }
     while queue.order().len() < 3 {
@@ -393,39 +408,39 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn a_slot_is_held_only_once_offered_and_one_declined_asks_again_once_one_is_free() {
+  async fn downloads_ask_one_per_free_slot_and_a_moving_one_holds_its_slot_past_the_limit() {
     let queue = Starts::default();
     queue.set_limit(Some(1));
-    // both are asked of their peers though there is one slot
-    let mut asking = [
-      waiter(&queue, Uuid::new_v4(), None, false),
-      waiter(&queue, Uuid::new_v4(), None, false),
-    ];
-    for waiter in &mut asking {
-      assert!(granted(waiter).await.is_some(), "asking holds no slot");
-    }
-    // the first offered takes the slot, the second is declined and waits for one
-    let moving = queue.claim().expect("a slot is free");
-    assert!(queue.claim().is_none(), "the one slot is taken");
-    let mut declined = waiter(&queue, Uuid::new_v4(), None, true);
-    assert!(granted(&mut declined).await.is_none());
-    drop(moving);
-    assert!(granted(&mut declined).await.is_some(), "the slot is free");
+    let mut first = waiter(&queue, Uuid::new_v4(), None);
+    let asking = granted(&mut first).await.expect("the one slot is free");
+    let mut second = waiter(&queue, Uuid::new_v4(), None);
     assert!(
-      queue.claim().is_some(),
-      "the one asking again holds no slot"
+      granted(&mut second).await.is_none(),
+      "one asks in the one slot"
     );
+    // the peer queued the first: it holds nothing, and the next asks
+    drop(asking.pending);
+    let asked = granted(&mut second).await.expect("the slot is free again");
+    drop(asked.pending);
+    // both offered and accepted, past the limit
+    let (one, two) = (queue.moving(), queue.moving());
+    let mut third = waiter(&queue, Uuid::new_v4(), None);
+    assert!(granted(&mut third).await.is_none(), "at the limit");
+    drop(one);
+    assert!(granted(&mut third).await.is_none(), "still at the limit");
+    drop(two);
+    assert!(granted(&mut third).await.is_some(), "below the limit");
   }
 
   #[tokio::test]
   async fn a_request_holding_its_turns_lets_another_requests_file_start() {
     let queue = Starts::default();
     let (big, small) = (queue.request(), queue.request());
-    let mut first = waiter(&queue, Uuid::new_v4(), Some((big, 1)), false);
+    let mut first = waiter(&queue, Uuid::new_v4(), Some((big, 1)));
     let held = granted(&mut first).await.unwrap();
     assert!(held.turn.is_some());
-    let mut second = waiter(&queue, Uuid::new_v4(), Some((big, 1)), false);
-    let mut other = waiter(&queue, Uuid::new_v4(), Some((small, 1)), false);
+    let mut second = waiter(&queue, Uuid::new_v4(), Some((big, 1)));
+    let mut other = waiter(&queue, Uuid::new_v4(), Some((small, 1)));
     assert!(
       granted(&mut other).await.is_some(),
       "another request goes past it"
