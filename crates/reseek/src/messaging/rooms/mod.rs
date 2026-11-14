@@ -128,12 +128,13 @@ impl Messaging {
     self.rooms_changed();
   }
 
-  /// Joins `name`, as a private room when it is created and `private`, unless the server has
-  /// us in it already in this session, which is `None`. A server that has us in the room
-  /// although we do not know it, which it says by not answering, is made to forget it by
-  /// leaving, and the room is joined again once. A join someone `asked` for through the UI or
-  /// the API is remembered, so the room is joined again after a start until it is left. Joins of
-  /// one room go one at a time.
+  /// Joins `name`, unless the server has us in it already in this session, which is `None`. It
+  /// is asked for as a private room when `private` or when the server last let us into it as
+  /// one, so a private room gone meanwhile is made again as ours, never as a public room. A
+  /// server that has us in the room although we do not know it, which it says by not answering,
+  /// is made to forget it by leaving, and the room is joined again once. A join someone `asked`
+  /// for through the UI or the API is remembered, so the room is joined again after a start
+  /// until it is left. Joins of one room go one at a time.
   async fn join_now(
     &self,
     name: &str,
@@ -165,6 +166,7 @@ impl Messaging {
     // the session's name marks us among the members; taken before the join is sent
     let us = client.own_username(&format!("join chat room {name}"))?;
     let leaves = self.rooms.tracker().leaves(name);
+    let private = private || self.joined_private(name).await;
     let data = match self.ask_to_join(name, private).await {
       Ok(data) => data,
       Err(e) => {
@@ -211,9 +213,10 @@ impl Messaging {
     self.users.countries_seen(countries).await;
     let room_name = name.to_string();
     let now = Utc::now();
+    let private = data.private.is_some();
     if let Err(e) = self
       .db
-      .write(move |conn| history::joined(conn, &room_name, now, asked))
+      .write(move |conn| history::joined(conn, &room_name, now, asked, private))
       .await
     {
       warn!(room = name, error = %e, "room join not noted");
@@ -222,6 +225,19 @@ impl Messaging {
     self.push_room(name);
     self.push_rooms().await;
     Ok(Some(room))
+  }
+
+  /// Whether the server last let us into `name` as a private room; a read that fails is taken
+  /// for no.
+  async fn joined_private(&self, name: &str) -> bool {
+    let room = name.to_string();
+    match self.db.read(move |conn| history::private(conn, &room)).await {
+      Ok(private) => private,
+      Err(e) => {
+        warn!(room = name, error = %e, "whether the room is private not read; joined as asked");
+        false
+      }
+    }
   }
 
   /// Sends the join of `name` and waits for its answer. What the server says in the room from
@@ -664,12 +680,16 @@ mod tests {
   use std::sync::Arc;
   use std::sync::atomic::{AtomicBool, Ordering};
 
+  use std::time::Duration;
+
   use serde_json::{Value, json};
+  use soulseek_proto::RoomType;
   use soulseek_proto::server::{
-    CannotJoinRoom, JoinRoomRequest, RoomData, RoomInfo as Listed, RoomList,
+    CannotJoinRoom, JoinRoomRequest, PrivateRoomData, RoomData, RoomInfo as Listed, RoomList,
   };
   use soulseek_proto::{ServerRequest, ServerResponse};
 
+  use super::history;
   use crate::testing::soulseek::{self, Server, US, member};
   use crate::testing::{TRUSTED, TestApp, app};
 
@@ -822,6 +842,93 @@ mod tests {
     join(&app, &mut server, "lobby").await;
     assert_eq!(standing(&app, "lobby").await, Some(false));
     assert_eq!(app.state.state.current().rooms, ["lobby"]);
+  }
+
+  /// The kind of room each join of `room` asks for.
+  fn joins_as(room: &'static str) -> impl Fn(&ServerRequest) -> Option<RoomType> {
+    move |request| match request {
+      ServerRequest::JoinRoom(join) if join.room == room => Some(join.room_type),
+      _ => None,
+    }
+  }
+
+  /// The server's refusal of the join `join` asks for.
+  fn refuse(join: &JoinRoomRequest) -> ServerResponse {
+    ServerResponse::CannotJoinRoom(CannotJoinRoom {
+      room: join.room.clone(),
+    })
+  }
+
+  #[tokio::test]
+  async fn a_private_room_is_joined_as_private_after_a_start_and_a_refusal_leaves_it_not_joined() {
+    let app = soulseek::app(TRUSTED).await;
+    // an earlier run was let into the private room club through the UI
+    app
+      .state
+      .messaging
+      .database()
+      .write(|conn| history::joined(conn, "club", chrono::Utc::now(), true, true))
+      .await
+      .unwrap();
+    // someone else's private room of that name by now
+    let mut server = Server::start(|request| match request {
+      ServerRequest::JoinRoom(join) => vec![refuse(join)],
+      _ => Vec::new(),
+    })
+    .await;
+    server.login(&app).await;
+    let asked = server.received(joins_as("club")).await;
+    assert_eq!(asked, RoomType::Private, "joined as it was last joined");
+    tokio::time::timeout(Duration::from_secs(5), async {
+      while standing(&app, "club").await.is_none() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+      }
+    })
+    .await
+    .expect("the room refused was not kept");
+    // the Join button asks for the room as the UI knows it, a public one
+    let request = Some(json!({ "name": "club" }));
+    let (status, _) = app.call("POST", "/api/v0/rooms/joined", request).await;
+    assert_eq!(status, 403);
+    assert_eq!(server.received(joins_as("club")).await, RoomType::Private);
+    assert_eq!(standing(&app, "club").await, Some(false), "listed, not joined");
+    assert_eq!(app.state.state.current().rooms, Vec::<String>::new());
+  }
+
+  #[tokio::test]
+  async fn a_room_is_joined_again_as_the_server_last_let_us_in() {
+    let app = soulseek::app(TRUSTED).await;
+    let private = Arc::new(AtomicBool::new(true));
+    let answers = private.clone();
+    let mut server = Server::start(move |request| match request {
+      ServerRequest::JoinRoom(join) => {
+        let mut data = RoomData {
+          name: join.room.clone(),
+          users: vec![member(US), member("alice")],
+          private: None,
+        };
+        if answers.load(Ordering::SeqCst) {
+          data.private = Some(PrivateRoomData {
+            owner: "alice".into(),
+            operators: Vec::new(),
+          });
+        }
+        vec![ServerResponse::JoinRoom(data)]
+      }
+      _ => Vec::new(),
+    })
+    .await;
+    server.login(&app).await;
+    // asked for as public, let in as alice's private room
+    join(&app, &mut server, "club").await;
+    // she gave it up since, and the server lets us in as a public room
+    private.store(false, Ordering::SeqCst);
+    server.drop_session(&app).await;
+    server.login(&app).await;
+    assert_eq!(server.received(joins_as("club")).await, RoomType::Private);
+    server.drop_session(&app).await;
+    server.login(&app).await;
+    assert_eq!(server.received(joins_as("club")).await, RoomType::Public);
   }
 
   #[tokio::test]

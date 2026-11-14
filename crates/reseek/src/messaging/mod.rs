@@ -55,7 +55,8 @@ pub static SCHEMA: Schema = db::schema!(
   [
     "0001_initial",
     "0002_sessions_after_loss",
-    "0003_conversation_times"
+    "0003_conversation_times",
+    "0004_room_private"
   ]
 );
 

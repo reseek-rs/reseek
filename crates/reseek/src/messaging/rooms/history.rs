@@ -250,22 +250,32 @@ pub fn notify(conn: &Connection, room: &str) -> rusqlite::Result<NotifyLevel> {
     .map_or(Ok(NotifyLevel::Mentions), notify_level)
 }
 
-/// Notes that we joined `room` at `now`. A room joined because someone asked, `remember`, is
-/// joined again after every start until we leave it; a room joined for any other reason keeps
-/// whether it was remembered.
+/// Notes that we joined `room` at `now`, as a private room when `private`. A room joined
+/// because someone asked, `remember`, is joined again after every start until we leave it; a
+/// room joined for any other reason keeps whether it was remembered.
 pub fn joined(
   conn: &Connection,
   room: &str,
   now: DateTime<Utc>,
   remember: bool,
+  private: bool,
 ) -> rusqlite::Result<()> {
   conn.execute(
-    "INSERT INTO room_state (room_name, joined_at, remembered) VALUES (?1, ?2, ?3) \
+    "INSERT INTO room_state (room_name, joined_at, remembered, private) VALUES (?1, ?2, ?3, ?4) \
      ON CONFLICT (room_name) DO UPDATE SET joined_at = excluded.joined_at, left_at = NULL, \
-     remembered = max(remembered, excluded.remembered)",
-    params![room, timestamp(now), remember],
+     remembered = max(remembered, excluded.remembered), private = excluded.private",
+    params![room, timestamp(now), remember, private],
   )?;
   Ok(())
+}
+
+/// Whether the server last let us into `room` as a private room.
+pub fn private(conn: &Connection, room: &str) -> rusqlite::Result<bool> {
+  let private: Option<bool> = conn
+    .prepare_cached("SELECT private FROM room_state WHERE room_name = ?1")?
+    .query_row([room], |row| row.get(0))
+    .optional()?;
+  Ok(private.unwrap_or(false))
 }
 
 /// When we left `room`, `None` when that is not noted or we joined it again since.

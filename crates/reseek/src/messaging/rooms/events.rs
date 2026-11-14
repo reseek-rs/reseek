@@ -523,7 +523,7 @@ mod tests {
     let messaging = &app.state.messaging;
     messaging
       .database()
-      .write(|conn| history::joined(conn, "club", chrono::Utc::now(), true))
+      .write(|conn| history::joined(conn, "club", chrono::Utc::now(), true, true))
       .await
       .unwrap();
     messaging

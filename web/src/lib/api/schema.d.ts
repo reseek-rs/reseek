@@ -5787,7 +5787,10 @@ export interface components {
              * @example indie
              */
             name: string;
-            /** @description create the room as a private one when it does not exist yet; ignored for a room that does */
+            /**
+             * @description create the room as a private one when it does not exist yet; ignored for a room that does.
+             *     A room the server last let us into as a private one is always asked for as one
+             */
             private?: boolean;
         };
         /** @description A room we are in, as `GET /rooms/joined` lists it and `rooms.list` frames carry it. */

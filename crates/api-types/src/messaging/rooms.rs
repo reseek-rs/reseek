@@ -240,7 +240,8 @@ pub struct JoinRoom {
   /// spaces in a row
   #[schema(example = "indie")]
   pub name: String,
-  /// create the room as a private one when it does not exist yet; ignored for a room that does
+  /// create the room as a private one when it does not exist yet; ignored for a room that does.
+  /// A room the server last let us into as a private one is always asked for as one
   #[serde(default)]
   pub private: bool,
 }
