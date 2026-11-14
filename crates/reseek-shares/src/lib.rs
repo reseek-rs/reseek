@@ -520,7 +520,7 @@ impl Shares {
   pub async fn rebuild_browse_cache(
     &self,
     view: &View,
-  ) -> Result<tokio::fs::File, browse::CacheError> {
+  ) -> Result<browse::Opened, browse::CacheError> {
     // the view is kept in the generation its file is written in, so the file is rewritten
     // with the shares for as long as it can be read
     let file = {
@@ -539,7 +539,7 @@ impl Shares {
     &self,
     view: &View,
     file: &Path,
-  ) -> Result<tokio::fs::File, browse::CacheError> {
+  ) -> Result<browse::Opened, browse::CacheError> {
     let started = Instant::now();
     debug!("Warming browse response cache...");
     let written = self.write_browse_cache(view, file).await?;
@@ -573,7 +573,7 @@ impl Shares {
     &self,
     view: &View,
     written: browse::Unplaced,
-  ) -> Result<(tokio::fs::File, bool), std::io::Error> {
+  ) -> Result<(browse::Opened, bool), std::io::Error> {
     // checked, renamed and opened under one lock, so no later listing is put in place between,
     // and the removal of a forgotten generation's files runs before the check or after the open
     let _placing = self.browse_placing.lock().await;
@@ -595,10 +595,10 @@ impl Shares {
       debug!("browse cache read before the one in place discarded");
       let file = written.file.clone();
       written.discard().await;
-      return Ok((tokio::fs::File::open(&file).await?, false));
+      return Ok((browse::Opened::at(file).await?, false));
     }
     written.place().await?;
-    let opened = tokio::fs::File::open(&written.file).await?;
+    let opened = browse::Opened::at(written.file.clone()).await?;
     let mut views = lock(&self.browse_views);
     // a generation forgotten since the check removes the file once the lock is let go
     if browse::path(&self.cache, view, views.generation) == written.file {

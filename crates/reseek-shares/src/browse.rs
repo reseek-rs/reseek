@@ -83,6 +83,20 @@ pub async fn listing(dbs: &[Arc<Index>], alias: Option<String>) -> Result<Vec<Di
   Ok(merge(listings))
 }
 
+/// A browse cache opened to be sent, which stays readable once its file is removed.
+pub struct Opened {
+  pub file: tokio::fs::File,
+  /// the path it was opened at, which may since name another file or none
+  pub path: PathBuf,
+}
+
+impl Opened {
+  pub async fn at(path: PathBuf) -> std::io::Result<Self> {
+    let file = tokio::fs::File::open(&path).await?;
+    Ok(Self { file, path })
+  }
+}
+
 /// A browse cache written beside the file it is for, still to be renamed over it.
 pub struct Unplaced {
   /// the browse cache file it is for
@@ -103,8 +117,8 @@ impl Unplaced {
   }
 
   /// Opens it to be read, which it stays once it is deleted.
-  pub async fn open(&self) -> std::io::Result<tokio::fs::File> {
-    tokio::fs::File::open(&self.temporary).await
+  pub async fn open(&self) -> std::io::Result<Opened> {
+    Opened::at(self.temporary.clone()).await
   }
 
   /// Deletes it, leaving its file as it is.

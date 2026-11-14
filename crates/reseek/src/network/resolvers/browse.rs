@@ -79,9 +79,9 @@ async fn listing(edges: &Edges, view: &View) -> BrowseReply {
       return BrowseReply::Response(empty_listing());
     }
   };
-  match framed(opened).await {
+  match framed(opened.file).await {
     Ok(frame) => BrowseReply::Encoded(frame),
-    Err(e) => unread(&edges.shares.browse_cache(view), &e),
+    Err(e) => unread(&opened.path, &e),
   }
 }
 

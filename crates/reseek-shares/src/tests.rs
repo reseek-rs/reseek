@@ -355,8 +355,13 @@ async fn a_browse_cache_of_a_forgotten_generation_is_not_left_behind() {
   assert!(!placed);
   assert!(!file.exists());
   assert!(
-    opened.metadata().await.unwrap().len() > 0,
+    opened.file.metadata().await.unwrap().len() > 0,
     "what was written is read"
+  );
+  let opened_name = opened.path.file_name().unwrap().to_string_lossy();
+  assert!(
+    opened_name.starts_with("browse.cache.tmp-"),
+    "named as the unplaced file it opened, not {opened_name}"
   );
 
   // a placement in progress as the generation moves on is put in place, then removed
@@ -400,7 +405,7 @@ async fn a_browse_rebuilt_across_a_visibility_change_gets_its_listing() {
     drop(placing);
   });
   let mut bytes = Vec::new();
-  tokio::io::AsyncReadExt::read_to_end(&mut rebuilt.unwrap(), &mut bytes)
+  tokio::io::AsyncReadExt::read_to_end(&mut rebuilt.unwrap().file, &mut bytes)
     .await
     .unwrap();
   assert!(matches!(
