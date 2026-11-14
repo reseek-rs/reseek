@@ -274,7 +274,7 @@ impl Uploads {
       }
       Err(Refusal::Failed(error)) => return Err(error),
     };
-    self.enqueue(username, filename, located).await?;
+    self.enqueue(username, filename, located, true).await?;
     let total = millis(started);
     enqueue.latency.observe(total);
     let average = enqueue.latency_current.update(total);
@@ -370,7 +370,7 @@ impl Uploads {
       return Ok(Enqueued::Already);
     }
     match self.decide(username, filename, sees).await {
-      Ok(located) => self.enqueue(username, filename, located).await,
+      Ok(located) => self.enqueue(username, filename, located, false).await,
       Err(Refusal::Peer(reason)) => Err(ClientError::DownloadEnqueue(reason.to_string())),
       Err(Refusal::Later) => Err(ClientError::DownloadUnavailable),
       Err(Refusal::Failed(error)) => Err(error),

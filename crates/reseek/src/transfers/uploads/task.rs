@@ -2,8 +2,8 @@
 //! with the queue's slot, the group's speed limit and every state written as it comes, the
 //! progress at most every [`PROGRESS_EVERY`]. How it ended is written, counted and, for a
 //! success, raised as `UploadFileComplete`; whatever the end, the upload leaves the queue. A
-//! file no longer shared to the user fails the upload, and the peer is told it is not shared. A
-//! stop of the daemon leaves the record as it is, for the stop to end.
+//! file no longer shared to the user fails the upload, and a peer that asked for it is told it
+//! is not shared. A stop of the daemon leaves the record as it is, for the stop to end.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -87,8 +87,14 @@ fn relayed(result: &Result<Snapshot, ClientError>, record: &Record) -> (RelayUpl
 
 impl Uploads {
   /// Starts the task of the upload `record` of the file `located`, which stops when `cancel`
-  /// is canceled.
-  pub(super) fn spawn(&self, record: Record, located: Located, cancel: CancellationToken) {
+  /// is canceled; `asked` when its user asked for the file.
+  pub(super) fn spawn(
+    &self,
+    record: Record,
+    located: Located,
+    cancel: CancellationToken,
+    asked: bool,
+  ) {
     let this = self.this();
     let span = info_span!(
       "transfer",
@@ -99,7 +105,7 @@ impl Uploads {
     self.tasks.spawn(
       async move {
         let id = record.id;
-        this.run(record, located, &cancel).await;
+        this.run(record, located, &cancel, asked).await;
         this.forget(id).await;
       }
       .instrument(span),
@@ -107,7 +113,13 @@ impl Uploads {
   }
 
   /// The upload from its start to how it ended, written.
-  async fn run(&self, mut record: Record, located: Located, cancel: &CancellationToken) {
+  async fn run(
+    &self,
+    mut record: Record,
+    located: Located,
+    cancel: &CancellationToken,
+    asked: bool,
+  ) {
     let client = match self.client() {
       Ok(client) => client,
       Err(e) => return self.fail(&mut record, &e, None).await,
@@ -122,6 +134,9 @@ impl Uploads {
       Ok(Locating::NotShared) => {
         let gone = ClientError::NotFound(FILE_GONE.to_string());
         self.fail(&mut record, &gone, None).await;
+        if !asked {
+          return debug!("a file sent unasked is gone; its user, who never asked, is not told");
+        }
         // the answer a request for a file not shared gets, so the peer stops waiting for it; sent
         // on a task of its own, so the upload leaves the queue without waiting for the peer, and
         // given up when the upload is canceled or the daemon stops

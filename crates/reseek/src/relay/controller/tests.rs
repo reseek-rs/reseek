@@ -892,26 +892,19 @@ async fn an_upload_whose_agent_leaves_before_its_task_starts_is_left_to_its_turn
   assert!(exception.contains("logged in to upload"), "{exception}");
 }
 
-/// An upload accepted while its agent had the file, whose agent says the file is gone when the
-/// upload's task asks again, fails, and alice, who asked for it, is told it is not shared, the
-/// answer her request would get now, so she stops waiting for it.
-#[tokio::test]
-async fn an_upload_whose_agent_lost_the_file_before_its_task_starts_is_denied_to_its_peer() {
-  use soulseek_proto::frame::FrameKind;
-  use soulseek_proto::peer::UploadDenied;
+/// A scripted server where alice is online at a listener of the test's, logged in by `app`;
+/// returns the listener, where the daemon's connections to her are read, and the server.
+async fn alice_online(
+  app: &crate::testing::TestApp,
+) -> (tokio::net::TcpListener, crate::testing::soulseek::Server) {
   use soulseek_proto::server::{
     GetPeerAddressResponse, UserStats, UserStatus, WatchUserResponse, WatchedUser,
   };
-  use soulseek_proto::{InitMessage, PeerMessage, ServerRequest, ServerResponse, UserPresence};
+  use soulseek_proto::{ServerRequest, ServerResponse, UserPresence};
 
-  use crate::testing::soulseek::{Server, next_frame};
-
-  let app = crate::testing::soulseek::app(&controller_config("10s")).await;
-  let controller = app.state.relay.controller.clone().unwrap();
-  // alice's address, where the daemon's connection to her is read
   let alice = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
   let port = alice.local_addr().unwrap().port();
-  let server = Server::start(move |request| match request {
+  let server = crate::testing::soulseek::Server::start(move |request| match request {
     ServerRequest::GetPeerAddress(asked) => {
       vec![ServerResponse::GetPeerAddress(GetPeerAddressResponse {
         username: asked.username.clone(),
@@ -936,7 +929,47 @@ async fn an_upload_whose_agent_lost_the_file_before_its_task_starts_is_denied_to
     _ => Vec::new(),
   })
   .await;
-  server.login(&app).await;
+  server.login(app).await;
+  (alice, server)
+}
+
+/// The first peer message the daemon sends on its next connection to the listener `alice`.
+async fn first_told(alice: &tokio::net::TcpListener) -> soulseek_proto::PeerMessage {
+  use crate::testing::soulseek::next_frame;
+  use soulseek_proto::frame::FrameKind;
+  use soulseek_proto::{InitMessage, PeerMessage};
+
+  let within = Duration::from_secs(10);
+  let (mut stream, _) = tokio::time::timeout(within, alice.accept())
+    .await
+    .expect("the daemon connects to alice")
+    .unwrap();
+  let mut buffer = Vec::new();
+  let init = next_frame(&mut stream, &mut buffer, FrameKind::Init).await;
+  assert!(matches!(
+    InitMessage::decode(&init).unwrap(),
+    InitMessage::PeerInit(_)
+  ));
+  let told = tokio::time::timeout(
+    within,
+    next_frame(&mut stream, &mut buffer, FrameKind::Peer),
+  )
+  .await
+  .expect("alice is told");
+  PeerMessage::decode(&told).unwrap()
+}
+
+/// An upload accepted while its agent had the file, whose agent says the file is gone when the
+/// upload's task asks again, fails, and alice, who asked for it, is told it is not shared, the
+/// answer her request would get now, so she stops waiting for it.
+#[tokio::test]
+async fn an_upload_whose_agent_lost_the_file_before_its_task_starts_is_denied_to_its_peer() {
+  use soulseek_proto::PeerMessage;
+  use soulseek_proto::peer::UploadDenied;
+
+  let app = crate::testing::soulseek::app(&controller_config("10s")).await;
+  let controller = app.state.relay.controller.clone().unwrap();
+  let (alice, _server) = alice_online(&app).await;
   let (to_socket, mut from_socket, _served) =
     log_in(&controller, [127, 0, 0, 1].into(), SECRET).await;
   agent_ready(&controller).await;
@@ -956,25 +989,8 @@ async fn an_upload_whose_agent_lost_the_file_before_its_task_starts_is_denied_to
   let starting = file_info_request(&mut from_socket).await;
   to_socket.send(file_info(starting, false, 0)).await.unwrap();
 
-  let within = Duration::from_secs(10);
-  let (mut stream, _) = tokio::time::timeout(within, alice.accept())
-    .await
-    .expect("the daemon connects to alice")
-    .unwrap();
-  let mut buffer = Vec::new();
-  let init = next_frame(&mut stream, &mut buffer, FrameKind::Init).await;
-  assert!(matches!(
-    InitMessage::decode(&init).unwrap(),
-    InitMessage::PeerInit(_)
-  ));
-  let told = tokio::time::timeout(
-    within,
-    next_frame(&mut stream, &mut buffer, FrameKind::Peer),
-  )
-  .await
-  .expect("alice is told");
   assert_eq!(
-    PeerMessage::decode(&told).unwrap(),
+    first_told(&alice).await,
     PeerMessage::UploadDenied(UploadDenied {
       filename: AGENT_FILE.into(),
       reason: "File not shared.".into(),
@@ -990,4 +1006,60 @@ async fn an_upload_whose_agent_lost_the_file_before_its_task_starts_is_denied_to
     Some("File could not be found"),
     "the upload is failed before alice is told"
   );
+}
+
+/// A file we send alice unasked that the agent no longer has when the upload's task starts
+/// fails, and alice, who never asked for it, is told nothing: what she hears first from the
+/// daemon is the browse it is asked for next.
+#[tokio::test]
+async fn a_file_sent_unasked_that_the_agent_lost_before_its_task_starts_ends_quietly() {
+  use soulseek_proto::PeerMessage;
+
+  let app = crate::testing::soulseek::app(&controller_config("10s")).await;
+  let controller = app.state.relay.controller.clone().unwrap();
+  let (alice, _server) = alice_online(&app).await;
+  let (to_socket, mut from_socket, _served) =
+    log_in(&controller, [127, 0, 0, 1].into(), SECRET).await;
+  agent_ready(&controller).await;
+
+  let files = serde_json::json!({ "files": [AGENT_FILE] });
+  let (status, answer) = {
+    let sending = app.call("POST", "/api/v0/transfers/uploads/alice", Some(files));
+    tokio::pin!(sending);
+    let id = tokio::select! {
+      id = file_info_request(&mut from_socket) => id,
+      answer = &mut sending => panic!("answered before the agent: {answer:?}"),
+    };
+    to_socket.send(file_info(id, true, 5)).await.unwrap();
+    sending.await
+  };
+  assert_eq!(
+    (status, &answer["queued"]),
+    (200, &serde_json::json!([AGENT_FILE]))
+  );
+  let starting = file_info_request(&mut from_socket).await;
+  to_socket.send(file_info(starting, false, 0)).await.unwrap();
+  tokio::time::timeout(Duration::from_secs(10), async {
+    loop {
+      let (_, body) = app
+        .call("GET", "/api/v0/transfers/uploads/alice", None)
+        .await;
+      let user: api_types::transfers::UserResponse = serde_json::from_value(body).unwrap();
+      let ended = user.directories.into_iter().flat_map(|d| d.files).next();
+      if ended.and_then(|t| t.exception).as_deref() == Some("File could not be found") {
+        return;
+      }
+      tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+  })
+  .await
+  .expect("the upload ends");
+
+  let browse = app.call("GET", "/api/v0/users/alice/browse", None);
+  tokio::pin!(browse);
+  let first = tokio::select! {
+    first = first_told(&alice) => first,
+    answer = &mut browse => panic!("the browse ended before alice heard anything: {answer:?}"),
+  };
+  assert_eq!(first, PeerMessage::BrowseRequest);
 }

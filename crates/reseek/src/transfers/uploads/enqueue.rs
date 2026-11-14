@@ -126,12 +126,14 @@ impl Uploads {
 
   /// Records the upload of `filename` to `username` from `located`, queues it and starts its
   /// task; an upload of the file to the user queued or running already stands for it. Runs
-  /// under the user's turn, on the task of the request or send that holds it.
+  /// under the user's turn, on the task of the request or send that holds it; `asked` when the
+  /// user asked for the file, rather than our sending it.
   pub(super) async fn enqueue(
     &self,
     username: &str,
     filename: &str,
     located: Located,
+    asked: bool,
   ) -> Result<Enqueued, ClientError> {
     let client = self.client()?;
     let record = Record::upload(username, filename, located.size);
@@ -195,7 +197,7 @@ impl Uploads {
       .live
       .publish(LiveFrame::TransfersAdded(Box::new(record.transfer())));
     self.queue.enqueue(id, username, filename);
-    self.spawn(record, located, cancel);
+    self.spawn(record, located, cancel, asked);
     Ok(Enqueued::Queued)
   }
 }
