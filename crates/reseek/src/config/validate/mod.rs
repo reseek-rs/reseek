@@ -1,6 +1,7 @@
 //! What a configuration must satisfy beyond what its types enforce. Every check runs and every
-//! problem is reported, each under the key it is about; a problem inside a user-keyed entry
-//! is reported under the map's key, with the entry's name in the message.
+//! problem is reported, each under the key it is about; a problem inside an entry of a
+//! user-keyed map is reported under the entry's key, `map.name`, so a runtime override of the
+//! map gives up only that entry.
 
 mod analysis;
 pub(crate) mod blacklist;

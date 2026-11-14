@@ -97,8 +97,8 @@ pub(super) fn check(transfers: &Transfers, case_sensitive: bool, report: &mut Re
     report.check("transfers.groups.blacklisted.cidrs", cidr(range));
   }
   check_order(groups, report);
-  let key = "transfers.groups.user_defined";
   for name in groups.user_defined.keys() {
+    let key = &format!("transfers.groups.user_defined.{name}");
     if BUILTIN_GROUPS.contains(&name.as_str()) {
       report.add(
         key,
@@ -228,12 +228,12 @@ mod tests {
       problems(&transfers),
       [
         (
-          "transfers.groups.user_defined".to_string(),
+          "transfers.groups.user_defined.Close friends".to_string(),
           "The group name 'Close friends' must be 1 to 32 characters from a-z, 0-9, _ and -."
             .to_string()
         ),
         (
-          "transfers.groups.user_defined".to_string(),
+          "transfers.groups.user_defined.buddies".to_string(),
           "The user-defined group 'buddies' collides with a built-in group. Choose a \
            different name."
             .to_string()

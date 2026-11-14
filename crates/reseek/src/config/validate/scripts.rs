@@ -15,10 +15,11 @@ pub(super) fn check(integrations: &Integrations, report: &mut Report) {
 }
 
 fn check_script(name: &str, script: &Script, report: &mut Report) {
-  let on = format!("{KEY}.{name}.on");
+  let entry = &format!("{KEY}.{name}");
+  let on = format!("{entry}.on");
   if script.on.iter().any(|event| event.trim().is_empty()) {
     report.add(
-      KEY,
+      entry,
       format!("The field {on} contains one or more null or empty values."),
     );
   }
@@ -40,7 +41,7 @@ fn check_script(name: &str, script: &Script, report: &mut Report) {
     .any(|event| !event.trim().is_empty() && !known(event))
   {
     report.add(
-      KEY,
+      entry,
       format!(
         "Each element of the field {on} must be one of the following, ignoring case: {}.",
         names.join(", ")
@@ -51,7 +52,7 @@ fn check_script(name: &str, script: &Script, report: &mut Report) {
   let run = &script.run;
   if set(&run.command) == set(&run.executable) {
     report.add(
-      KEY,
+      entry,
       format!(
         "Script '{name}': Exactly one of the fields Command and Executable must be specified. \
          To use the system shell, omit 'executable'. To use another executable, omit 'command' \
@@ -61,7 +62,7 @@ fn check_script(name: &str, script: &Script, report: &mut Report) {
   }
   if set(&run.args) && run.arglist.is_some() {
     report.add(
-      KEY,
+      entry,
       format!(
         "Script '{name}': Only one of the fields Args and Arglist may be specified. Specify \
          'args' to write a single quoted string, or 'arglist' to have reseek handle the quoting."

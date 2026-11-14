@@ -145,30 +145,30 @@ fn check_authentication(auth: &Authentication, report: &mut Report) {
       format!("The field {key} is not an argon2 password hash: {e}"),
     );
   }
-  let key = format!("{prefix}.local.users");
   for (name, user) in &auth.local.users {
+    let entry = format!("{prefix}.local.users.{name}");
     match (&user.password_hash, &user.password) {
       (Some(phc), _) => {
         if let Err(e) = local::parses(phc) {
           report.add(
-            &key,
-            format!("The field {key}.{name}.password_hash is not an argon2 password hash: {e}"),
+            &entry,
+            format!("The field {entry}.password_hash is not an argon2 password hash: {e}"),
           );
         }
       }
       (None, Some(_)) => {}
       (None, None) => report.add(
-        &key,
+        &entry,
         format!("The local account {name} requires password_hash or password."),
       ),
     }
   }
-  let key = format!("{prefix}.api_keys");
   for (name, api_key) in &auth.api_keys {
-    let field = format!("{key}.{name}.key");
-    report.check(&key, required(&field, api_key.key.as_deref()));
-    report.check(&key, length(&field, api_key.key.as_deref(), 16, 255));
-    report.check(&key, cidr_list(&api_key.cidr));
+    let entry = format!("{prefix}.api_keys.{name}");
+    let field = format!("{entry}.key");
+    report.check(&entry, required(&field, api_key.key.as_deref()));
+    report.check(&entry, length(&field, api_key.key.as_deref(), 16, 255));
+    report.check(&entry, cidr_list(&api_key.cidr));
   }
   for range in &auth.trusted_networks {
     report.check(&format!("{prefix}.trusted_networks"), cidr(range));
@@ -176,9 +176,9 @@ fn check_authentication(auth: &Authentication, report: &mut Report) {
   for range in &auth.local.only_from {
     report.check(&format!("{prefix}.local.only_from"), cidr(range));
   }
-  let key = format!("{prefix}.oidc");
   for (name, provider) in &auth.oidc {
-    let field = |f: &str| format!("{key}.{name}.{f}");
+    let key = format!("{prefix}.oidc.{name}");
+    let field = |f: &str| format!("{key}.{f}");
     // the name is a path segment of the login URLs and part of a cookie's name
     if name.is_empty()
       || !name
@@ -259,14 +259,25 @@ mod tests {
         ..ApiKey::default()
       },
     );
-    let messages: Vec<String> = problems(&web).into_iter().map(|(_, m)| m).collect();
+    let found = problems(&web);
+    let found: Vec<(&str, &str)> = found
+      .iter()
+      .map(|(k, m)| (k.as_str(), m.as_str()))
+      .collect();
     assert_eq!(
-      messages,
+      found,
       [
-        "The field web.authentication.api_keys.script.key must contain a value.",
-        "The field web.authentication.api_keys.short.key must be a string with a minimum length \
-         of 16 and a maximum length of 255.",
-      ]
+        (
+          "web.authentication.api_keys.script",
+          "The field web.authentication.api_keys.script.key must contain a value."
+        ),
+        (
+          "web.authentication.api_keys.short",
+          "The field web.authentication.api_keys.short.key must be a string with a minimum \
+           length of 16 and a maximum length of 255."
+        ),
+      ],
+      "each under its entry's key"
     );
   }
 
@@ -286,12 +297,19 @@ mod tests {
         ..crate::config::LocalUser::default()
       },
     );
-    let messages: Vec<String> = problems(&web).into_iter().map(|(_, m)| m).collect();
-    assert_eq!(messages.len(), 2, "{messages:?}");
-    assert!(messages[0].starts_with("The field web.authentication.password_hash is not"));
+    let found = problems(&web);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(
+      found[0]
+        .1
+        .starts_with("The field web.authentication.password_hash is not")
+    );
     assert_eq!(
-      messages[1],
-      "The local account nobody requires password_hash or password."
+      found[1],
+      (
+        "web.authentication.local.users.nobody".to_string(),
+        "The local account nobody requires password_hash or password.".to_string()
+      )
     );
   }
 

@@ -33,10 +33,10 @@ pub(super) fn check(options: &Options, report: &mut Report) {
 }
 
 fn check_agents(relay: &Relay, report: &mut Report) {
-  let key = "relay.agents";
-  let mut names = BTreeMap::new();
+  let mut names: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
   for (name, agent) in &relay.agents {
-    let field = |f: &str| format!("{key}.{name}.{f}");
+    let key = &format!("relay.agents.{name}");
+    let field = |f: &str| format!("{key}.{f}");
     let instance = agent.instance_name.as_deref();
     report.check(key, required(&field("instance_name"), instance));
     report.check(key, length(&field("instance_name"), instance, 1, 255));
@@ -55,14 +55,16 @@ fn check_agents(relay: &Relay, report: &mut Report) {
         .map_err(|(element, e)| format!("CIDR {element} is invalid: {e}.")),
     );
     if let Some(instance) = instance {
-      *names.entry(instance).or_insert(0) += 1;
+      names.entry(instance).or_default().push(name);
     }
   }
-  if names.values().any(|&count| count > 1) {
-    report.add(
-      key,
-      "One or more agent instance names are duplicated. Instance names must be unique.",
-    );
+  for agents in names.values().filter(|agents| agents.len() > 1) {
+    for name in agents {
+      report.add(
+        &format!("relay.agents.{name}"),
+        "One or more agent instance names are duplicated. Instance names must be unique.",
+      );
+    }
   }
 }
 
@@ -94,15 +96,28 @@ mod tests {
         ..RelayAgent::default()
       },
     );
-    let messages: Vec<String> = problems(&options).into_iter().map(|(_, m)| m).collect();
+    let duplicated =
+      "One or more agent instance names are duplicated. Instance names must be unique.";
     assert_eq!(
-      messages,
+      problems(&options),
       [
-        "The field relay.agents.c.instance_name must contain a value.",
-        "The field relay.agents.c.secret must contain a value.",
-        "CIDR ::ffff:0:0/96 is invalid: IPv4 mapped IPv6 addresses are not allowed.",
-        "One or more agent instance names are duplicated. Instance names must be unique.",
+        (
+          "relay.agents.c",
+          "The field relay.agents.c.instance_name must contain a value."
+        ),
+        (
+          "relay.agents.c",
+          "The field relay.agents.c.secret must contain a value."
+        ),
+        (
+          "relay.agents.c",
+          "CIDR ::ffff:0:0/96 is invalid: IPv4 mapped IPv6 addresses are not allowed."
+        ),
+        ("relay.agents.a", duplicated),
+        ("relay.agents.b", duplicated),
       ]
+      .map(|(key, message)| (key.to_string(), message.to_string())),
+      "each agent is named, both of a duplicate"
     );
   }
 }

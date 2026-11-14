@@ -6,7 +6,7 @@
 //! path. Without an alias the alias is the path's last segment. The first `]` ends the alias,
 //! so a path may itself hold `]`.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -124,14 +124,21 @@ pub fn check(shares: &Shares, downloads: &Path, case_sensitive: bool) -> Vec<Inv
       ));
     }
   }
-  let mut listed = HashSet::new();
+  let mut by_case: HashMap<String, Vec<&str>> = HashMap::new();
   for alias in shares.visible_to.keys() {
-    if !listed.insert(alias.to_lowercase()) {
-      report.push(Invalid::new(
-        "shares.visible_to",
-        format!("Share '{alias}' is listed twice in shares.visible_to, in another case. Keep one."),
-      ));
-    }
+    by_case.entry(alias.to_lowercase()).or_default().push(alias);
+  }
+  let mut twice: Vec<&str> = by_case
+    .into_values()
+    .filter(|aliases| aliases.len() > 1)
+    .flatten()
+    .collect();
+  twice.sort_unstable();
+  for alias in twice {
+    report.push(Invalid::new(
+      format!("shares.visible_to.{alias}"),
+      format!("Share '{alias}' is listed twice in shares.visible_to, in another case. Keep one."),
+    ));
   }
   check_cache(&shares.cache, &mut report);
   report
@@ -279,6 +286,21 @@ mod tests {
       problems(&["/a/music", "/a/music/"]).is_empty(),
       "the same entry twice is one share"
     );
+  }
+
+  #[test]
+  fn a_share_seen_by_groups_twice_in_another_case_is_named_both_times() {
+    let mut shares = Shares::default();
+    for alias in ["Music", "music", "films"] {
+      shares
+        .visible_to
+        .insert(alias.into(), vec!["friends".into()]);
+    }
+    let keys: Vec<String> = check(&shares, Path::new("/srv/downloads"), false)
+      .into_iter()
+      .map(|invalid| invalid.key)
+      .collect();
+    assert_eq!(keys, ["shares.visible_to.Music", "shares.visible_to.music"]);
   }
 
   #[test]
