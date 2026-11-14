@@ -279,6 +279,7 @@ pub struct Groups {
   /// Order of the groups, highest first. Privileged users always go first and `default`, which
   /// is everyone, always last. Must list `buddies` and `leechers`; a user-defined group not
   /// listed goes just above `default`, and a name no group has is passed over.
+  #[cascade(order)]
   pub order: Vec<String>,
   /// Everyone: the settings no higher group sets.
   pub default: Group,

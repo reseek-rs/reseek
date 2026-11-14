@@ -160,6 +160,53 @@ mod tests {
     assert_eq!(watcher.current().values.filters.search.request, [filter]);
   }
 
+  #[tokio::test]
+  async fn a_group_order_set_at_run_time_takes_in_a_group_the_file_adds() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = |order: &str, groups: &[&str]| {
+      let groups: String = groups
+        .iter()
+        .map(|name| format!("[transfers.groups.user_defined.{name}]\n"))
+        .collect();
+      format!("[transfers.groups]\norder = {order}\n{groups}")
+    };
+    let watcher = watching(
+      dir.path(),
+      &file(r#"["friends", "buddies", "leechers"]"#, &["friends"]),
+    );
+    let order = "transfers.groups.order";
+    let set = [(
+      order.to_string(),
+      serde_json::json!(["buddies", "friends", "leechers"]),
+    )];
+    watcher
+      .set_overrides(
+        set.into(),
+        Vec::new(),
+        "admin",
+        cascade::Lasts::UntilRemoved,
+        None,
+      )
+      .await
+      .unwrap();
+
+    std::fs::write(
+      dir.path().join("config.toml"),
+      file(
+        r#"["friends", "family", "buddies", "leechers"]"#,
+        &["friends", "family"],
+      ),
+    )
+    .unwrap();
+    watcher.reload().await.unwrap();
+    let current = watcher.current();
+    assert_eq!(
+      current.values.transfers.groups.order,
+      ["buddies", "friends", "family", "leechers"]
+    );
+    assert!(current.overrides.contains_key(order));
+  }
+
   #[test]
   fn a_relative_directory_in_a_file_counts_from_the_file() {
     let dir = tempfile::tempdir().unwrap();
