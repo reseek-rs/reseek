@@ -44,6 +44,14 @@ let
     # crane leaves out nixpkgs' cargo setup hook: its frame pointers are set here, and its switches
     # that would link aws-lc and SQLite from the system stay out
     env.RUSTFLAGS = "-Cforce-frame-pointers=yes";
+    # a dependency's file is named from its crate, such as `tokio-1.48.0/src/lib.rs`, in panic
+    # messages, without the vendored sources' store path
+    preBuild = ''
+      for dir in $(sed -n 's/^directory = "\(.*\)"$/\1/p' "$cargoVendorDir/config.toml"); do
+        RUSTFLAGS="''${RUSTFLAGS:-} --remap-path-prefix=$dir="
+      done
+      export RUSTFLAGS
+    '';
     # `just test` runs the test suite
     doCheck = false;
   };

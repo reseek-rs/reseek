@@ -20,7 +20,7 @@ let
   # pointers, which nixpkgs' cargo setup hook sets only for the build machine's own target
   args = {
     pname = "reseek-${target}";
-    inherit (reseek) version src;
+    inherit (reseek) version src preBuild;
     strictDeps = true;
     nativeBuildInputs = [
       # the dependency list in the binaries, as in package.nix
