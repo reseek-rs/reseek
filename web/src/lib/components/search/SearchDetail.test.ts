@@ -544,6 +544,23 @@ describe("search results", () => {
     ]);
   });
 
+  it("download a ticked folder in the folder, as the browse page does, though it holds only files", async () => {
+    const flat = response("alice", 1, [
+      sharedFile("@@alice\\Music\\Flat\\1.flac"),
+      sharedFile("@@alice\\Music\\Flat\\2.flac")
+    ]);
+    const net = await writable([flat]);
+    lineOf("@@alice\\Music\\Flat")
+      .querySelector<HTMLButtonElement>('button[aria-label^="Select "]')!
+      .click();
+    flushSync();
+    [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((b) => b.textContent?.trim() === "Download")!
+      .click();
+    await flushFaked();
+    expect(folders(net)).toEqual([["@@alice\\Music\\Flat"]]);
+  });
+
   it("download a user's results and a single file loose, where the pattern puts each", async () => {
     const spread = response("bob", 1, [
       sharedFile("@@bob\\Music\\Rock\\A\\01.flac"),

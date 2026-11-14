@@ -3,7 +3,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Schemas } from "#lib/api/client.js";
 import { fakeNetwork } from "#lib/testing/network.js";
 
-import { downloadFolderPlan, downloadPlan, enqueueJob, enqueueSelection } from "./downloads";
+import {
+  downloadFolderPlan,
+  downloadPlan,
+  enqueueJob,
+  enqueueLoose,
+  enqueueSelection
+} from "./downloads";
 
 const file = (filename: string, size = 10): Schemas["File"] => ({
   filename,
@@ -126,28 +132,71 @@ describe("downloading a selection", () => {
   });
 });
 
-describe("downloading loose files of several users", () => {
+describe("downloading search results of several users", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("sends each user's files in no folder, so each goes where the pattern puts it", async () => {
+  /** The groups an enqueue of `picked` sends, as user, folder, search and files */
+  const sent = async (
+    picked: { username: string; file: Schemas["File"] }[],
+    whole?: (username: string, folder: string) => boolean
+  ) => {
     const net = fakeNetwork(() => ({ id: "j", groups: [] }));
-    await enqueueSelection(
-      [
+    await enqueueSelection(picked, "s1", whole);
+    const body = net.requests[0].body as {
+      groups: {
+        username: string;
+        folder: string | null;
+        searchId: string;
+        files: { filename: string }[];
+      }[];
+    };
+    return body.groups.map((g) => [
+      g.username,
+      g.folder,
+      g.searchId,
+      g.files.map((f) => f.filename)
+    ]);
+  };
+
+  it("sends each user's selection as the browse page plans it, a share a top", async () => {
+    expect(
+      await sent([
         { username: "alice", file: file("@@a\\Music\\Rock\\A\\01.flac") },
         { username: "bob", file: file("/home/bob/Album/01.flac") },
+        { username: "alice", file: file("@@a\\Music\\Jazz\\B\\01.flac") }
+      ])
+    ).toEqual([
+      // alice's files are in folders below the deepest holding them, so they keep their tree
+      [
+        "alice",
+        "@@a\\Music",
+        "s1",
+        ["@@a\\Music\\Rock\\A\\01.flac", "@@a\\Music\\Jazz\\B\\01.flac"]
+      ],
+      ["bob", null, "s1", ["/home/bob/Album/01.flac"]]
+    ]);
+  });
+
+  it("sends a folder ticked whole in it, and loose files where the pattern puts them", async () => {
+    const album = ["@@a\\Music\\A\\1.flac", "@@a\\Music\\A\\2.flac"];
+    const picked = album.map((f) => ({ username: "alice", file: file(f) }));
+    const whole = (username: string, folder: string) =>
+      username === "alice" && folder === "@@a\\Music\\A";
+    expect(await sent(picked, whole)).toEqual([["alice", "@@a\\Music\\A", "s1", album]]);
+    expect(await sent(picked)).toEqual([["alice", null, "s1", album]]);
+  });
+
+  it("sends files asked for loose in no folder, so each goes where the pattern puts it", async () => {
+    const net = fakeNetwork(() => ({ id: "j", groups: [] }));
+    await enqueueLoose(
+      [
+        { username: "alice", file: file("@@a\\Music\\Rock\\A\\01.flac") },
         { username: "alice", file: file("@@a\\Music\\Jazz\\B\\01.flac") }
       ],
       "s1"
     );
-    const body = net.requests[0].body as {
-      groups: { username: string; folder?: string | null; searchId: string; files: unknown[] }[];
-    };
-    expect(
-      body.groups.map((g) => [g.username, g.folder ?? null, g.searchId, g.files.length])
-    ).toEqual([
-      ["alice", null, "s1", 2],
-      ["bob", null, "s1", 1]
-    ]);
+    const body = net.requests[0].body as { groups: { folder: string | null }[] };
+    expect(body.groups.map((g) => g.folder)).toEqual([null]);
   });
 });
 

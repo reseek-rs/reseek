@@ -5,7 +5,13 @@ import { plural } from "#lib/format.js";
 import { keepCurrent } from "#lib/live/keep.svelte.js";
 import { call } from "#lib/request.js";
 import { downloads, fileKey } from "#lib/transfers/transfers.svelte.js";
-import { commonFolder, parentOf, type Separator } from "#lib/tree/folders.js";
+import {
+  commonFolder,
+  foldersOf,
+  parentOf,
+  type Separator,
+  separatorOf
+} from "#lib/tree/folders.js";
 
 export type EnqueueItem = Schemas["EnqueueDownloadFile"];
 
@@ -236,6 +242,15 @@ export const downloadPlan = (
   }));
 };
 
+/** The groups of a plan for one user's files as requests, found by the search `searchId` */
+const requestsOf = (username: string, plan: DownloadGroup[], searchId?: string): Request[] =>
+  plan.map((group) => ({
+    username,
+    files: group.files.map((f) => asItem(f)),
+    searchId,
+    folder: group.folder ?? undefined
+  }));
+
 /**
  * Enqueues the groups of a plan for one user's files as one download job, found by the search
  * `searchId` when they came from one
@@ -244,35 +259,51 @@ export const enqueuePlan = (
   username: string,
   plan: DownloadGroup[],
   searchId?: string
-): Promise<Enqueued> =>
-  enqueueJob(
-    plan.map((group) => ({
-      username,
-      files: group.files.map((f) => asItem(f)),
-      searchId,
-      folder: group.folder ?? undefined
-    }))
-  );
+): Promise<Enqueued> => enqueueJob(requestsOf(username, plan, searchId));
+
+/** The files `picked`, of several users, by user in the order each first appears */
+const byUser = (picked: { username: string; file: Schemas["File"] }[]) => {
+  const users = new Map<string, Schemas["File"][]>();
+  for (const { username, file } of picked) {
+    const listed = users.get(username);
+    if (listed) listed.push(file);
+    else users.set(username, [file]);
+  }
+  return [...users];
+};
 
 /**
- * Enqueues loose files of several users, such as search results, as one download job, a group
- * per user: each file goes where the download pattern puts it
+ * Enqueues files of several users, such as all of a user's search results, as one download job, a
+ * group per user: each file goes where the download pattern puts it
  */
-export const enqueueSelection = (
+export const enqueueLoose = (
   picked: { username: string; file: Schemas["File"] }[],
   searchId?: string
-): Promise<Enqueued> => {
-  const byUser = new Map<string, Schemas["File"][]>();
-  for (const { username, file } of picked) {
-    const listed = byUser.get(username);
-    if (listed) listed.push(file);
-    else byUser.set(username, [file]);
-  }
-  return enqueueJob(
-    [...byUser].map(([username, files]) => ({
+): Promise<Enqueued> =>
+  enqueueJob(
+    byUser(picked).map(([username, files]) => ({
       username,
       files: files.map((f) => asItem(f)),
       searchId
     }))
   );
-};
+
+/**
+ * Enqueues files picked among several users', such as ticked search results, as one download
+ * job: each user's as `downloadPlan` groups them, every share of theirs a top, so picked folders
+ * keep their tree as on the browse page. `whole` says whether a folder line of a user's was
+ * ticked whole
+ */
+export const enqueueSelection = (
+  picked: { username: string; file: Schemas["File"] }[],
+  searchId?: string,
+  whole?: (username: string, folder: string) => boolean
+): Promise<Enqueued> =>
+  enqueueJob(
+    byUser(picked).flatMap(([username, files]) => {
+      const separator = separatorOf(files[0].filename);
+      const shareOf = (path: string) => foldersOf(path, separator)[0] ?? "";
+      const ticked = whole && ((folder: string) => whole(username, folder));
+      return requestsOf(username, downloadPlan(files, shareOf, separator, ticked), searchId);
+    })
+  );

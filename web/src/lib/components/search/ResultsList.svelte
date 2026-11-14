@@ -22,6 +22,7 @@
   import {
     downloadFolderPlan,
     type Enqueued,
+    enqueueLoose,
     enqueuePlan,
     enqueueSelection,
     followDownloads
@@ -132,12 +133,11 @@
     }
   });
 
-  /** Enqueues rows as one job that keeps each user's folders */
-  const download = (list: ResultRow[]): Promise<Enqueued> =>
-    enqueueSelection(
-      list.map((r) => ({ username: r.username, file: r.file })),
-      searchId
-    );
+  const owned = (list: ResultRow[]) => list.map((r) => ({ username: r.username, file: r.file }));
+  /** Enqueues rows as one job, each file where the download pattern puts it */
+  const download = (list: ResultRow[]): Promise<Enqueued> => enqueueLoose(owned(list), searchId);
+  /** Enqueues the ticked rows as one job planned as the browse page plans a selection */
+  const downloadTicked = (): Promise<Enqueued> => enqueueSelection(owned(chosen), searchId);
   const tell = (outcome: Enqueued) =>
     toast(outcome.text, outcome.kind === "done" ? "info" : "error");
   /** Downloads rows and says what came of it in a toast */
@@ -214,7 +214,9 @@
   oneLine
   framed={false}
   class="tabular-nums"
-  onopen={canDownload ? (r) => void downloadNow(selected.size > 1 ? chosen : [r]) : undefined}
+  onopen={canDownload
+    ? (r) => void (selected.size > 1 ? downloadTicked().then(tell) : downloadNow([r]))
+    : undefined}
   onmiddleclick={canDownload ? (r) => void downloadNow([r]) : undefined}
   inspect={(r) => inspect(pick(r))}>
   {#snippet header(all)}
@@ -301,6 +303,6 @@
 {#if chosen.length}
   <SelectionBar
     files={chosen.map((r) => r.file)}
-    ondownload={canDownload ? () => download(chosen) : undefined}
+    ondownload={canDownload ? downloadTicked : undefined}
     onclear={() => selected.clear()} />
 {/if}

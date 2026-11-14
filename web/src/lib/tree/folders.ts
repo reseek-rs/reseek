@@ -111,7 +111,7 @@ type Trie<T> = {
  * folder per part. Separators at the start stay with the first part, so a Unix path's first
  * folder is "/home" and the root itself "/". A bare file name, which some peers send, is in none
  */
-const foldersOf = (path: string, separator: Separator): string[] => {
+export const foldersOf = (path: string, separator: Separator): string[] => {
   const cut = path.lastIndexOf(separator);
   if (cut === -1) return [];
   let start = 0;

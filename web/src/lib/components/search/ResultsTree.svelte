@@ -28,6 +28,7 @@
   import {
     downloadFolderPlan,
     type Enqueued,
+    enqueueLoose,
     enqueuePlan,
     enqueueSelection,
     followDownloads
@@ -41,6 +42,7 @@
   import {
     type FolderNode,
     itemsUnder,
+    lineTicked,
     scopedKey,
     separatorOf,
     tickedCounts,
@@ -166,11 +168,32 @@
     ontick: (yes: boolean) => tick(node, yes)
   });
 
-  /** Downloads files as one job that keeps each user's folders, and says what came of it */
-  const download = (files: Item[]): Promise<Enqueued> =>
-    enqueueSelection(
-      files.filter((f) => !f.locked).map((f) => ({ username: f.owner, file: f })),
-      searchId
+  /** each folder line by its user and path, for whether a selection ticked it whole */
+  const folderLines = $derived.by(() => {
+    const byPath = new Map<string, FolderNode<Item>>();
+    for (const root of roots) {
+      const stack = [...root.children];
+      while (stack.length) {
+        const node = stack.pop()!;
+        byPath.set(scopedKey(root.path, node.path), node);
+        stack.push(...node.children);
+      }
+    }
+    return byPath;
+  });
+  const tickOf = (node: FolderNode<Item>) => ({ on: ticked.get(node.key) ?? 0, of: node.unlocked });
+
+  const owned = (files: Item[]) =>
+    files.filter((f) => !f.locked).map((f) => ({ username: f.owner, file: f }));
+  /** Downloads files as one job, each where the download pattern puts it */
+  const download = (files: Item[]): Promise<Enqueued> => enqueueLoose(owned(files), searchId);
+  /**
+   * Downloads the ticked files as one job planned as the browse page plans a selection: ticked
+   * and nested folders keep their tree
+   */
+  const downloadTicked = (): Promise<Enqueued> =>
+    enqueueSelection(owned(chosen), searchId, (username, folder) =>
+      lineTicked(folderLines, tickOf, scopedKey(username, folder))
     );
   const tell = (outcome: Enqueued) =>
     toast(outcome.text, outcome.kind === "done" ? "info" : "error");
@@ -365,6 +388,6 @@
 {#if canWrite && chosen.length}
   <SelectionBar
     files={chosen}
-    ondownload={connected ? () => download(chosen) : undefined}
+    ondownload={connected ? downloadTicked : undefined}
     onclear={() => selected.clear()} />
 {/if}
