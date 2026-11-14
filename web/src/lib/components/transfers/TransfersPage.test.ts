@@ -34,8 +34,7 @@ describe("the transfers table", () => {
   let component: ReturnType<typeof mount> | null = null;
   let hostPane: ReturnType<typeof mount> | null = null;
   let listing: Transfer[] = [];
-  // a test that fakes scrolling puts these back here, which runs even when it times out
-  const scrollTop = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop")!;
+  // a test that fakes the scroll height puts it back here, which runs even when it times out
   const scrollHeight = Object.getOwnPropertyDescriptor(Element.prototype, "scrollHeight")!;
 
   beforeEach(() => {
@@ -43,7 +42,6 @@ describe("the transfers table", () => {
     Object.assign(views.download, defaults("download"), { layout: "list" });
   });
   afterEach(() => {
-    Object.defineProperty(Element.prototype, "scrollTop", scrollTop);
     Object.defineProperty(Element.prototype, "scrollHeight", scrollHeight);
     remember("transfers.download", null);
     session.principal = null;
@@ -163,19 +161,9 @@ describe("the transfers table", () => {
   });
 
   it("comes back on the row it was left at, where rows arrived above it meanwhile", async () => {
-    // jsdom keeps no scroll offset and lays out no content: each box keeps the offset it is
-    // given, over content taller than any offset here
-    const offsets = new WeakMap<Element, number>();
+    // jsdom lays out no content, and at a scroll height of 0 a scroll up reads as the browser
+    // holding the offset within shorter content, so boxes get content taller than any offset here
     Object.defineProperty(Element.prototype, "scrollHeight", { configurable: true, value: 1e5 });
-    Object.defineProperty(Element.prototype, "scrollTop", {
-      configurable: true,
-      get(this: Element) {
-        return offsets.get(this) ?? 0;
-      },
-      set(this: Element, top: number) {
-        offsets.set(this, top);
-      }
-    });
     const name = (n: number) => `x\\${n + 100}.flac`;
     listing = Array.from({ length: 40 }, (_, n) => transfer({ filename: name(n * 2) }));
     await start();
