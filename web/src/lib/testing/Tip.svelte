@@ -5,10 +5,11 @@
   let {
     text,
     dense = false,
-    dormant = false
-  }: { text?: string; dense?: boolean; dormant?: boolean } = $props();
+    dormant = false,
+    clipped = false
+  }: { text?: string; dense?: boolean; dormant?: boolean; clipped?: boolean } = $props();
 </script>
 
-<Tooltip {text} {dense} {dormant}>
+<Tooltip {text} {dense} {dormant} {clipped}>
   {#snippet child({ props })}<span {...props} role="note">tip</span>{/snippet}
 </Tooltip>
