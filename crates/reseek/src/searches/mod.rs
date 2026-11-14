@@ -330,7 +330,6 @@ impl Searches {
         None,
       ),
       ClientError::InvalidArgument(message) => ApiError::bad_request(message),
-      error @ ClientError::DuplicateToken(_) => ApiError::bad_request(error.to_string()),
       other => ApiError::internal(other),
     }
   }
@@ -352,7 +351,8 @@ impl SearchService for Searches {
     let record = Search {
       id,
       search_text: normalized(&request.search_text),
-      token: client.next_token(),
+      // the client draws the token as it takes the search, clear of its connection tickets
+      token: 0,
       scope: scope.clone(),
       state: SearchState::Requested,
       started_at: Utc::now(),
@@ -380,12 +380,12 @@ impl SearchService for Searches {
     let (accepted, acceptance) = oneshot::channel();
     let running = Arc::new(Running::new(record.clone(), accepted));
     self.running().insert(id, running.clone());
-    let reported = running.clone();
+    let (reported, started) = (running.clone(), running.clone());
     let state_changed: SearchStateChanged =
-      Arc::new(move |_, snapshot| reported.state_changed(snapshot.state));
+      Arc::new(move |_, snapshot| reported.state_changed(snapshot.state, snapshot.token));
     let options = options(&request, search_timeout, state_changed);
     let scope = client_scope(&scope);
-    let (text, token) = (record.search_text.clone(), record.token);
+    let text = record.search_text.clone();
     let this = self.this();
     let span = info_span!("search", %id);
     self.tasks.spawn(
@@ -395,7 +395,7 @@ impl SearchService for Searches {
         let search = client.search_with(
           &text,
           scope,
-          Some(token),
+          None,
           options,
           move |response| taker.response_taken(response, &live, &users),
           &running.cancel,
@@ -408,10 +408,15 @@ impl SearchService for Searches {
 
     match acceptance.await {
       Ok(Ok(())) => {
-        let record = self
-          .running()
-          .get(&id)
-          .map_or(record, |running| running.record());
+        let record = started.record();
+        let token = record.token;
+        if let Err(e) = self
+          .db
+          .write(move |conn| store::set_token(conn, id, token))
+          .await
+        {
+          warn!(error = %e, "search token not written");
+        }
         self.live.publish(LiveFrame::SearchUpdate(record.clone()));
         Ok(record)
       }
@@ -582,6 +587,33 @@ mod tests {
     assert_eq!(app.send(delete()).await.status, 404);
     let gone = request("PUT", &format!("/api/v0/searches/{id}"), None);
     assert_eq!(app.send(gone).await.status, 404);
+  }
+
+  #[tokio::test]
+  async fn a_search_keeps_the_token_the_client_sends_it_under() {
+    use crate::testing::soulseek::{self, Server};
+    use soulseek_proto::ServerRequest;
+
+    let app = soulseek::app(TRUSTED).await;
+    let mut server = Server::silent().await;
+    server.login(&app).await;
+    let start = json!({ "searchText": "pink floyd", "searchTimeout": 60_000 });
+    let started = app
+      .send(request("POST", "/api/v0/searches", Some(start)))
+      .await;
+    assert_eq!(started.status, 200);
+    let sent = server
+      .received(|request| match request {
+        ServerRequest::FileSearch(search) => Some(search.token),
+        _ => None,
+      })
+      .await;
+    assert_eq!(started.json()["token"], sent);
+    let id = started.json()["id"].as_str().unwrap().to_owned();
+    let stored = app
+      .send(request("GET", &format!("/api/v0/searches/{id}"), None))
+      .await;
+    assert_eq!(stored.json()["token"], sent);
   }
 
   #[tokio::test]
