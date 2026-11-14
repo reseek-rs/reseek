@@ -16,7 +16,7 @@ use uuid::Uuid;
 use super::categories::UNFINISHED;
 use super::downloads::{FileRequest, Group};
 use super::state::column;
-use super::{ASKED_ORDER, COLUMNS, Record, direction_at, direction_text};
+use super::{ASKED_ORDER, COLUMNS, Record, direction_at, direction_text, readable};
 use crate::db::{Database, DbError, timestamp};
 
 /// Why a transfer left unfinished at the last stop ended.
@@ -82,22 +82,28 @@ pub async fn end_unfinished(db: &Database) -> Result<usize, DbError> {
 /// The downloads marked resumable that were not removed since, as files to enqueue grouped by
 /// job, then by user, destination and search, each keeping its place in the local queue. Their
 /// marks stay until each file was tried, [`clear_resumable`]; the marks of downloads that can no
-/// longer be resumed, removed ones and ones without a job, which are logged, are cleared here.
+/// longer be resumed, removed ones and ones without a job or with a row that cannot be read,
+/// which are logged, are cleared here.
 pub async fn take_resumable(db: &Database) -> Result<Resumable, DbError> {
   db.write(move |conn| {
     let tx = conn.transaction()?;
     let mut jobs = Resumable::new();
+    let mut unreadable = Vec::new();
     {
       let mut select = tx.prepare(&format!(
-        "SELECT {COLUMNS} FROM Transfers WHERE Resumable = 1 AND Direction = ?1 AND Removed = 0 \
-         ORDER BY {ASKED_ORDER}"
+        "SELECT {COLUMNS}, rowid FROM Transfers WHERE Resumable = 1 AND Direction = ?1 \
+         AND Removed = 0 ORDER BY {ASKED_ORDER}"
       ))?;
       let records = select.query_map(
         params![direction_text(TransferDirection::Download)],
-        Record::read,
+        |row| Ok((row.get::<_, i64>("rowid")?, readable(row, Record::read)?)),
       )?;
       for record in records {
-        let record = record?;
+        let (rowid, record) = record?;
+        let Some(record) = record else {
+          unreadable.push(rowid);
+          continue;
+        };
         let Some(job) = record.job_id else {
           warn!(id = %record.id, username = record.username, "interrupted download without a job not resumed");
           continue;
@@ -120,6 +126,9 @@ pub async fn take_resumable(db: &Database) -> Result<Resumable, DbError> {
       "UPDATE Transfers SET Resumable = 0 WHERE Resumable = 1 AND (Removed = 1 OR JobId IS NULL)",
       [],
     )?;
+    for rowid in unreadable {
+      tx.execute("UPDATE Transfers SET Resumable = 0 WHERE rowid = ?1", [rowid])?;
+    }
     tx.commit()?;
     Ok(jobs)
   })
@@ -343,6 +352,46 @@ mod tests {
       .await
       .unwrap();
     assert_eq!(marks, 0);
+  }
+
+  #[tokio::test]
+  async fn a_marked_download_that_cannot_be_read_is_left_out_and_unmarked() {
+    let db = transfers().await;
+    let job = Uuid::new_v4();
+    let kept = Record {
+      job_id: Some(job),
+      ..Record::download("alice", "a\\1.flac", 1)
+    };
+    let odd = Record {
+      job_id: Some(job),
+      ..Record::download("alice", "a\\2.flac", 1)
+    };
+    let odd_id = odd.id.to_string();
+    db.write(move |conn| {
+      store::insert(conn, &kept)?;
+      store::insert(conn, &odd)
+    })
+    .await
+    .unwrap();
+    end_unfinished(&db).await.unwrap();
+    // a state no build writes
+    db.write(move |conn| conn.execute("UPDATE Transfers SET State = 2 WHERE Id = ?1", [odd_id]))
+      .await
+      .unwrap();
+    let taken: Vec<String> = take_resumable(&db)
+      .await
+      .unwrap()
+      .into_values()
+      .flatten()
+      .flat_map(|group| group.files)
+      .map(|file| file.filename)
+      .collect();
+    assert_eq!(taken, ["a\\1.flac"]);
+    clear_resumable(&db, job, "alice", taken).await.unwrap();
+    assert!(
+      !any_resumable(&db).await.unwrap(),
+      "the unreadable row waits for no login"
+    );
   }
 
   #[tokio::test]
