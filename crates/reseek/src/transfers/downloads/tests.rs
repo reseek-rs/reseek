@@ -1669,7 +1669,11 @@ async fn idle_users_get_no_more_requests_than_there_are_slots() {
 async fn a_silent_peer_holds_the_asking_slot_for_the_window_only() {
   use super::attempt::SETTLED_AFTER;
 
-  let config = format!("[transfers.download]\nslots = 1\n{TRUSTED}");
+  // peer connections stay open well past the window, so bob is asked on the one his enqueue
+  // made
+  let config = format!(
+    "[transfers.download]\nslots = 1\n[soulseek.connection.timeout]\ninactivity = \"60s\"\n{TRUSTED}"
+  );
   let app = crate::testing::soulseek::app(&config).await;
   let peers = Peers::start(&app, &["alice", "bob"]).await;
   let (alices, bobs) = ("@@a\\1.flac", "@@b\\1.flac");
@@ -1680,18 +1684,11 @@ async fn a_silent_peer_holds_the_asking_slot_for_the_window_only() {
   enqueued(&app, "bob", bobs).await;
   let mut bob = peers.connected("bob").await;
   let margin = std::time::Duration::from_secs(2);
-  // the connection the enqueue made closes once idle as long as the daemon lets peer
-  // connections be, and the daemon then asks on a new one
-  let (quiet, _) = bob.quiet_for(SETTLED_AFTER - margin).await;
+  let until = |at: tokio::time::Instant| at.saturating_duration_since(tokio::time::Instant::now());
+  let (quiet, closed) = bob.quiet_for(until(asked + SETTLED_AFTER - margin)).await;
   assert!(quiet, "asked within the window");
-  let left =
-    (asked + SETTLED_AFTER + margin).saturating_duration_since(tokio::time::Instant::now());
-  let request = match bob.quiet_for(left).await {
-    (false, _) => bob.next_within(left).await,
-    (true, true) => peers.connected("bob").await.next_within(left).await,
-    (true, false) => None,
-  };
-  match request {
+  assert!(!closed, "the connection closed in the window");
+  match bob.next_within(until(asked + SETTLED_AFTER + margin)).await {
     Some(soulseek_proto::PeerMessage::QueueDownload(request)) => {
       assert_eq!(request.filename.as_str(), bobs);
     }
@@ -1702,6 +1699,12 @@ async fn a_silent_peer_holds_the_asking_slot_for_the_window_only() {
     after <= SETTLED_AFTER + margin,
     "asked {after:?} after the first, past the window"
   );
+  let second = tokio::time::timeout(
+    std::time::Duration::from_millis(200),
+    peers.listeners["bob"].accept(),
+  )
+  .await;
+  assert!(second.is_err(), "bob was reached on a second connection");
 }
 
 /// A user the server says does not exist ends their downloads, failed with a reason that says
