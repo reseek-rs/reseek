@@ -88,7 +88,8 @@ describe("the message list", () => {
   });
 
   it("reads page after page to the start while the scrollbar is held at the top", async () => {
-    const { pages } = history(250);
+    // the newest page and two older ones, the last of one message
+    const { pages } = history(2 * PAGE + 1);
     // jsdom measures every line as 0 high, which would draw them all
     vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(24);
     const { pane, box } = await open();
@@ -96,7 +97,7 @@ describe("the message list", () => {
     box.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 305 }));
     await pullToTop(box);
     expect(pane.hasMore).toBe(false);
-    expect(pages.filter((p) => p !== null)).toEqual([151, 51]);
+    expect(pages.filter((p) => p !== null)).toEqual([102, 2]);
   });
 
   it("opens where a message no longer stored was, and says so once", async () => {
