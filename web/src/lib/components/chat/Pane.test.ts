@@ -231,7 +231,7 @@ describe("a chat pane", () => {
     const newest = {
       messages: [roomMessage(10), roomMessage(11)],
       hasMore: true,
-      gaps: [{ from: "2026-10-26T10:10:30Z", to: "2026-10-26T10:10:50Z" }]
+      gaps: [{ from: "2026-10-26T10:10:30Z", to: "2026-10-26T10:10:50Z", reason: "disconnected" }]
     };
     const net = indie((url) => (url.searchParams.get("before") ? older : newest));
     live.start();
@@ -256,11 +256,15 @@ describe("a chat pane", () => {
     expect(document.body.textContent).toContain("The start of the stored history");
 
     net.frame("rooms.message", { roomName: "indie", message: roomMessage(12) });
-    net.frame("rooms.gap", { roomName: "indie", gap: { from: "2026-10-26T10:13:00Z", to: null } });
+    net.frame("rooms.gap", {
+      roomName: "indie",
+      gap: { from: "2026-10-26T10:13:00Z", to: null, reason: "fellBehind" }
+    });
     await flush();
     expect(ids()).toEqual(["1", "10", "11", "12"]);
     expect(row(10)).toBe(ten);
     expect(document.querySelectorAll("[role=note]")).toHaveLength(2);
+    expect(document.body.textContent).toContain("(reseek fell behind)");
   });
 
   it("shows a room the server refused as not joined, its history read, and joins it again", async () => {
@@ -304,7 +308,10 @@ describe("a chat pane", () => {
     await flush();
     expect(ids()).toEqual(["1"]);
 
-    net.frame("rooms.gap", { roomName: "jazz", gap: { from: "2026-10-26T10:13:00Z", to: null } });
+    net.frame("rooms.gap", {
+      roomName: "jazz",
+      gap: { from: "2026-10-26T10:13:00Z", to: null, reason: "disconnected" }
+    });
     await flush();
     expect(document.querySelectorAll("[role=note]")).toHaveLength(0);
   });

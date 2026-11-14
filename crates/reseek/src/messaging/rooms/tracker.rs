@@ -234,6 +234,23 @@ impl Tracker {
     }
   }
 
+  /// We left `name` to join it again at once, unless it was left since `leaves` was read: it is
+  /// not joined, and nobody is in it until the join's answer. False when it was left or is not
+  /// tracked.
+  pub fn out_of(&mut self, name: &str, leaves: u64) -> bool {
+    if self.leaves(name) != leaves {
+      return false;
+    }
+    match self.get_mut(name) {
+      Some(room) => {
+        room.joined = false;
+        room.users.clear();
+        true
+      }
+      None => false,
+    }
+  }
+
   /// We left `name`; false when it was not tracked.
   pub fn left(&mut self, name: &str) -> bool {
     *self.leaves.entry(name.to_string()).or_default() += 1;

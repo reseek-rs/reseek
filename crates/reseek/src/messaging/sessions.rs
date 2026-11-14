@@ -5,7 +5,7 @@
 //! short it is, since messages went missing in it.
 
 use api_types::live::LiveFrame;
-use api_types::messaging::rooms::{HistoryGap, RoomHistoryGap};
+use api_types::messaging::rooms::{HistoryGap, HistoryGapReason, RoomHistoryGap};
 use chrono::{DateTime, Utc};
 use reseek_shares::lock;
 use rusqlite::{Connection, Row, params};
@@ -72,7 +72,12 @@ pub fn gaps(sessions: &[Session]) -> Vec<HistoryGap> {
     if !lost && to.is_some_and(|to| to - from < SHORTEST) {
       continue;
     }
-    gaps.push(HistoryGap { from, to });
+    let reason = if lost {
+      HistoryGapReason::FellBehind
+    } else {
+      HistoryGapReason::Disconnected
+    };
+    gaps.push(HistoryGap { from, to, reason });
   }
   gaps
 }
@@ -163,8 +168,9 @@ impl Messaging {
   /// Client events were lost on their way here after the one handled at `from`, so the room
   /// messages among them are in no history: the session running is ended there and a new one
   /// begins now, the gap between them is pushed to the rooms we are in, and history pages list
-  /// it from now on. Nothing is marked while we are not logged in, as the next login's gap
-  /// covers the loss.
+  /// it from now on. The rooms are then joined again, to read what else was lost in them.
+  /// Nothing is marked while we are not logged in, as the next login's gap covers the loss and
+  /// its joins read the rooms.
   pub(super) async fn events_missed(&self, from: DateTime<Utc>) {
     let Some(id) = *lock(&self.session) else {
       return debug!("client events lost while not logged in; the next login's gap covers them");
@@ -192,8 +198,31 @@ impl Messaging {
         *lock(&self.session) = Some(next);
         debug!(%from, %to, "room history marks where client events were lost");
         self.push_gap().await;
+        self.read_rooms_again(next);
       }
       Err(e) => warn!(error = %e, "room messages lost; the gap was not logged"),
+    }
+  }
+
+  /// The rooms were joined again after the loss of client events that began the session `row`:
+  /// the session begins now, as we were out of the rooms until then, and the gap before it is
+  /// pushed again with that end. Nothing changes once the session ended.
+  pub(super) async fn rooms_read_again(&self, row: i64) {
+    let now = timestamp(Utc::now());
+    let moved = self
+      .db
+      .write(move |conn| {
+        conn.execute(
+          "UPDATE sessions SET logged_in_at = ?2, last_seen_at = ?2 \
+           WHERE id = ?1 AND after_loss = 1 AND ended_at IS NULL",
+          params![row, now],
+        )
+      })
+      .await;
+    match moved {
+      Ok(0) => debug!("the session ended before its rooms were joined again"),
+      Ok(_) => self.push_gap().await,
+      Err(e) => warn!(error = %e, "the gap of lost client events not moved past the rooms' joins"),
     }
   }
 
@@ -284,10 +313,12 @@ mod tests {
         HistoryGap {
           from: at("2026-10-26T09:00:00Z"),
           to: Some(at("2026-10-26T09:05:00Z")),
+          reason: HistoryGapReason::Disconnected,
         },
         HistoryGap {
           from: at("2026-10-26T11:00:00Z"),
           to: None,
+          reason: HistoryGapReason::Disconnected,
         },
       ],
       "half a second between two sessions is no gap; the last one is still open"
@@ -299,8 +330,9 @@ mod tests {
       HistoryGap {
         from: at("2026-10-26T10:00:00Z"),
         to: Some(at("2026-10-26T10:00:00.500Z")),
+        reason: HistoryGapReason::FellBehind,
       },
-      "where events were lost, half a second is a gap"
+      "where events were lost, half a second is a gap, and says so"
     );
     let running = [Session {
       ended_at: None,
@@ -325,6 +357,7 @@ mod tests {
     let gap = HistoryGap {
       from: at("2026-10-26T11:00:00Z"),
       to: Some(at("2026-10-26T12:00:00Z")),
+      reason: HistoryGapReason::Disconnected,
     };
     let oldest = at("2026-10-26T08:00:00Z");
     let meeting = at("2026-10-26T11:00:00Z");

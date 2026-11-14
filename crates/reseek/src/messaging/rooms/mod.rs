@@ -56,6 +56,8 @@ pub struct Rooms {
   joins: Turns,
   /// held from reading the rooms we are in to pushing them, so the last push has the newest
   pushing: tokio::sync::Mutex<()>,
+  /// canceled to stop the rooms being joined again after a loss of client events
+  reading_again: Mutex<CancellationToken>,
 }
 
 impl Rooms {
@@ -149,6 +151,16 @@ impl Messaging {
     asked: bool,
   ) -> Result<Option<Room>, ClientError> {
     let _turn = self.rooms.joins.take(name).await;
+    self.join_in_turn(name, private, asked).await
+  }
+
+  /// [`Messaging::join_room`] for a caller holding the room's turn.
+  async fn join_in_turn(
+    &self,
+    name: &str,
+    private: bool,
+    asked: bool,
+  ) -> Result<Option<Room>, ClientError> {
     if self
       .rooms
       .tracker()
@@ -226,7 +238,11 @@ impl Messaging {
   /// for no.
   async fn joined_private(&self, name: &str) -> bool {
     let room = name.to_string();
-    match self.db.read(move |conn| history::private(conn, &room)).await {
+    match self
+      .db
+      .read(move |conn| history::private(conn, &room))
+      .await
+    {
       Ok(private) => private,
       Err(e) => {
         warn!(room = name, error = %e, "whether the room is private not read; joined as asked");
@@ -326,9 +342,7 @@ impl Messaging {
       let refused = this.rejoin_rooms(rooms, &session).await;
       this.push_gap().await;
       let again = |rooms| this.rejoin_rooms(rooms, &session);
-      this
-        .try_again(refused, &session, again)
-        .await;
+      this.try_again(refused, &session, again).await;
     });
   }
 
@@ -414,6 +428,78 @@ impl Messaging {
       self.push_rooms().await;
     }
     refused
+  }
+
+  /// Client events were lost within the session `row` began, so who came and went in the rooms,
+  /// their presence and the tickers may be out of date, and only a join makes the server send
+  /// them again: each room the server has us in is left and joined again, one after another.
+  /// Once they all are, the session is taken to begin then, as we were out of the rooms until
+  /// then, and its gap is pushed again. A loss after this one stops these joins between two
+  /// rooms and starts its own; so does the end of the session.
+  pub(super) fn read_rooms_again(&self, row: i64) {
+    let rooms = self.rooms.tracker().joined_names();
+    let reading = {
+      let mut reading = lock(&self.rooms.reading_again);
+      reading.cancel();
+      *reading = lock(&self.session_ends).child_token();
+      reading.clone()
+    };
+    let this = self.this();
+    self.tasks.spawn(
+      async move {
+        for room in rooms {
+          if reading.is_cancelled() {
+            return debug!("rooms no longer read again; the session ended or more was lost");
+          }
+          this
+            .join_again(&room)
+            .instrument(info_span!("room", room))
+            .await;
+        }
+        this.rooms_read_again(row).await;
+      }
+      .in_current_span(),
+    );
+  }
+
+  /// Leaves `name` and joins it again, unless it is not joined or is left meanwhile. A join the
+  /// server refuses leaves the room not joined, marked refused for the user to join.
+  async fn join_again(&self, name: &str) {
+    let _turn = self.rooms.joins.take(name).await;
+    let leaves = self.rooms.tracker().leaves(name);
+    if !self
+      .rooms
+      .tracker()
+      .get(name)
+      .is_some_and(|room| room.joined)
+    {
+      return;
+    }
+    match self.client().leave_room(name).await {
+      // the server answers nothing for a room it does not have us in, so we are out either way
+      Ok(()) | Err(ClientError::NoResponse(_)) => {}
+      Err(e) => return debug!(room = name, error = %e, "room not left to join it again"),
+    }
+    if !self.rooms.tracker().out_of(name, leaves) {
+      return debug!(room = name, "room left while it was joined again");
+    }
+    match self.join_in_turn(name, false, false).await {
+      Ok(_) => debug!(
+        room = name,
+        "room joined again after client events were lost"
+      ),
+      Err(ClientError::Canceled) => debug!(room = name, "room left while it was being joined"),
+      Err(e) => {
+        warn!(
+          room = name,
+          error = %e,
+          "room not joined again after client events were lost; left for the user to join"
+        );
+        self.rooms.tracker().mark_refused(name);
+        self.rooms_changed();
+        self.push_rooms().await;
+      }
+    }
   }
 
   /// The configured rooms changed from `previous` to `current`: the rooms added are joined
@@ -695,10 +781,12 @@ mod tests {
 
   use std::time::Duration;
 
+  use api_types::messaging::rooms::HistoryGapReason;
   use serde_json::{Value, json};
   use soulseek_proto::RoomType;
   use soulseek_proto::server::{
     CannotJoinRoom, JoinRoomRequest, PrivateRoomData, RoomData, RoomInfo as Listed, RoomList,
+    RoomTicker, RoomTickers,
   };
   use soulseek_proto::{ServerRequest, ServerResponse};
   use tokio::time::Instant;
@@ -835,9 +923,7 @@ mod tests {
       std::future::ready(refused(rooms))
     };
     let first = refused(vec!["lobby".to_string()]);
-    messaging
-      .try_again(first, &session, again)
-      .await;
+    messaging.try_again(first, &session, again).await;
     (app, tries)
   }
 
@@ -859,7 +945,11 @@ mod tests {
     let ends = REJOIN_AGAIN[0] + Duration::from_secs(5);
     let (app, tries) = tried_again(Some(ends)).await;
     assert_eq!(tries, [REJOIN_AGAIN[0]], "no try after the session ended");
-    assert_eq!(standing(&app, "lobby").await, Some(false), "not marked refused");
+    assert_eq!(
+      standing(&app, "lobby").await,
+      Some(false),
+      "not marked refused"
+    );
   }
 
   #[tokio::test]
@@ -933,7 +1023,11 @@ mod tests {
     let (status, _) = app.call("POST", "/api/v0/rooms/joined", request).await;
     assert_eq!(status, 403);
     assert_eq!(server.received(joins_as("club")).await, RoomType::Private);
-    assert_eq!(standing(&app, "club").await, Some(false), "listed, not joined");
+    assert_eq!(
+      standing(&app, "club").await,
+      Some(false),
+      "listed, not joined"
+    );
     assert_eq!(app.state.state.current().rooms, Vec::<String>::new());
   }
 
@@ -971,6 +1065,85 @@ mod tests {
     server.drop_session(&app).await;
     server.login(&app).await;
     assert_eq!(server.received(joins_as("club")).await, RoomType::Public);
+  }
+
+  #[tokio::test]
+  async fn the_rooms_are_joined_again_after_client_events_were_lost() {
+    let app = soulseek::app(TRUSTED).await;
+    // who is in lobby besides us, and their tickers
+    let here = Arc::new(std::sync::Mutex::new(vec!["alice"]));
+    let present = here.clone();
+    let mut server = Server::start(move |request| match request {
+      ServerRequest::JoinRoom(join) => {
+        let here = present.lock().unwrap().clone();
+        let mut users = vec![member(US)];
+        users.extend(here.iter().map(|name| member(name)));
+        let tickers = here
+          .iter()
+          .map(|name| RoomTicker {
+            username: name.to_string(),
+            message: format!("{name} here"),
+          })
+          .collect();
+        vec![
+          ServerResponse::JoinRoom(RoomData {
+            name: join.room.clone(),
+            users,
+            private: None,
+          }),
+          ServerResponse::RoomTickers(RoomTickers {
+            room: join.room.clone(),
+            tickers,
+          }),
+        ]
+      }
+      ServerRequest::LeaveRoom(leave) => vec![ServerResponse::LeaveRoom(leave.clone())],
+      _ => Vec::new(),
+    })
+    .await;
+    server.login(&app).await;
+    join(&app, &mut server, "lobby").await;
+    // alice left and bob came, which the events lost said
+    *here.lock().unwrap() = vec!["bob"];
+    let messaging = &app.state.messaging;
+    messaging.missed().await;
+    let leaves = |request: &ServerRequest| {
+      matches!(request, ServerRequest::LeaveRoom(leave) if leave.room == "lobby").then_some(())
+    };
+    server.received(leaves).await;
+    server.received(joins("lobby")).await;
+    let joined_at = chrono::Utc::now();
+    let read = tokio::time::timeout(Duration::from_secs(5), async {
+      loop {
+        let room = messaging.rooms.tracker().room("lobby").unwrap();
+        let users: Vec<String> = room.users.into_iter().map(|u| u.username).collect();
+        let tickers: Vec<String> = room.tickers.into_iter().map(|t| t.ticker).collect();
+        if users == ["bob", US] && tickers == ["bob here"] {
+          break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+      }
+    })
+    .await;
+    assert!(
+      read.is_ok(),
+      "{:?}",
+      messaging.rooms.tracker().room("lobby")
+    );
+    // the gap says why, and lasts until the room was ours again
+    let gap = tokio::time::timeout(Duration::from_secs(5), async {
+      loop {
+        let gaps = messaging.history_gaps().await;
+        if let Some(gap) = gaps.last().filter(|gap| gap.to > Some(joined_at)) {
+          break *gap;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+      }
+    })
+    .await
+    .expect("the gap does not reach past the join");
+    assert_eq!(gap.reason, HistoryGapReason::FellBehind);
+    assert_eq!(app.state.state.current().rooms, ["lobby"]);
   }
 
   #[tokio::test]

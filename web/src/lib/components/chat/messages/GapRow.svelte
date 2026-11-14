@@ -15,4 +15,4 @@
   );
 </script>
 
-<p role="note" class="px-3 py-2 text-center text-xs text-fg-muted">{gapNotice(span)}</p>
+<p role="note" class="px-3 py-2 text-center text-xs text-fg-muted">{gapNotice(span, gap.reason)}</p>

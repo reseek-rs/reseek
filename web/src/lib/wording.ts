@@ -1,9 +1,11 @@
+import type { Schemas } from "#lib/api/client.js";
+
 /** How the UI names a runtime change that ends when reseek stops */
 export const UNTIL_RESTART = "until restart";
 
-/** The line where a room's history has a hole, `span` saying when */
-export const gapNotice = (span: string) =>
-  `Chat history unavailable ${span} (disconnected from Soulseek)`;
+/** The line where a room's history has a hole, `span` saying when and `reason` why */
+export const gapNotice = (span: string, reason: Schemas["HistoryGapReason"]) =>
+  `Chat history unavailable ${span} (${reason === "fellBehind" ? "reseek fell behind" : "disconnected from Soulseek"})`;
 
 /** The words for the buddy list and what a buddy can be */
 export const BUDDY = {

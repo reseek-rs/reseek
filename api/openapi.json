@@ -20493,15 +20493,20 @@
       },
       "HistoryGap": {
         "type": "object",
-        "description": "An interval with no room history because reseek was disconnected from Soulseek, whether or\nnot the daemon was running.",
+        "description": "An interval with no room history: reseek was disconnected from Soulseek, whether or not the\ndaemon was running, or it fell behind and lost what the server sent.",
         "required": [
-          "from"
+          "from",
+          "reason"
         ],
         "properties": {
           "from": {
             "type": "string",
             "format": "date-time",
             "description": "when reseek stopped receiving"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/HistoryGapReason",
+            "description": "why the history has no messages there"
           },
           "to": {
             "type": [
@@ -20512,6 +20517,14 @@
             "description": "when it received again, null while it is still disconnected"
           }
         }
+      },
+      "HistoryGapReason": {
+        "type": "string",
+        "description": "Why a room's history has a gap.",
+        "enum": [
+          "disconnected",
+          "fellBehind"
+        ]
       },
       "InProgressMetrics": {
         "type": "object",

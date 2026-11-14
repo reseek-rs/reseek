@@ -5436,8 +5436,8 @@ export interface components {
             version: components["schemas"]["VersionInfo"];
         };
         /**
-         * @description An interval with no room history because reseek was disconnected from Soulseek, whether or
-         *     not the daemon was running.
+         * @description An interval with no room history: reseek was disconnected from Soulseek, whether or not the
+         *     daemon was running, or it fell behind and lost what the server sent.
          */
         HistoryGap: {
             /**
@@ -5445,12 +5445,19 @@ export interface components {
              * @description when reseek stopped receiving
              */
             from: string;
+            /** @description why the history has no messages there */
+            reason: components["schemas"]["HistoryGapReason"];
             /**
              * Format: date-time
              * @description when it received again, null while it is still disconnected
              */
             to?: string | null;
         };
+        /**
+         * @description Why a room's history has a gap.
+         * @enum {string}
+         */
+        HistoryGapReason: "disconnected" | "fellBehind";
         /** @description Transfers that are moving bytes. */
         InProgressMetrics: {
             /**
