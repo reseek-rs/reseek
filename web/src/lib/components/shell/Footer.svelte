@@ -17,6 +17,7 @@
   import { session } from "#lib/session.svelte.js";
   import { REPOSITORY } from "#lib/shell/project.js";
   import { APP } from "#lib/ui/bindings.js";
+  import { DOTS } from "#lib/ui/dots.js";
   import { keysAria } from "#lib/ui/keys.js";
 
   import Logo from "./Logo.svelte";
@@ -80,7 +81,7 @@
         <span
           class={[
             "size-2 shrink-0 rounded-full",
-            !connected ? "bg-danger" : away ? "bg-warning" : "bg-success"
+            !connected ? "bg-danger" : away ? DOTS.warning : DOTS.success
           ]}></span>
         <span class="truncate font-medium" dir="auto"
           >{connected && username ? username : "Disconnected"}</span>

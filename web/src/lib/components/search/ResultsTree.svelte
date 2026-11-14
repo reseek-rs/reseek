@@ -49,6 +49,7 @@
     treeAt,
     treeLines
   } from "#lib/tree/folders.js";
+  import { DOTS } from "#lib/ui/dots.js";
   import { viewport } from "#lib/ui/viewport.svelte.js";
   import { reach } from "#lib/users/actions.js";
   import { queueOf } from "#lib/users/groups.js";
@@ -253,7 +254,7 @@
         {...props}
         class={[
           "size-2.5 shrink-0 rounded-full",
-          response.hasFreeUploadSlot ? "bg-success" : "bg-warning"
+          response.hasFreeUploadSlot ? DOTS.success : DOTS.warning
         ]}></span>
     {/snippet}
   </Tooltip>

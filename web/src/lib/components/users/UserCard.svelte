@@ -16,6 +16,7 @@
   import { ago, chatTime, formatCount, formatSpeed, plural } from "#lib/format.js";
   import { userHref } from "#lib/nav.js";
   import { clock } from "#lib/ui/clock.svelte.js";
+  import { DOTS } from "#lib/ui/dots.js";
   import { canManage, configBlocked, reach, setBuddy, USER_ACTIONS } from "#lib/users/actions.js";
   import { blockEnd } from "#lib/users/block.svelte.js";
   import { BUDDIES, PRIVILEGED, queueOf } from "#lib/users/groups.js";
@@ -46,10 +47,10 @@
   const presence = $derived.by(() => {
     const p = own ? (app.state?.server.isLoggedIn ? "Online" : "Offline") : user?.presence;
     if (!p) return { dot: "bg-fg-subtle/40", text: "Unknown" };
-    if (p === "Online") return { dot: "bg-success", text: "Online" };
+    if (p === "Online") return { dot: DOTS.success, text: "Online" };
     if (p === "Away") {
       return {
-        dot: "bg-warning",
+        dot: DOTS.warning,
         text: user?.presenceAt ? `Away since ${chatTime(user.presenceAt, clock.now)}` : "Away"
       };
     }

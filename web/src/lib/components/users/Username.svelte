@@ -13,6 +13,7 @@
   import { session } from "#lib/session.svelte.js";
   import { USERNAMES } from "#lib/ui/bindings.js";
   import { cn } from "#lib/ui/cn.js";
+  import { presenceDot } from "#lib/ui/dots.js";
   import { isPressed } from "#lib/ui/keys.js";
   import { safeArea } from "#lib/ui/safearea.svelte.js";
   import { canManage, links } from "#lib/users/actions.js";
@@ -252,15 +253,7 @@
       <DropdownMenu.Root open onOpenChange={(o) => !o && hide()}>
         <Menu.Content customAnchor={link} align="start" class="min-w-52">
           <div class="flex items-center gap-2 px-2 py-1.5 text-xs">
-            <span
-              class={[
-                "size-2 rounded-full",
-                user?.presence === "Online"
-                  ? "bg-success"
-                  : user?.presence === "Away"
-                    ? "bg-warning"
-                    : "bg-fg-subtle/50"
-              ]}></span>
+            <span class={["size-2 rounded-full", presenceDot(user?.presence)]}></span>
             {@render text()}
             {#if queue}<span class="ml-auto"><GroupBadge group={queue} queue /></span>{/if}
           </div>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Schemas } from "#lib/api/client.js";
   import Tooltip from "#lib/components/ui/Tooltip.svelte";
+  import { presenceDot } from "#lib/ui/dots.js";
 
   type Props = {
     presence: Schemas["UserPresence"] | null | undefined;
@@ -18,15 +19,7 @@
 
 <Tooltip text={worded ? undefined : (text ?? presence ?? "Unknown")} dense spoken {dormant}>
   {#snippet child({ props })}
-    <span
-      {...props}
-      class={[
-        "inline-block size-2 shrink-0 rounded-full",
-        presence === "Online"
-          ? "bg-success"
-          : presence === "Away"
-            ? "bg-warning"
-            : "bg-fg-subtle/50"
-      ]}></span>
+    <span {...props} class={["inline-block size-2 shrink-0 rounded-full", presenceDot(presence)]}
+    ></span>
   {/snippet}
 </Tooltip>
