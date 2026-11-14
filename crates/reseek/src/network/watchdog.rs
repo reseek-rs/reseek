@@ -1,7 +1,8 @@
 //! Keeping the server connection up. The watchdog runs from the start and after a connection
 //! is lost, and stops once the client is connected, when asked to disconnect, and at shutdown;
-//! a refused login does not start it again, and once a disconnect was asked for, or at
-//! shutdown, a lost connection does not either: only a start does. One connect loop runs at a
+//! a refused login does not start it again, and once a disconnect was asked for, at a start
+//! with `--no-connect`, or at shutdown, a lost connection or new credentials do not either: only
+//! a start does. One connect loop runs at a
 //! time: the first attempt at once, then each after an exponential back-off with jitter, or,
 //! after a login the server never answered, 15 minutes, an hour and then 6 hours apart. A timer
 //! starts a new loop while the watchdog is on and none runs. The back-off goes on across loops
@@ -76,7 +77,8 @@ enum Mode {
   On,
   /// off while connected or after a login it cannot retry; a lost connection turns it on
   Off,
-  /// off since a disconnect was asked for or the daemon began to stop; only a start turns it on
+  /// off since a disconnect was asked for, the daemon started with `--no-connect`, or it began
+  /// to stop; only a start turns it on
   Held,
 }
 
@@ -214,7 +216,7 @@ impl Watchdog {
       }
     });
     if held {
-      return debug!("a disconnect was asked for; the lost connection is not reconnected");
+      return debug!("the watchdog is held; the lost connection is not reconnected");
     }
     self.publish();
     self.attempt_connection();
@@ -246,8 +248,8 @@ impl Watchdog {
     });
   }
 
-  /// Turns the watchdog off until it is started again, canceling its wait or attempt: a
-  /// connection lost before or after does not turn it on.
+  /// Turns the watchdog off until it is started again, canceling its wait or attempt: neither a
+  /// connection lost before or after nor new credentials turn it on.
   pub fn hold(&self) {
     self.inner.mode.send_replace(Mode::Held);
     self.publish();
@@ -267,7 +269,7 @@ impl Watchdog {
   }
 
   /// Turns the watchdog off and cancels its wait or attempt, for a reconnect the caller makes
-  /// with [`Watchdog::resume`]; false, changing nothing, while a disconnect asked for holds it.
+  /// with [`Watchdog::resume`]; false, changing nothing, while it is held.
   pub fn pause(&self) -> bool {
     let turns = lock(&self.inner.turns);
     let mut held = false;
@@ -291,8 +293,7 @@ impl Watchdog {
     true
   }
 
-  /// Starts over at once as a restart does, unless a disconnect asked for holds the watchdog;
-  /// whether it did.
+  /// Starts over at once as a restart does, unless the watchdog is held; whether it did.
   pub fn resume(&self) -> bool {
     self.start_over(false)
   }

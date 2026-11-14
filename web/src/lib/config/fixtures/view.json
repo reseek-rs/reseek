@@ -1128,7 +1128,7 @@
       "envVar": "RESEEK_NO_CONNECT",
       "cliFlag": "--no-connect",
       "kind": "bool",
-      "doc": "Does not connect to the Soulseek server at startup.",
+      "doc": "Connects to the Soulseek server only when asked to: not at startup, nor on its own later.",
       "choices": null,
       "default": false,
       "apply": "restart",

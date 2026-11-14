@@ -167,7 +167,8 @@ async fn run(app: AppState) {
     info!("Running in Controller relay mode.  Listening for incoming Agent connections.");
   }
   if flags.no_connect {
-    warn!("Not connecting to the Soulseek server; 'no-connect' option is enabled");
+    warn!("Not connecting to the Soulseek server until asked to; 'no-connect' option is enabled");
+    app.network.watchdog().hold();
   } else if network::credentials(soulseek).is_none() {
     network::warn_no_credentials();
   } else {

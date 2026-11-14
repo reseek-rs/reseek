@@ -119,7 +119,7 @@ async fn apply(
     if network.log_in_again().await {
       info!("Soulseek username or password changed; logging in again");
     } else {
-      debug!("Soulseek username or password changed while disconnected by the user");
+      debug!("Soulseek username or password changed; not logging in until a connect is asked for");
     }
   } else if network.watchdog().is_enabled() && reaches_differently(applied, &values) {
     info!("Options changed, restarting (re)connection process...");
@@ -328,5 +328,89 @@ mod tests {
       !server.receives(wait, another_login).await,
       "the disconnect asked for stays"
     );
+  }
+
+  #[tokio::test]
+  async fn with_no_connect_nothing_connects_until_a_connect_is_asked_for() {
+    let (logs, _capturing) = crate::testing::captured_logs();
+    let mut server = Server::silent().await;
+    let listen = crate::testing::ports::free_port();
+    let app = crate::testing::app(
+      &format!(
+        "remote_configuration = true\n[web.authentication]\n\
+         trusted_networks = [\"127.0.0.0/8\"]\n\
+         [soulseek]\naddress = \"127.0.0.1\"\nport = {}\nusername = \"me\"\n\
+         password = \"secret\"\nlisten_ip_address = \"127.0.0.1\"\nlisten_port = {listen}\n\
+         port_mapping = false\n",
+        server.port
+      ),
+      &[("RESEEK_NO_CONNECT", "true")],
+    )
+    .await;
+    let network = &app.state.network;
+    let send = async |method: &str, uri: &str, body: Option<serde_json::Value>| {
+      let answer = app.send(request(method, uri, body)).await;
+      assert!(answer.status.is_success(), "{uri}: {:?}", answer.body);
+    };
+    let set = async |key: &str, value: serde_json::Value| {
+      send(
+        "PATCH",
+        "/api/v0/options",
+        Some(json!({ "set": { key: value } })),
+      )
+      .await;
+    };
+    // each change is applied in the poll that records it, so once it is recorded what it
+    // started has begun
+    let applied = async || {
+      let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+      while network.applied().revision != app.state.config.current().revision {
+        assert!(tokio::time::Instant::now() < deadline, "never applied");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+      }
+    };
+    assert!(!network.watchdog().is_enabled());
+
+    set("soulseek.password", json!("other")).await;
+    let told = async || {
+      let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+      loop {
+        let said = |start: &str| {
+          logs
+            .snapshot()
+            .iter()
+            .any(|record| record.message.starts_with(start))
+        };
+        if said("Soulseek username or password changed; logging in again") {
+          return true;
+        }
+        if said("Soulseek username or password changed; not logging in") {
+          return false;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "never told");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+      }
+    };
+    assert!(!told().await, "saving credentials does not connect");
+    set("soulseek.server_keepalive.probes", json!(7)).await;
+    applied().await;
+    assert!(
+      !network.watchdog().is_enabled(),
+      "nor does a change that waits for a reconnect"
+    );
+    assert_eq!(
+      network.client().state(),
+      soulseek_client::ClientState::Disconnected
+    );
+
+    send("PUT", "/api/v0/server", None).await;
+    let login = |request: &ServerRequest| match request {
+      ServerRequest::Login(login) => Some(login.password.expose().to_string()),
+      _ => None,
+    };
+    assert_eq!(server.received(login).await, "other");
+    // from then on a lost connection is reconnected as usual
+    server.drop_session(&app).await;
+    assert_eq!(server.received(login).await, "other");
   }
 }

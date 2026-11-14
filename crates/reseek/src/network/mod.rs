@@ -302,7 +302,7 @@ impl Network {
   }
 
   /// Ends the server session and connects again at once with the options in effect now, unless
-  /// a disconnect asked for holds the watchdog, which stays; whether it reconnects.
+  /// the watchdog is held, as after a disconnect asked for, which it stays; whether it reconnects.
   pub async fn log_in_again(&self) -> bool {
     if !self.watchdog.pause() {
       return false;

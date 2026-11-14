@@ -21,7 +21,7 @@ pub struct Flags {
   /// report changes.
   #[cascade(env = "RESEEK_CONFIG_WATCH_POLL", cli = "--config-watch-poll")]
   pub config_watch_poll: bool,
-  /// Does not connect to the Soulseek server at startup.
+  /// Connects to the Soulseek server only when asked to: not at startup, nor on its own later.
   #[cascade(env = "RESEEK_NO_CONNECT", cli = "--no-connect")]
   pub no_connect: bool,
   /// Skips the share scan at startup.
