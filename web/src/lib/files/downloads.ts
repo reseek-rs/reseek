@@ -5,7 +5,7 @@ import { plural } from "#lib/format.js";
 import { keepCurrent } from "#lib/live/keep.svelte.js";
 import { call } from "#lib/request.js";
 import { downloads, fileKey } from "#lib/transfers/transfers.svelte.js";
-import { commonFolder, type Separator } from "#lib/tree/folders.js";
+import { commonFolder, parentOf, type Separator } from "#lib/tree/folders.js";
 
 export type EnqueueItem = Schemas["EnqueueDownloadFile"];
 
@@ -182,8 +182,9 @@ export const downloadFolderPlan = (
  * path's. When anything in the selection is in a folder below the deepest one holding its top's
  * files, or that folder is one `whole` says was ticked whole, folders were picked, and every
  * group is sent in that deepest folder so the selection keeps its tree, as `downloadFolderPlan`
- * keeps a folder's. When neither is, the files are loose and each goes where the download pattern
- * puts it
+ * keeps a folder's. A folder ticked whole that holds nothing but that one is sent in its place,
+ * as its own Download button sends it. When neither is, the files are loose and each goes where
+ * the download pattern puts it
  */
 export const downloadPlan = (
   files: Schemas["File"][],
@@ -198,10 +199,22 @@ export const downloadPlan = (
     if (listed) listed.push(file);
     else byTop.set(top, [file]);
   }
+  /** the highest folder from `name` up ticked whole, the deepest a selection can tell apart */
+  const tickedFrom = (name: string) => {
+    let at = name;
+    while (whole(at)) {
+      const up = parentOf(at, separator);
+      if (!up || !whole(up)) break;
+      at = up;
+    }
+    return at;
+  };
   const tops = [...byTop.values()].map((grouped) => ({
-    name: commonFolder(
-      grouped.map((f) => f.filename),
-      separator
+    name: tickedFrom(
+      commonFolder(
+        grouped.map((f) => f.filename),
+        separator
+      )
     ),
     grouped
   }));

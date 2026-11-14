@@ -28,6 +28,13 @@ const plan = (
     whole
   ).map((g): [string | null, string[]] => [g.folder, g.files.map((f) => f.filename)]);
 
+const folder = (name: string, files: string[]) =>
+  downloadFolderPlan(
+    name,
+    files.map((f) => file(f)),
+    "\\"
+  ).map((g): [string | null, string[]] => [g.folder, g.files.map((f) => f.filename)]);
+
 describe("downloading a selection", () => {
   it("sends it in the deepest folder holding it when it has folders below, its own files first", () => {
     expect(
@@ -76,6 +83,21 @@ describe("downloading a selection", () => {
       ["@@a\\Music\\Album", album],
       ["@@a\\Video", ["@@a\\Video\\x.mkv"]]
     ]);
+  });
+
+  it("sends a folder ticked whole from where it was ticked when all it holds is one folder", () => {
+    const album = ["@@a\\Music\\Artist\\Album\\1.flac", "@@a\\Music\\Artist\\Album\\2.flac"];
+    const ticked = new Set(["@@a\\Music\\Artist", "@@a\\Music\\Artist\\Album"]);
+    // as the folder's own Download button sends it
+    expect(
+      plan(
+        album,
+        () => "@@a\\Music",
+        "\\",
+        (folder) => ticked.has(folder)
+      )
+    ).toEqual([["@@a\\Music\\Artist", album]]);
+    expect(folder("@@a\\Music\\Artist", album)).toEqual([["@@a\\Music\\Artist", album]]);
   });
 
   it("sends every top's files in their folder once anything in the selection is nested", () => {
@@ -140,13 +162,6 @@ describe("downloading a folder", () => {
     expect(root("/", ["/x.flac", "/home/y.flac"], "/")).toEqual(["/"]);
     expect(root("\\", ["\\x.flac"], "\\")).toEqual(["\\"]);
   });
-
-  const folder = (name: string, files: string[]) =>
-    downloadFolderPlan(
-      name,
-      files.map((f) => file(f)),
-      "\\"
-    ).map((g): [string | null, string[]] => [g.folder, g.files.map((f) => f.filename)]);
 
   it("sends every file in the folder, its own files first, each folder's below together", () => {
     expect(
