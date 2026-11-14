@@ -12,7 +12,7 @@ import { live } from "#lib/live/live.svelte.js";
 import { session } from "#lib/session.svelte.js";
 import { transfer } from "#lib/testing/fixtures.js";
 import { flushFaked } from "#lib/testing/flush.js";
-import { press, ticked } from "#lib/testing/keys.js";
+import { focusByKeys, press, ticked } from "#lib/testing/keys.js";
 import { connected } from "#lib/testing/live.js";
 import { defaults, views } from "#lib/transfers/grid/settings.svelte.js";
 import type { Transfer } from "#lib/transfers/states.js";
@@ -158,6 +158,26 @@ describe("the transfers table", () => {
     );
     await flushFaked();
     expect([tipped(a.id), tipped(b.id)]).toEqual([true, false]);
+  });
+
+  it("asks why a queued upload waits when the keys come to it", async () => {
+    const columns = defaults("upload").columns.map((c) =>
+      c.id === "queue" ? { ...c, visible: true } : c
+    );
+    Object.assign(views.upload, defaults("upload"), { layout: "list", columns });
+    const t = transfer({ direction: "Upload", state: "Queued, Locally" });
+    const net = connected((url) =>
+      url.pathname.endsWith("/api/v0/transfers/uploads") ? grouped([t]) : undefined
+    );
+    component = mount(TransfersPage, { target: document.body, props: { direction: "upload" } });
+    await flushFaked();
+    await flushFaked();
+    const note = row(t.id)!.querySelector<HTMLElement>("[role=note]")!;
+    expect(note.getAttribute("tabindex")).toBe("0");
+    focusByKeys(note);
+    await flushFaked();
+    expect(net.requests.some((r) => r.url.pathname.endsWith(`/${t.id}/why`))).toBe(true);
+    Object.assign(views.upload, defaults("upload"));
   });
 
   it("comes back on the row it was left at, where rows arrived above it meanwhile", async () => {

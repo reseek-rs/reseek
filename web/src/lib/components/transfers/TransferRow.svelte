@@ -21,6 +21,7 @@
   import * as Menu from "#lib/components/ui/menu/menu.js";
   import MiddleTruncate from "#lib/components/ui/MiddleTruncate.svelte";
   import Progress from "#lib/components/ui/Progress.svelte";
+  import Spinner from "#lib/components/ui/Spinner.svelte";
   import Tooltip from "#lib/components/ui/Tooltip.svelte";
   import Username from "#lib/components/users/Username.svelte";
   import { kindOf } from "#lib/files/kinds.js";
@@ -150,6 +151,9 @@
     class={folder ? "max-w-full shrink-0" : undefined} />
   {#if folder}<MiddleTruncate text={folder} path class="text-fg-muted" />{/if}
 {/snippet}
+
+{#snippet why()}{#if wait}{whyText(wait)}{:else if waits.asking(t.id)}<Spinner
+      class="size-3.5" />{:else}Reason unknown{/if}{/snippet}
 
 {#snippet name()}
   <!-- the analysis mark keeps its word and the name gives way; in a cell too narrow for an icon,
@@ -319,9 +323,16 @@
           </Tooltip>
         {/if}
       {:else if isQueued(t.state)}
-        <Tooltip text={wait ? whyText(wait) : undefined} {dormant}>
+        <!-- why it waits is asked as the pointer or the keys come to the note, and drawn in its
+             tooltip once the answer is in -->
+        <Tooltip text={why} {dormant}>
           {#snippet child({ props })}
-            <span {...props} class="truncate" role="note" onpointerenter={() => void waits.load(t)}>
+            <span
+              {...props}
+              class="truncate"
+              role="note"
+              onpointerenter={() => void waits.load(t)}
+              onfocus={() => void waits.load(t)}>
               {wait ? placeText(wait) : "Queued"}
             </span>
           {/snippet}

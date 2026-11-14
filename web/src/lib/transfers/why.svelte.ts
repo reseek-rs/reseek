@@ -1,4 +1,4 @@
-import { SvelteMap } from "svelte/reactivity";
+import { SvelteMap, SvelteSet } from "svelte/reactivity";
 
 import { formatBytes, formatCount, plural } from "#lib/format.js";
 
@@ -9,15 +9,20 @@ import { type UploadQueueStatus, why } from "./transfers.svelte";
 const FRESH_MS = 10_000;
 
 /**
- * Why queued uploads wait, asked when the user points at one and kept a few seconds, so moving
- * over a column doesn't ask once per pass
+ * Why queued uploads wait, asked when the user points at one or moves the keys to it, and kept a
+ * few seconds, so moving over a column doesn't ask once per pass
  */
 class Waits {
   #answers = new SvelteMap<string, { status: UploadQueueStatus; at: number }>();
-  #asking = new Set<string>();
+  #asking = new SvelteSet<string>();
 
   get(id: string): UploadQueueStatus | undefined {
     return this.#answers.get(id)?.status;
+  }
+
+  /** Whether the upload `id` is being asked about now */
+  asking(id: string): boolean {
+    return this.#asking.has(id);
   }
 
   /** Forgets every answer, as the session ends */
