@@ -95,6 +95,7 @@ fn push(ty: &syn::Type, attrs: &FieldAttrs) -> TokenStream {
   let secret = attrs.secret;
   let path = attrs.path;
   let negated = attrs.negated;
+  let order = attrs.order;
   let doc = &attrs.doc;
   let fields = quote! {
     ::cascade::__private::Attrs {
@@ -107,6 +108,7 @@ fn push(ty: &syn::Type, attrs: &FieldAttrs) -> TokenStream {
       apply: #apply,
       secret: #secret,
       path: #path,
+      order: #order,
       doc: #doc,
     }
   };

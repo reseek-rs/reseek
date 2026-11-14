@@ -41,6 +41,9 @@ pub struct Field {
   /// a filesystem path: a relative one set in a file counts from that file's directory, one
   /// set by an environment variable or a flag from the working directory
   pub path: bool,
+  /// a list of distinct names whose order is what it sets: a runtime override of it keeps its
+  /// order over names the files add or remove
+  pub order: bool,
   /// the field's help text
   pub doc: String,
   /// the names the value is one of, `None` when it is not one of a fixed set
@@ -67,6 +70,7 @@ impl Field {
       apply: node.apply.unwrap_or_default(),
       secret: node.secret,
       path: node.path,
+      order: node.order,
       doc: node.doc,
       choices: node
         .choices
@@ -563,6 +567,18 @@ mod tests {
   #[should_panic(expected = "`inner` is a section")]
   fn a_section_takes_no_variable() {
     Schema::of::<EnvOnSection>();
+  }
+
+  #[derive(Default, Serialize, crate::Cascade)]
+  struct NumberOrder {
+    #[cascade(order)]
+    ranks: Vec<u32>,
+  }
+
+  #[test]
+  #[should_panic(expected = "`ranks` is not a list of strings")]
+  fn only_a_list_of_names_is_an_order() {
+    Schema::of::<NumberOrder>();
   }
 
   #[test]

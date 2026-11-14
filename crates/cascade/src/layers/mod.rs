@@ -1,7 +1,8 @@
 //! The layers a configuration is loaded from, lowest first: the defaults, environment
 //! variables, the files, the command line, and the runtime overrides. A later layer replaces an
 //! earlier one's value per key; a list or user-keyed map is one value, replaced whole, except a
-//! user-keyed map's runtime override, which is kept over the files entry by entry.
+//! user-keyed map's runtime override, which is kept over the files entry by entry, and an
+//! order's, which keeps its order over the names the files add or remove.
 
 mod declare;
 

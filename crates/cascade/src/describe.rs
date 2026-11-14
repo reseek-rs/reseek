@@ -115,6 +115,7 @@ pub struct Node {
   pub(crate) apply: Option<Apply>,
   pub(crate) secret: bool,
   pub(crate) path: bool,
+  pub(crate) order: bool,
   pub(crate) doc: String,
   pub(crate) entries: Vec<Node>,
   /// what an entry of a user-keyed map holds until something sets its fields
@@ -125,8 +126,8 @@ pub struct Node {
 impl Node {
   /// # Panics
   ///
-  /// When the flag of a field that is not a boolean is `negated`, or a field that is not a
-  /// string is a `path`.
+  /// When the flag of a field that is not a boolean is `negated`, a field that is not a string
+  /// is a `path`, or one that is not a list of strings is an `order`.
   fn leaf(attrs: &private::Attrs, kind: Kind, entries: Vec<Node>) -> Self {
     assert!(
       !attrs.negated || kind == Kind::Bool,
@@ -136,6 +137,11 @@ impl Node {
     assert!(
       !attrs.path || kind == Kind::String,
       "`{}` is not a string: only a string can be a path",
+      attrs.name
+    );
+    assert!(
+      !attrs.order || kind == Kind::List(Box::new(Kind::String)),
+      "`{}` is not a list of strings: only a list of names can be an order",
       attrs.name
     );
     Self {
@@ -150,6 +156,7 @@ impl Node {
       apply: attrs.apply,
       secret: attrs.secret,
       path: attrs.path,
+      order: attrs.order,
       doc: attrs.doc.to_string(),
       entries,
       entry_defaults: serde_json::Value::Null,
@@ -186,6 +193,8 @@ pub mod private {
     pub secret: bool,
     /// the value is a filesystem path
     pub path: bool,
+    /// the value is a list of distinct names whose order is what it sets
+    pub order: bool,
     pub doc: &'static str,
   }
 
@@ -231,6 +240,11 @@ pub mod private {
         assert!(
           !attrs.path,
           "`{}` is a section: `path` goes on its fields",
+          attrs.name
+        );
+        assert!(
+          !attrs.order,
+          "`{}` is a section: `order` is for a list of names",
           attrs.name
         );
         nodes.extend(children.into_iter().map(|child| child.under(&attrs)));

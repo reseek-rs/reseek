@@ -5,7 +5,8 @@
 //! changes, because a file was edited or the defaults moved, the override is dropped: a new
 //! declaration wins over an older runtime change. A user-keyed map's override is not dropped
 //! whole: the entries it adds, changes or deletes stay over the files, and a key of an entry
-//! gives way on its own when the files change it too. An override also ends when it expires, and
+//! gives way on its own when the files change it too, and an order's override keeps its order
+//! while the files only add or remove names. An override also ends when it expires, and
 //! one set until restart is never written to the file, so it ends with the process.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -258,7 +259,8 @@ const MOVED: &str = "the value it was set over changed";
 /// `o`, an override of `field`, over `current`, the value below it now: as it is while that is
 /// the value it was set over, else dropped. A user-keyed map's override instead keeps what it
 /// changes and the files do not, set over `current`; each key of an entry that both change is
-/// the files', and goes into `lost` with the reason.
+/// the files', and goes into `lost` with the reason. An order's override keeps its order over
+/// the names the files add or remove, as [`merged_order`] says.
 fn rebased(
   field: &Field,
   o: &Override,
@@ -268,10 +270,13 @@ fn rebased(
   if same(current, &o.declared) {
     return Ok(o.clone());
   }
-  if field.kind != Kind::Map {
+  let value = if field.kind == Kind::Map {
+    merged_map(field, &field.key, &o.declared, &o.value, current, lost)
+  } else if field.order {
+    merged_order(&o.declared, &o.value, current).ok_or_else(|| MOVED.to_string())?
+  } else {
     return Err(MOVED.to_string());
-  }
-  let value = merged_map(field, &field.key, &o.declared, &o.value, current, lost);
+  };
   if same(&value, current) {
     return Err(MOVED.to_string());
   }
@@ -307,6 +312,43 @@ fn merged_map<'a>(
     }
   }
   Value::Object(merged)
+}
+
+/// `ours`, an order of names set at run time over `base`, kept over `theirs`, the files' order
+/// now, when the files only added or removed names: those they removed leave it, and each they
+/// added comes right after the name before it in their order, or first. `None` when the files
+/// also moved names they kept, which makes the order theirs.
+fn merged_order(base: &Value, ours: &Value, theirs: &Value) -> Option<Value> {
+  let names = |list: &Value| -> Vec<String> {
+    let names = list
+      .as_array()
+      .into_iter()
+      .flatten()
+      .filter_map(Value::as_str);
+    names.map(str::to_string).collect()
+  };
+  let (base, ours, theirs) = (names(base), names(ours), names(theirs));
+  let kept = |list: &[String], other: &[String]| -> Vec<String> {
+    list.iter().filter(|n| other.contains(n)).cloned().collect()
+  };
+  if kept(&base, &theirs) != kept(&theirs, &base) {
+    return None;
+  }
+  let mut merged: Vec<String> = ours
+    .into_iter()
+    .filter(|n| theirs.contains(n) || !base.contains(n))
+    .collect();
+  for (at, name) in theirs.iter().enumerate() {
+    if base.contains(name) || merged.contains(name) {
+      continue;
+    }
+    let after = theirs[..at]
+      .iter()
+      .rev()
+      .find_map(|before| merged.iter().position(|m| m == before));
+    merged.insert(after.map_or(0, |p| p + 1), name.clone());
+  }
+  Some(Value::from(merged))
 }
 
 /// One entry of `map` merged as [`merged_map`] says: the side that changed it, or when both did
@@ -674,6 +716,47 @@ mod tests {
       ),
       Err(MOVED.to_string()),
       "no side has the map inside, so none is made and nothing is left"
+    );
+  }
+
+  #[derive(Default, Serialize, crate::Cascade)]
+  struct Ranked {
+    /// Groups, highest first.
+    #[cascade(order)]
+    order: Vec<String>,
+  }
+
+  #[test]
+  fn an_order_set_at_run_time_keeps_its_order_over_names_the_files_add_or_remove() {
+    let schema = Schema::of::<Ranked>();
+    let order = schema.field("order").unwrap();
+    // c moved first and e added at run time, over the files' a, b, c
+    let set = item(json!(["c", "e", "a", "b"]), json!(["a", "b", "c"]), None);
+    let over = |files: Value| rebased(order, &set, &files, &mut Vec::new()).map(|o| o.value);
+    assert_eq!(
+      over(json!(["a", "b", "c", "d"])),
+      Ok(json!(["c", "d", "e", "a", "b"])),
+      "a name the files add comes after the one before it in theirs"
+    );
+    assert_eq!(
+      over(json!(["d", "a", "b", "c"])),
+      Ok(json!(["d", "c", "e", "a", "b"]))
+    );
+    assert_eq!(
+      over(json!(["a", "c"])),
+      Ok(json!(["c", "e", "a"])),
+      "a name the files remove leaves it"
+    );
+    assert_eq!(
+      over(json!(["b", "a", "c"])),
+      Err(MOVED.to_string()),
+      "an order the files change too is theirs"
+    );
+    let moved_only = item(json!(["b", "a"]), json!(["a", "b"]), None);
+    assert_eq!(
+      rebased(order, &moved_only, &json!(["b"]), &mut Vec::new()),
+      Err(MOVED.to_string()),
+      "nothing is left over the files"
     );
   }
 

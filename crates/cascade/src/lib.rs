@@ -4,7 +4,8 @@
 //! replacing the one before per key: the defaults (`T::default()`), environment variables, TOML
 //! files, the command line, and runtime overrides. A list or a map whose keys the user picks is
 //! one value, replaced whole by the highest layer that sets it, except that a runtime override
-//! of such a map keeps its entries over the files entry by entry. [`Layers`] loads a
+//! of such a map keeps its entries over the files entry by entry, and one of an order keeps its
+//! order over the names the files add or remove. [`Layers`] loads a
 //! [`Loaded`]: the values, the [`Source`] of each, and warnings for keys nothing knows.
 //!
 //! A [`Watcher`] reloads when the files change or when asked, keeps the last good values when
@@ -74,6 +75,10 @@
 //!   override keeps the entries it adds, changes or deletes over the files, each key of an entry
 //!   until a file changes that key too. Its values need `Default` and `Serialize`: their default
 //!   is what a new entry holds.
+//! - `order`: a list of distinct names whose order is what it sets, such as a precedence. A
+//!   runtime override keeps its order over the names the files add or remove: those they remove
+//!   leave it, and each they add comes right after the name before it in theirs. When the files
+//!   move names they keep, their order is the one in effect.
 //!
 //! A field's key is its name, or its `#[serde(rename = "...")]`; `#[serde(skip)]` fields are
 //! not part of the configuration.

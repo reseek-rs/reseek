@@ -47,6 +47,8 @@ pub(crate) struct FieldAttrs {
   /// the `Kind` variant
   pub(crate) kind: Option<&'static str>,
   pub(crate) user_keyed: bool,
+  /// a list of distinct names whose order is what it sets
+  pub(crate) order: bool,
   /// `serde(skip)`: the field is not part of the configuration
   pub(crate) skip: bool,
 }
@@ -139,6 +141,7 @@ pub(crate) fn field(field: &Field, errors: &mut Errors) -> FieldAttrs {
     doc: doc_comment(&field.attrs),
     kind: None,
     user_keyed: false,
+    order: false,
     skip: false,
   };
   let mut doc_given = false;
@@ -165,6 +168,12 @@ pub(crate) fn field(field: &Field, errors: &mut Errors) -> FieldAttrs {
     errors.push(syn::Error::new_spanned(
       ident,
       "a user_keyed map can only be set in files, drop `env` and `cli`",
+    ));
+  }
+  if attrs.order && (attrs.user_keyed || attrs.kind.is_some() || attrs.path) {
+    errors.push(syn::Error::new_spanned(
+      ident,
+      "`order` is for a list of names, drop `user_keyed`, `kind` and `path`",
     ));
   }
   if attrs.path && attrs.user_keyed {
@@ -234,10 +243,13 @@ fn cascade_meta(
   } else if path.is_ident("user_keyed") {
     once(meta, attrs.user_keyed)?;
     attrs.user_keyed = true;
+  } else if path.is_ident("order") {
+    once(meta, attrs.order)?;
+    attrs.order = true;
   } else {
     return Err(meta.error(
       "unknown cascade attribute, expected one of env, env_alias, cli, negated, apply, kind, doc, \
-       secret, path, user_keyed",
+       secret, path, user_keyed, order",
     ));
   }
   Ok(())
@@ -432,7 +444,11 @@ mod tests {
     assert!(attrs.secret && attrs.path);
     assert_eq!(attrs.kind, Some("String"));
     assert_eq!(attrs.doc, "The user to log in as.\nSecond paragraph.");
-    assert!(!attrs.user_keyed && !attrs.skip && !attrs.negated);
+    assert!(!attrs.user_keyed && !attrs.skip && !attrs.negated && !attrs.order);
+    let ranked = one_field(named(
+      parse_quote!({ #[cascade(order)] ranks: Vec<String> }),
+    ));
+    assert!(ranked.unwrap().order);
     let off = one_field(named(parse_quote!({
       #[cascade(cli = "--no-mapping", negated)]
       mapping: bool
@@ -507,6 +523,10 @@ mod tests {
       (
         named(parse_quote!({ #[cascade(user_keyed, path)] a: Map })),
         "a user_keyed map is not a path",
+      ),
+      (
+        named(parse_quote!({ #[cascade(order, user_keyed)] a: Map })),
+        "`order` is for a list of names",
       ),
       (
         named(parse_quote!({ #[serde(flatten)] a: Inner })),
