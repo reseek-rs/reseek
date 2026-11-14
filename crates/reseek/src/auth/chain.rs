@@ -118,6 +118,8 @@ pub struct Identified {
   /// the session's user has no role right now, so the request has no principal and only
   /// signing in or out is let through
   pub withheld: bool,
+  /// what a trusted proxy said about the principal, when it came from the proxy step
+  pub forwarded: Option<proxy::Forwarded>,
   /// `Set-Cookie` values for the answer
   pub cookies: Vec<HeaderValue>,
 }
@@ -223,8 +225,9 @@ pub async fn identify(
       CookieSession::Invalid => identified.cookies.push(scope.clear(cookies::SESSION)),
     }
   }
-  if let Some((principal, _)) = forwarded(presented, options) {
+  if let Some((principal, forwarded)) = forwarded(presented, options) {
     identified.principal = Some(principal);
+    identified.forwarded = Some(forwarded);
     return Ok(identified);
   }
   identified.principal = networks::trusted(

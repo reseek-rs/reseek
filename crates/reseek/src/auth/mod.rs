@@ -156,6 +156,9 @@ pub async fn authenticate(
   if let Some(session) = identified.session {
     request.extensions_mut().insert(RequestSession(session));
   }
+  if let Some(forwarded) = identified.forwarded {
+    request.extensions_mut().insert(forwarded);
+  }
   request.extensions_mut().insert(presented);
   let mut response = next.run(request).await;
   for cookie in identified.cookies {

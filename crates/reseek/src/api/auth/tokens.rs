@@ -8,6 +8,7 @@ use api_types::auth::tokens::{
   ConfigApiKey, CreateToken, CreatedToken, ListedToken, Token, UpdateToken,
 };
 use api_types::events::{Event, TokenChanged};
+use axum::Extension;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -20,7 +21,8 @@ use uuid::Uuid;
 use crate::api::error::ApiError;
 use crate::app::AppState;
 use crate::auth::keys::PRIMARY;
-use crate::auth::sessions::lifetime;
+use crate::auth::proxy::Forwarded;
+use crate::auth::sessions::{self, lifetime};
 use crate::auth::tokens::{self, NewToken, StoredToken};
 use crate::auth::{AnyRole, Authorized, ReadWrite, owner_role, require_interactive};
 use crate::config::cidr::parse_list;
@@ -81,9 +83,10 @@ async fn list(
 }
 
 /// Creates a token with at most the caller's own role. Its secret is in the answer and is
-/// never shown again. Needs a login session: a token cannot make tokens. Refused to a caller
-/// whose role cannot be read again later, such as a proxy user with no web UI session, since
-/// the token acts with no more than its owner's role on each request.
+/// never shown again. Needs a login session: a token cannot make tokens. The groups a trusted
+/// proxy forwards for the caller are recorded, since the token acts with no more than its
+/// owner's role on each request and the role is read from them. Refused to a caller whose role
+/// cannot be read again later.
 #[utoipa::path(
   post, path = "/tokens", tag = "tokens", request_body = CreateToken,
   responses(
@@ -94,19 +97,11 @@ async fn list(
 async fn create(
   State(app): State<AppState>,
   caller: Authorized<ReadWrite>,
+  forwarded: Option<Extension<Forwarded>>,
   Json(request): Json<CreateToken>,
 ) -> Result<Response, ApiError> {
   require_interactive(&caller.principal)?;
   check_name(&request.name)?;
-  let current = app.config.current();
-  let owner = owner_role(&app, &caller.principal.subject, &current.values)
-    .await
-    .map_err(ApiError::internal)?;
-  if owner.is_none() {
-    return Err(ApiError::forbidden(
-      "Your role cannot be read again on later requests, so a token of yours would not work",
-    ));
-  }
   if request.role > caller.principal.role {
     return Err(ApiError::forbidden(
       "A token cannot have a higher role than its creator",
@@ -133,6 +128,21 @@ async fn create(
     return Err(ApiError::invalid(
       "The value of cidr is not a list of networks",
       format!("{element}: {e}"),
+    ));
+  }
+  let owner = &caller.principal.subject;
+  if let Some(Extension(forwarded)) = &forwarded {
+    sessions::record_forwarded(&app.auth.db, owner, forwarded)
+      .await
+      .map_err(ApiError::internal)?;
+  }
+  let current = app.config.current();
+  let owner_role = owner_role(&app, owner, &current.values)
+    .await
+    .map_err(ApiError::internal)?;
+  if owner_role.is_none() {
+    return Err(ApiError::forbidden(
+      "Your role cannot be read again on later requests, so a token of yours would not work",
     ));
   }
   let (token, secret) = tokens::create(
@@ -280,6 +290,8 @@ fn raise(app: &AppState, token: &StoredToken, by: &str, created: bool) {
 #[cfg(test)]
 mod tests {
   use serde_json::json;
+
+  use api_types::auth::Role;
 
   use crate::testing::{OUTSIDE, TRUSTED, TestApp, app, request, with};
 
@@ -519,13 +531,11 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn a_networks_token_follows_the_configuration_and_a_header_only_proxy_user_gets_none() {
+  async fn a_networks_token_follows_the_configuration() {
     let config = |networks: &str, trusted_role: &str| {
       format!(
-        "[web]\ntrusted_proxies = [\"192.0.2.7/32\"]\n[web.authentication]\n\
-         trusted_networks = [{networks}]\ntrusted_role = \"{trusted_role}\"\n\
-         [web.authentication.proxy]\nenabled = true\n\
-         [web.authentication.proxy.role_mapping]\nadministrator = [\"admins\"]\n"
+        "[web.authentication]\ntrusted_networks = [{networks}]\n\
+         trusted_role = \"{trusted_role}\"\n"
       )
     };
     let app = app(&config("\"127.0.0.0/8\"", "administrator"), &[]).await;
@@ -535,31 +545,6 @@ mod tests {
     };
     let by_network = create(&app, json!({ "name": "lan", "role": "Administrator" })).await;
     let by_network = by_network["secret"].as_str().unwrap().to_string();
-    // a proxy user who never had a page session, so no groups of theirs are stored to read a
-    // token's role from later
-    let by_proxy = app
-      .send_from(
-        "192.0.2.7:1",
-        with(
-          with(
-            request(
-              "POST",
-              "/api/v0/tokens",
-              Some(json!({ "name": "proxied", "role": "ReadOnly" })),
-            ),
-            "x-authentik-username",
-            "alice",
-          ),
-          "x-authentik-groups",
-          "admins",
-        ),
-      )
-      .await;
-    assert_eq!(by_proxy.status, 403, "{:?}", by_proxy.body);
-    assert_eq!(
-      by_proxy.json()["error"],
-      "Your role cannot be read again on later requests, so a token of yours would not work"
-    );
     let me = async |secret: &str| {
       app
         .send_from(
@@ -575,6 +560,84 @@ mod tests {
     reload(config("\"10.0.0.0/8\"", "administrator")).await;
     let refused = me(&by_network).await;
     assert_eq!(refused.status, 401, "the network is trusted no more");
+    assert_eq!(refused.json()["error"], "token_owner_without_role");
+  }
+
+  #[tokio::test]
+  async fn a_header_only_proxy_users_tokens_follow_the_groups_it_forwarded() {
+    use crate::auth::tokens::{self, NewToken};
+
+    let config = |mapping: &str| {
+      format!(
+        "[web]\ntrusted_proxies = [\"192.0.2.7/32\"]\n[web.authentication.proxy]\n\
+         enabled = true\n[web.authentication.proxy.role_mapping]\n{mapping}"
+      )
+    };
+    let app = app(&config("administrator = [\"admins\"]\n"), &[]).await;
+    let reload = async |text: String| {
+      std::fs::write(app.dir.path().join("config.toml"), text).unwrap();
+      app.state.config.reload().await.unwrap();
+    };
+    let me = async |secret: &str| {
+      app
+        .send_from(
+          OUTSIDE,
+          bearer(request("GET", "/api/v0/session", None), secret),
+        )
+        .await
+    };
+    // a token of theirs from before any groups of theirs were recorded
+    let (_, older) = tokens::create(
+      &app.state.auth.db,
+      NewToken {
+        name: "older".into(),
+        role: Role::ReadOnly,
+        owner: "proxy:alice".into(),
+        cidr: None,
+        expires_at: None,
+      },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+      me(&older).await.status,
+      401,
+      "no groups to read a role from"
+    );
+
+    // a proxy user who never had a page session
+    let by_proxy = app
+      .send_from(
+        "192.0.2.7:1",
+        with(
+          with(
+            request(
+              "POST",
+              "/api/v0/tokens",
+              Some(json!({ "name": "proxied", "role": "Administrator" })),
+            ),
+            "x-authentik-username",
+            "alice",
+          ),
+          "x-authentik-groups",
+          "admins",
+        ),
+      )
+      .await;
+    assert_eq!(by_proxy.status, 201, "{:?}", by_proxy.body);
+    let secret = by_proxy.json()["secret"].as_str().unwrap().to_string();
+    assert_eq!(me(&secret).await.json()["role"], "Administrator");
+    assert_eq!(
+      me(&older).await.json()["role"],
+      "ReadOnly",
+      "resolves again"
+    );
+
+    reload(config("readonly = [\"admins\"]\n")).await;
+    assert_eq!(me(&secret).await.json()["role"], "ReadOnly");
+    reload(config("readwrite = [\"staff\"]\n")).await;
+    let refused = me(&secret).await;
+    assert_eq!(refused.status, 401, "their groups give no role now");
     assert_eq!(refused.json()["error"], "token_owner_without_role");
   }
 }
