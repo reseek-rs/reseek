@@ -50,4 +50,31 @@ describe("a room's members", () => {
     expect(members.error).toBe("");
     stop();
   });
+
+  it("keep the wall's order while it is held, and take a ticker's change after", async () => {
+    const net = connected(() => undefined, "Administrator");
+    const members = new RoomMembers("jazz");
+    const stop = $effect.root(() => members.follow());
+    flushSync();
+    const room = (bob: string): Schemas["Room"] => ({
+      ...jazz(bob),
+      tickers: [
+        { username: "alice", ticker: "hi", hidden: false },
+        { username: "bob", ticker: bob, hidden: false }
+      ]
+    });
+    const order = () => members.shownWall.map((l) => l.username);
+    net.frame("rooms.update", room("old"));
+    await vi.waitFor(() => expect(order()).toEqual(["alice", "bob"]));
+
+    // a selection on the wall holds it while bob changes his ticker
+    const release = members.wallFreeze.hold();
+    net.frame("rooms.update", room("new"));
+    await vi.waitFor(() => expect(members.wall[0].ticker).toBe("new"));
+    expect(order()).toEqual(["alice", "bob"]);
+    expect(members.shownWall[1].ticker).toBe("new");
+    release();
+    expect(order()).toEqual(["bob", "alice"]);
+    stop();
+  });
 });
