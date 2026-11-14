@@ -27,8 +27,8 @@
   import Tooltip from "#lib/components/ui/Tooltip.svelte";
   import Avatar from "#lib/components/users/Avatar.svelte";
   import GroupBadge from "#lib/components/users/GroupBadge.svelte";
-  import NameText from "#lib/components/users/NameText.svelte";
   import Presence from "#lib/components/users/Presence.svelte";
+  import Username from "#lib/components/users/Username.svelte";
   import { Busy } from "#lib/feedback/busy.svelte.js";
   import { copyText } from "#lib/feedback/clipboard.svelte.js";
   import { toast } from "#lib/feedback/toast.svelte.js";
@@ -39,7 +39,6 @@
   import { clock } from "#lib/ui/clock.svelte.js";
   import { befriend, canManage, configBlocked, reach, setBuddy } from "#lib/users/actions.js";
   import { blockEnd, blocking, unblock } from "#lib/users/block.svelte.js";
-  import { nameColor } from "#lib/users/colors.js";
   import { queueOf } from "#lib/users/groups.js";
   import { pictureOf, SHARES_UNKNOWN } from "#lib/users/profile.svelte.js";
   import { BUDDY, CONFIG_BLOCKED } from "#lib/wording.js";
@@ -116,12 +115,8 @@
             text={p.presence && p.presenceAt
               ? `${p.presence} since ${chatTime(p.presenceAt, clock.now)}`
               : undefined} />
-          <h1
-            class="min-w-0 font-mono text-2xl font-semibold tracking-tight wrap-anywhere"
-            dir="auto"
-            aria-label={name}
-            style:color={nameColor(name)}>
-            <NameText {name} />
+          <h1 class="min-w-0 font-mono text-2xl tracking-tight" aria-label={name}>
+            <Username plain {name} wrap class="font-semibold" />
           </h1>
         </span>
         <Tooltip text="Copy username">

@@ -153,12 +153,15 @@
     }
   };
 
-  /** the box a name sits in, no wider than its text or than the room it has */
-  const box = "inline-flex max-w-full min-w-0 items-center align-baseline";
+  /**
+   * the box a name sits in, no wider than its text or than the room it has. Its weight is the
+   * name's, which a caller's class may change
+   */
+  const box = "inline-flex max-w-full min-w-0 items-center align-baseline font-medium";
   /** the name's own look, as a link or as text; the server's name has no color of a user's */
   const look: HTMLAttributes<HTMLElement> = $derived({
     dir: "auto",
-    class: wrap ? "font-medium wrap-anywhere" : "truncate font-medium",
+    class: wrap ? "wrap-anywhere" : "truncate",
     style: name === SERVER ? undefined : `color: ${nameColor(name)}`
   });
 

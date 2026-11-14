@@ -181,7 +181,8 @@ describe("a name's look", () => {
     for (const shown of [cardBox, document.querySelector('[role="menu"]')!, entryBox]) {
       const text = drawn(shown);
       expect(text?.getAttribute("style")).toBe(look.getAttribute("style"));
-      expect(text?.classList.contains("font-medium")).toBe(true);
+      // the weight is the box's, which a caller may change
+      expect(text?.parentElement?.classList.contains("font-medium")).toBe(true);
       expect(text?.classList.contains("font-mono")).toBe(false);
     }
     expect(drawn(cardBox)!.textContent).toBe("·dj shadow·");
