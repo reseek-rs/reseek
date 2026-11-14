@@ -68,7 +68,10 @@ impl Migration {
 /// Checksums of whole migration files as older versions recorded them, for the files whose
 /// comments have been corrected since: the file under `migrations/` and the checksum of its
 /// earlier text.
-const WHOLE_FILE_BEFORE: &[(&str, &str)] = &[];
+const WHOLE_FILE_BEFORE: &[(&str, &str)] = &[(
+  "users/0002_drop_interests",
+  "2a9a2d16d7977805a69de4e242f72e7a0c0472c9b192ef8310e52fe9ac43ba58",
+)];
 
 fn sha256(text: &str) -> String {
   let digest = Sha256::digest(text.as_bytes());

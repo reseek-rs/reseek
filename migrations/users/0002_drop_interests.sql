@@ -1,3 +1,2 @@
--- what we like and hate are the soulseek.interests options; the daemon moves the rows into the
--- configuration before this runs
+-- what we like and hate are the soulseek.interests options; the table is dropped with its rows
 DROP TABLE interests;

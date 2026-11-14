@@ -375,6 +375,44 @@ mod tests {
   /// `users.db` before groups had a table of their own.
   static BEFORE_GROUPS: Schema = db::schema!("users", ["0001_initial", "0002_drop_interests"]);
 
+  /// `0002_drop_interests.sql` as databases first recorded it, before its comment was corrected
+  const DROP_INTERESTS_AS_RECORDED: &str = "-- what we like and hate are the \
+    soulseek.interests options; the daemon moves the rows into the\n-- configuration before \
+    this runs\nDROP TABLE interests;\n";
+
+  #[tokio::test]
+  async fn a_database_recorded_before_checksums_left_comments_out_opens() {
+    use sha2::{Digest, Sha256};
+    let whole = |text: &str| -> String {
+      Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let location = Location::on_disk(dir.path());
+    let db = Database::open(&SCHEMA, &location).await.unwrap();
+    let recorded = [
+      (1, whole(SCHEMA.migrations[0].sql)),
+      (2, whole(DROP_INTERESTS_AS_RECORDED)),
+      (3, whole(SCHEMA.migrations[2].sql)),
+    ];
+    db.write(move |conn| {
+      for (version, checksum) in &recorded {
+        conn.execute(
+          "UPDATE schema_migrations SET checksum = ?1 WHERE version = ?2",
+          params![checksum, version],
+        )?;
+      }
+      Ok(())
+    })
+    .await
+    .unwrap();
+    db.close().await;
+    drop(db);
+    Database::open(&SCHEMA, &location).await.unwrap();
+  }
+
   #[tokio::test]
   async fn tags_upload_groups_and_trusted_buddies_become_memberships() {
     let dir = tempfile::tempdir().unwrap();
