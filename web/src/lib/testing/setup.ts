@@ -1,3 +1,5 @@
+import { beforeEach } from "vitest";
+
 import { installMedia } from "./media";
 
 // jsdom lays nothing out and has no scrollIntoView; lists call it to keep the focused row in view
@@ -25,3 +27,10 @@ Object.defineProperty(Element.prototype, "clientHeight", {
 });
 // nor matchMedia, which reduced motion and the narrow layout are read with
 installMedia();
+// jsdom works out :focus-visible from the last key or mouse event the window saw, which the test
+// before would leave behind: each test starts as after a press, and moves focus with the keys
+// through `focusByKeys` where it means to
+beforeEach(() => {
+  (document.activeElement as HTMLElement | null)?.blur?.();
+  window.dispatchEvent(new MouseEvent("mousedown"));
+});
