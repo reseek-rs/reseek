@@ -16,7 +16,8 @@ use crate::db::{self, read_timestamp};
 pub const COLUMNS: &str = "Id, JobId, Username, Direction, Filename, Size, State, RequestedAt, \
                            EnqueuedAt, StartedAt, EndedAt, BytesTransferred, AverageSpeed, \
                            PlaceInQueue, Exception, Attempts, NextAttemptAt, Removed, LocalPath, \
-                           Destination, SearchId, Paused, QueuePosition, Folder";
+                           Destination, SearchId, Paused, QueuePosition, Folder, \
+                           WaitingForUser";
 
 /// The order transfers are listed in when nothing else decides: as they were asked for, and
 /// rows from the same instant in the order they were written, since their ids are random.
@@ -24,8 +25,7 @@ pub const ASKED_ORDER: &str = "RequestedAt, rowid";
 /// [`ASKED_ORDER`] reversed, the newest first.
 pub const NEWEST_FIRST: &str = "RequestedAt DESC, rowid DESC";
 
-/// Why a download waits here for its user: they are offline. The reason is what marks the
-/// wait, which ends when they are back.
+/// The reason shown for a download that waits here for its user: they are offline.
 pub const USER_OFFLINE: &str = "The user is offline";
 
 /// One transfer's row.
@@ -79,6 +79,9 @@ pub struct Record {
   /// where a download stands in the local queue, lower starting first; none on an upload. A
   /// running download only writes it when it is new: the user's reorders write it apart
   pub queue_position: Option<f64>,
+  /// a download waiting here for its user, who is offline, to come back; cleared by
+  /// [`Record::enter`], so it goes with the wait
+  pub waiting_for_user: bool,
 }
 
 impl Record {
@@ -107,6 +110,7 @@ impl Record {
       local_path: None,
       paused: false,
       queue_position: None,
+      waiting_for_user: false,
     }
   }
 
@@ -170,6 +174,7 @@ impl Record {
       local_path: text(18)?,
       paused: row.get(21)?,
       queue_position: row.get(22)?,
+      waiting_for_user: row.get(24)?,
     })
   }
 
@@ -230,7 +235,7 @@ impl Record {
   /// Whether the download waits here for its user, who is offline, to come back; a paused one
   /// waits for its resume.
   pub fn waits_for_user(&self) -> bool {
-    !self.paused && self.state == State::WAITING && self.exception.as_deref() == Some(USER_OFFLINE)
+    self.waiting_for_user && !self.paused
   }
 
   /// Whether the transfer has finished, whatever the outcome.
@@ -255,10 +260,10 @@ impl Record {
   }
 
   /// Moves the transfer to `to` when the state machine allows it, clearing what the old state
-  /// left that the new one does not have. Every move clears the reason it failed, which the
-  /// caller gives again for a failure or a retry. Waiting here again clears the times and the
-  /// speed of the try before; a completed transfer is stamped with when it ended. A move that
-  /// is refused leaves the record as it is.
+  /// left that the new one does not have. Every move clears the reason it failed and the wait
+  /// for its user, which the caller gives again for a failure, a retry or a wait. Waiting here
+  /// again clears the times and the speed of the try before; a completed transfer is stamped
+  /// with when it ended. A move that is refused leaves the record as it is.
   pub fn enter(&mut self, to: State) -> Result<(), Refused> {
     let refused = Refused {
       from: self.state.kind(),
@@ -269,6 +274,7 @@ impl Record {
     }
     self.state = to;
     self.exception = None;
+    self.waiting_for_user = false;
     match to {
       State::QueuedLocally { .. } => {
         self.started_at = None;

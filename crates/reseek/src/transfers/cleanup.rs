@@ -56,7 +56,7 @@ pub async fn end_unfinished(db: &Database) -> Result<usize, DbError> {
         &format!(
           "UPDATE Transfers SET State = ?1, StateDescription = ?2, EndedAt = ?3, \
            Exception = ?4, Resumable = (Direction = ?5 OR Resumable), NextAttemptAt = NULL, \
-           PlaceInQueue = NULL WHERE {UNFINISHED} AND Paused = 0"
+           PlaceInQueue = NULL, WaitingForUser = 0 WHERE {UNFINISHED} AND Paused = 0"
         ),
         params![
           column(errored),

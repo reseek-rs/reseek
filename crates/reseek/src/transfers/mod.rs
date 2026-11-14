@@ -37,7 +37,8 @@ pub static SCHEMA: Schema = db::schema!(
     "0001_initial",
     "0002_queue_position",
     "0003_folder",
-    "0004_state_lost"
+    "0004_state_lost",
+    "0005_waiting_for_user"
   ]
 );
 
@@ -373,9 +374,13 @@ mod tests {
         );
       }
     }
+    // the columns later migrations add are left out
+    let mut after_rows = migrated.write(whole(kept_ids.clone())).await.unwrap();
+    for (after, before) in after_rows.iter_mut().zip(&before_rows) {
+      after.truncate(before.len());
+    }
     assert_eq!(
-      migrated.write(whole(kept_ids.clone())).await.unwrap(),
-      before_rows,
+      after_rows, before_rows,
       "a row in a state the daemon writes is left as it was"
     );
     for id in kept_ids.iter().copied() {
@@ -413,5 +418,62 @@ mod tests {
       ended >= before - chrono::Duration::seconds(1),
       "a row that holds no time ends when it is migrated"
     );
+  }
+
+  /// `transfers.db` before a download's wait for its user had a column of its own.
+  static BEFORE_WAITING_FOR_USER: Schema = db::schema!(
+    "transfers",
+    [
+      "0001_initial",
+      "0002_queue_position",
+      "0003_folder",
+      "0004_state_lost"
+    ]
+  );
+
+  #[tokio::test]
+  async fn downloads_whose_reason_said_they_wait_for_their_user_are_marked_waiting() {
+    use TransferStates::{QueuedLocally, QueuedRemotely};
+
+    let dir = tempfile::tempdir().unwrap();
+    let location = Location::on_disk(dir.path());
+    let old = Database::open(&BEFORE_WAITING_FOR_USER, &location)
+      .await
+      .unwrap();
+    let offline = Some(record::USER_OFFLINE.to_string());
+    let row = |state| Row {
+      exception: offline.clone(),
+      ..Row::new("alice", TransferDirection::Download, state)
+    };
+    let waiting = row(QueuedLocally);
+    let paused = row(QueuedLocally);
+    let queued = row(QueuedRemotely);
+    let other = Row {
+      exception: Some("Connection refused".to_string()),
+      ..row(QueuedLocally)
+    };
+    let upload = Row {
+      direction: TransferDirection::Upload,
+      ..row(QueuedLocally)
+    };
+    let ids = [waiting.id, paused.id, queued.id, other.id, upload.id];
+    let paused_id = paused.id.to_string();
+    insert(&old, vec![waiting, paused, queued, other, upload]).await;
+    old
+      .write(move |conn| conn.execute("UPDATE Transfers SET Paused = 1 WHERE Id = ?1", [paused_id]))
+      .await
+      .unwrap();
+    drop(old);
+    let migrated = open(&location).await.unwrap();
+    let marked = migrated
+      .read(move |conn| {
+        ids
+          .iter()
+          .map(|id| store::get(conn, *id).map(|record| record.unwrap().waiting_for_user))
+          .collect::<rusqlite::Result<Vec<_>>>()
+      })
+      .await
+      .unwrap();
+    assert_eq!(marked, [true, false, false, false, false]);
   }
 }

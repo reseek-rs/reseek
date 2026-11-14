@@ -23,9 +23,9 @@ pub fn insert(conn: &Connection, record: &Record) -> rusqlite::Result<()> {
     "INSERT INTO Transfers (Id, JobId, Username, Direction, Filename, Size, State, \
      StateDescription, RequestedAt, EnqueuedAt, StartedAt, EndedAt, BytesTransferred, \
      AverageSpeed, PlaceInQueue, Exception, Removed, Attempts, NextAttemptAt, LocalPath, \
-     Destination, SearchId, Paused, QueuePosition, Folder) \
+     Destination, SearchId, Paused, QueuePosition, Folder, WaitingForUser) \
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, \
-     ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+     ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
     params![
       record.id.to_string(),
       record.job_id.map(|id| id.to_string()),
@@ -52,6 +52,7 @@ pub fn insert(conn: &Connection, record: &Record) -> rusqlite::Result<()> {
       record.paused,
       record.queue_position,
       record.folder,
+      record.waiting_for_user,
     ],
   )?;
   entered(conn, record.id, record.state.kind(), record.requested_at)
@@ -124,7 +125,7 @@ pub fn save(conn: &Connection, record: &Record) -> rusqlite::Result<Saved> {
        StartedAt = ?6, EndedAt = ?7, BytesTransferred = ?8, AverageSpeed = ?9, \
        PlaceInQueue = ?10, Exception = ?11, Attempts = ?12, NextAttemptAt = ?13, Removed = ?14, \
        RemovedAt = CASE WHEN ?14 THEN coalesce(RemovedAt, ?15) END, LocalPath = ?16, \
-       Paused = ?17 WHERE Id = ?1 AND {}",
+       Paused = ?17, WaitingForUser = ?18 WHERE Id = ?1 AND {}",
       followed_by(record)
     ),
     params![
@@ -145,6 +146,7 @@ pub fn save(conn: &Connection, record: &Record) -> rusqlite::Result<Saved> {
       timestamp(Utc::now()),
       record.local_path,
       record.paused,
+      record.waiting_for_user,
     ],
   )?;
   saved(conn, record, changed)
@@ -157,7 +159,8 @@ pub fn save_state(conn: &Connection, record: &Record) -> rusqlite::Result<Saved>
   let changed = conn.execute(
     &format!(
       "UPDATE Transfers SET State = ?2, StateDescription = ?3, StartedAt = ?4, EndedAt = ?5, \
-       BytesTransferred = ?6, AverageSpeed = ?7, Exception = ?8 WHERE Id = ?1 AND {}",
+       BytesTransferred = ?6, AverageSpeed = ?7, Exception = ?8, WaitingForUser = ?9 \
+       WHERE Id = ?1 AND {}",
       followed_by(record)
     ),
     params![
@@ -169,14 +172,15 @@ pub fn save_state(conn: &Connection, record: &Record) -> rusqlite::Result<Saved>
       i64::try_from(record.bytes_transferred).unwrap_or(i64::MAX),
       record.average_speed,
       record.exception,
+      record.waiting_for_user,
     ],
   )?;
   saved(conn, record, changed)
 }
 
 /// Ends the transfer `id` in the completed `state` at `at` with `exception`, unless it ended
-/// already; the retry time and the queue place go with the wait they belonged to, and a pause
-/// with the download it held. Returns whether it was ended here.
+/// already; the retry time, the queue place and the wait for the user go with the wait they
+/// belonged to, and a pause with the download it held. Returns whether it was ended here.
 pub fn end_unless_ended(
   conn: &Connection,
   id: Uuid,
@@ -187,7 +191,8 @@ pub fn end_unless_ended(
   let changed = conn.execute(
     &format!(
       "UPDATE Transfers SET State = ?2, StateDescription = ?3, EndedAt = ?4, Exception = ?5, \
-       NextAttemptAt = NULL, PlaceInQueue = NULL, Paused = 0 WHERE Id = ?1 AND {}",
+       NextAttemptAt = NULL, PlaceInQueue = NULL, Paused = 0, WaitingForUser = 0 \
+       WHERE Id = ?1 AND {}",
       in_states(entered_from(state))
     ),
     params![
@@ -436,6 +441,43 @@ mod tests {
     assert!(!ended);
     let read = db.read(move |conn| get(conn, id)).await.unwrap().unwrap();
     assert_eq!(read, running);
+  }
+
+  /// A download waiting for its user that is canceled, or ended by a stop, no longer waits.
+  #[tokio::test]
+  async fn a_download_ended_while_it_waits_for_its_user_no_longer_waits() {
+    let db = transfers().await;
+    let waiting = || Record {
+      waiting_for_user: true,
+      ..Record::download("alice", "a.flac", 10)
+    };
+    let (canceled, stopped) = (waiting(), waiting());
+    let ids = [canceled.id, stopped.id];
+    db.write(move |conn| {
+      insert(conn, &canceled)?;
+      insert(conn, &stopped)
+    })
+    .await
+    .unwrap();
+    let waits = async |db: &crate::db::Database| -> Vec<bool> {
+      db.read(move |conn| {
+        ids
+          .iter()
+          .map(|id| get(conn, *id).map(|record| record.unwrap().waits_for_user()))
+          .collect()
+      })
+      .await
+      .unwrap()
+    };
+    assert_eq!(waits(&db).await, [true, true]);
+    let cancel = TransferStates::Completed(TransferOutcome::Cancelled);
+    db.write(move |conn| end_unless_ended(conn, ids[0], cancel, Utc::now(), "canceled"))
+      .await
+      .unwrap();
+    crate::transfers::cleanup::end_unfinished(&db)
+      .await
+      .unwrap();
+    assert_eq!(waits(&db).await, [false, false]);
   }
 
   #[tokio::test]

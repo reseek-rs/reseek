@@ -347,6 +347,7 @@ impl Downloads {
         .enter(State::WAITING)
         .expect("a download not completed may wait here");
       record.exception = Some(USER_OFFLINE.to_string());
+      record.waiting_for_user = true;
       self.save(record, entered).await;
     }
     self.watch_user(&record.username);
