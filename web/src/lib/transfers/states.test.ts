@@ -101,6 +101,11 @@ describe("the row menu", () => {
         .map(([name]) => name);
     expect(enabled("Queued, Remotely")).toEqual(["cancel", "remove", "pause", "queuePosition"]);
     expect(enabled("Queued, Locally")).toEqual(["cancel", "remove", "pause", "reorder"]);
+    // waiting for its user or a retry, it holds no place in the local queue to move
+    for (const away of [{ waitingForUser: true }, { nextAttemptAt: "2026-11-14T10:00:00Z" }]) {
+      const waiting = transfer({ state: "Queued, Locally", ...away });
+      expect(rowActions(waiting, "download").reorder).toBe(false);
+    }
     expect(enabled("InProgress")).toEqual(["cancel", "remove", "pause"]);
     // a paused download waits here: it resumes, and holds its place out of the queue's order
     expect(

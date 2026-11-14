@@ -221,7 +221,9 @@ export const rowActions = (t: Transfer, direction: Direction) => {
     downloadAgain: download && succeeded,
     pause: download && isCancelable(s) && !t.paused,
     resume: download && !!t.paused && isCancelable(s),
-    reorder: download && isQueuedLocally(s) && !t.paused,
+    // only a download waiting for its turn holds a place in the local queue; one waiting for
+    // its user or a retry does not
+    reorder: download && isQueuedLocally(s) && !t.paused && !t.waitingForUser && !t.nextAttemptAt,
     queuePosition: download && isQueuedRemotely(s),
     deny: !download && isCancelable(s),
     bump: !download && isQueued(s)
