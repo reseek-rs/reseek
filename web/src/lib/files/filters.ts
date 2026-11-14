@@ -265,7 +265,10 @@ export const parseFilters = (text: string, keys: readonly string[] = []): Filter
   return filters;
 };
 
-/** The attributes the filter looks at; a missing one never fails a numeric condition */
+/**
+ * The attributes the filter looks at; an unknown one never fails a numeric condition. A peer
+ * sends 0 for a bit rate, bit depth or length it doesn't know, so 0 is unknown as missing is
+ */
 export type FilterFile = {
   filename: string;
   size: number;
@@ -300,9 +303,9 @@ const passes = (c: Comparison, value: number) => {
 
 const VALUE: Record<Field, (file: FilterFile) => number | null | undefined> = {
   size: (f) => f.size,
-  bitrate: (f) => f.bitRate,
-  bitdepth: (f) => f.bitDepth,
-  length: (f) => f.length
+  bitrate: (f) => f.bitRate || null,
+  bitdepth: (f) => f.bitDepth || null,
+  length: (f) => f.length || null
 };
 
 /**
@@ -330,10 +333,10 @@ export const fileMatches = (filters: Filters, file: FilterFile, text = file.file
   const lossless = !!file.sampleRate && !!file.bitDepth;
   if (filters.isLossless && !lossless) return false;
   if (filters.isLossy && (!!file.sampleRate || !!file.bitDepth)) return false;
-  if (below(file.bitRate, filters.minBitRate)) return false;
-  if (below(file.bitDepth, filters.minBitDepth)) return false;
-  if (below(file.size, filters.minFileSize)) return false;
-  if (below(file.length, filters.minLength)) return false;
+  if (below(VALUE.bitrate(file), filters.minBitRate)) return false;
+  if (below(VALUE.bitdepth(file), filters.minBitDepth)) return false;
+  if (below(VALUE.size(file), filters.minFileSize)) return false;
+  if (below(VALUE.length(file), filters.minLength)) return false;
   for (const condition of filters.conditions) {
     const value = VALUE[condition.field](file);
     if (value === null || value === undefined) continue;

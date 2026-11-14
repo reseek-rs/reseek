@@ -146,6 +146,20 @@ describe("field tokens", () => {
     expect(matches("bitrate:320 length:5:00", { bitRate: null })).toBe(true);
   });
 
+  it("reads a bit rate, bit depth or length of 0 as unknown, as a missing one", () => {
+    const zero = { bitRate: 0, bitDepth: 0, length: 0 };
+    for (const filter of [
+      "bitrate:320",
+      "bd:24",
+      "length:3:00",
+      "minbr:128",
+      "minbd:16",
+      "minlen:60"
+    ])
+      expect(matches(filter, zero), filter).toBe(true);
+    expect(matches("size:1", { size: 0 })).toBe(false);
+  });
+
   it("keeps files of a type by the extension of their name", () => {
     expect(matches("type:flac|mp3", { filename: "a\\b.MP3" })).toBe(true);
     // a search result also carries the extension the peer sent, which may disagree
@@ -176,7 +190,9 @@ describe("field tokens", () => {
         ([field, attribute], op, typed, value) => {
           const filters = parseFilters(`${field}:${op}${typed}`);
           const kept = fileMatches(filters, file({ [attribute]: value }));
-          expect(kept).toBe(expected(op || ">=", typed, value));
+          // a 0 is unknown but for a size, and passes
+          const unknown = value === 0 && field !== "size";
+          expect(kept).toBe(unknown || expected(op || ">=", typed, value));
         }
       )
     );
