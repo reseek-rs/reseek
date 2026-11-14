@@ -63,12 +63,15 @@
     const iso = t.source === "api" ? at(t) : null;
     return iso ? Date.parse(iso) : 0;
   };
+  /** the role a token acts with now; one whose owner has no role now is refused */
+  const roleOf = (t: Listed) => t.role ?? "None";
+
   // a phone keeps the name and the revoke button, with the role and expiry under the name
   const grid = new Grid<Listed>({
     columns: () => [
       { id: "name", label: "Name", width: "10rem", grow: true, value: (t) => t.name.toLowerCase() },
       { id: "prefix", label: "Prefix", width: "8.5rem" },
-      { id: "role", label: "Role", width: "7.5rem", value: (t) => t.role },
+      { id: "role", label: "Role", width: "7.5rem", value: roleOf },
       {
         id: "created",
         label: "Created",
@@ -158,14 +161,29 @@
             </span>
             {#if viewport.phone}
               <span class="truncate text-xs text-fg-muted"
-                >{t.role}, {t.source === "api" ? expiryText(t) : `from ${t.cidr}`}</span>
+                >{roleOf(t)}, {t.source === "api" ? expiryText(t) : `from ${t.cidr}`}</span>
             {/if}
           </span>
           {#if !viewport.phone}
             <span role="gridcell" class="truncate px-2">
               {#if t.source === "api"}<code class="text-xs">slsk_{t.prefix}...</code>{/if}
             </span>
-            <span role="gridcell" class="truncate px-2">{t.role}</span>
+            {#if t.source === "api" && t.role !== t.grantedRole}
+              <Tooltip
+                text={t.role
+                  ? `Made as ${t.grantedRole}, held to its owner's role`
+                  : "Refused, its owner has no role now"}
+                dense>
+                {#snippet child({ props })}
+                  <span
+                    {...props}
+                    role="gridcell"
+                    class={["truncate px-2", !t.role && "text-danger"]}>{roleOf(t)}</span>
+                {/snippet}
+              </Tooltip>
+            {:else}
+              <span role="gridcell" class="truncate px-2">{roleOf(t)}</span>
+            {/if}
             {#if t.source === "api"}
               <span role="gridcell" class="truncate px-2">{dateTime(t.createdAt)}</span>
               <span role="gridcell" class="truncate px-2">{@render expiry(t)}</span>

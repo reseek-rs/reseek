@@ -19,8 +19,11 @@ pub struct Token {
   /// the first characters of the secret after `slsk_`, to tell tokens apart
   #[schema(example = "a1B2c3D4")]
   pub prefix: String,
-  /// what a request with the token may do
-  pub role: Role,
+  /// what a request with the token may do now: the role it was made with, or its owner's role
+  /// now when that is lower; null while its owner has no role, when the token is refused
+  pub role: Option<Role>,
+  /// the role it was made with
+  pub granted_role: Role,
   /// the subject of the principal that created it, such as `local:admin`
   #[schema(example = "local:admin")]
   pub owner: String,

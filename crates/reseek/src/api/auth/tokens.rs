@@ -2,6 +2,8 @@
 //! and renaming it or changing its expiry (only from a login session, never with a token), and
 //! revoking it.
 
+use std::collections::HashMap;
+
 use crate::api::extract::Json;
 use api_types::auth::Role;
 use api_types::auth::tokens::{
@@ -39,7 +41,7 @@ pub fn routes() -> OpenApiRouter<AppState> {
 }
 
 /// The caller's tokens, or everyone's for an administrator, who also sees the configuration's
-/// API keys. Revoked tokens are not listed.
+/// API keys, each token with the role it acts with now. Revoked tokens are not listed.
 #[utoipa::path(
   operation_id = "list_tokens",
   get, path = "/tokens", tag = "tokens",
@@ -51,12 +53,25 @@ async fn list(
 ) -> Result<Json<Vec<ListedToken>>, ApiError> {
   let admin = caller.principal.role == Role::Administrator;
   let owner = (!admin).then(|| caller.principal.subject.clone());
-  let mut listed: Vec<ListedToken> = tokens::list(&app.auth.db, owner)
+  let current = app.config.current();
+  let mut owners: HashMap<String, Option<Role>> = HashMap::new();
+  let mut listed = Vec::new();
+  for token in tokens::list(&app.auth.db, owner)
     .await
     .map_err(ApiError::internal)?
-    .iter()
-    .map(|token| ListedToken::Api(token.to_api()))
-    .collect();
+  {
+    let role = match owners.get(&token.owner) {
+      Some(role) => *role,
+      None => {
+        let role = owner_role(&app, &token.owner, &current.values)
+          .await
+          .map_err(ApiError::internal)?;
+        owners.insert(token.owner.clone(), role);
+        role
+      }
+    };
+    listed.push(ListedToken::Api(token.to_api(role)));
+  }
   if admin {
     if let Some(primary) = &app.primary_key {
       listed.push(ListedToken::Config(ConfigApiKey {
@@ -70,7 +85,6 @@ async fn list(
           .join(","),
       }));
     }
-    let current = app.config.current();
     for (name, key) in &current.values.web.authentication.api_keys {
       listed.push(ListedToken::Config(ConfigApiKey {
         name: name.clone(),
@@ -137,14 +151,14 @@ async fn create(
       .map_err(ApiError::internal)?;
   }
   let current = app.config.current();
-  let owner_role = owner_role(&app, owner, &current.values)
+  let Some(owner_role) = owner_role(&app, owner, &current.values)
     .await
-    .map_err(ApiError::internal)?;
-  if owner_role.is_none() {
+    .map_err(ApiError::internal)?
+  else {
     return Err(ApiError::forbidden(
       "Your role cannot be read again on later requests, so a token of yours would not work",
     ));
-  }
+  };
   let (token, secret) = tokens::create(
     &app.auth.db,
     NewToken {
@@ -168,7 +182,7 @@ async fn create(
     (
       StatusCode::CREATED,
       Json(CreatedToken {
-        token: token.to_api(),
+        token: token.to_api(Some(owner_role)),
         secret,
       }),
     )
@@ -204,7 +218,10 @@ async fn update(
     .map_err(ApiError::internal)?
     .ok_or_else(|| ApiError::not_found("No such token"))?;
   info!(id = %id, by = caller.principal.subject, "API token changed");
-  Ok(Json(token.to_api()))
+  let owner = owner_role(&app, &token.owner, &app.config.current().values)
+    .await
+    .map_err(ApiError::internal)?;
+  Ok(Json(token.to_api(owner)))
 }
 
 /// Revokes a token, closing the event streams it opened; the owner's or, for an administrator,
@@ -639,5 +656,73 @@ mod tests {
     let refused = me(&secret).await;
     assert_eq!(refused.status, 401, "their groups give no role now");
     assert_eq!(refused.json()["error"], "token_owner_without_role");
+  }
+
+  #[tokio::test]
+  async fn the_list_shows_the_role_a_token_acts_with() {
+    let viewer = |role: &str| {
+      format!(
+        "{TRUSTED}[web.authentication.local.users.viewer]\npassword = \"look\"\nrole = \"{role}\"\n"
+      )
+    };
+    let app = app(&viewer("readwrite"), &[]).await;
+    let reload = async |text: String| {
+      std::fs::write(app.dir.path().join("config.toml"), text).unwrap();
+      app.state.config.reload().await.unwrap();
+    };
+    let login = app
+      .send_from(
+        OUTSIDE,
+        request(
+          "POST",
+          "/api/v0/session",
+          Some(json!({ "username": "viewer", "password": "look" })),
+        ),
+      )
+      .await;
+    let cookie = crate::testing::set_cookie(&login.headers, "reseek_session").unwrap();
+    let made = app
+      .send_from(
+        OUTSIDE,
+        with(
+          with(
+            request(
+              "POST",
+              "/api/v0/tokens",
+              Some(json!({ "name": "script", "role": "ReadWrite" })),
+            ),
+            "cookie",
+            &cookie,
+          ),
+          "origin",
+          "http://localhost",
+        ),
+      )
+      .await;
+    assert_eq!(made.status, 201, "{:?}", made.body);
+    assert_eq!(made.json()["token"]["role"], "ReadWrite");
+    let listed = async || {
+      let all = app
+        .send(request("GET", "/api/v0/tokens", None))
+        .await
+        .json();
+      let token = all
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "script")
+        .unwrap()
+        .clone();
+      (token["role"].clone(), token["grantedRole"].clone())
+    };
+    assert_eq!(listed().await, (json!("ReadWrite"), json!("ReadWrite")));
+    reload(viewer("readonly")).await;
+    assert_eq!(listed().await, (json!("ReadOnly"), json!("ReadWrite")));
+    reload(TRUSTED.to_string()).await;
+    assert_eq!(
+      listed().await,
+      (json!(null), json!("ReadWrite")),
+      "refused while its owner has no role"
+    );
   }
 }

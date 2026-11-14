@@ -77,13 +77,14 @@ pub struct StoredToken {
 }
 
 impl StoredToken {
-  /// The token as the API shows it.
-  pub fn to_api(&self) -> Token {
+  /// The token as the API shows it, whose owner has the role `owner` now.
+  pub fn to_api(&self, owner: Option<Role>) -> Token {
     Token {
       id: self.id,
       name: self.name.clone(),
       prefix: self.prefix.clone(),
-      role: self.role,
+      role: owner.map(|owner| self.acts_with(owner)),
+      granted_role: self.role,
       owner: self.owner.clone(),
       cidr: self.cidr.clone(),
       created_at: self.created_at,
@@ -93,13 +94,18 @@ impl StoredToken {
     }
   }
 
-  /// The principal a request with this token acts as, whose owner has the role `owner` now: the
+  /// The role a request with this token acts with, whose owner has the role `owner` now: the
   /// token's own role, or the owner's when that is lower.
+  pub fn acts_with(&self, owner: Role) -> Role {
+    self.role.min(owner)
+  }
+
+  /// The principal a request with this token acts as, whose owner has the role `owner` now.
   pub fn principal(&self, owner: Role) -> Principal {
     Principal {
       subject: format!("token:{}", self.id),
       name: self.name.clone(),
-      role: self.role.min(owner),
+      role: self.acts_with(owner),
       via: Via::ApiToken { id: self.id },
     }
   }

@@ -2432,15 +2432,16 @@ export interface paths {
         };
         /**
          * The caller's tokens, or everyone's for an administrator, who also sees the configuration's
-         *     API keys. Revoked tokens are not listed.
+         *     API keys, each token with the role it acts with now. Revoked tokens are not listed.
          */
         get: operations["list_tokens"];
         put?: never;
         /**
          * Creates a token with at most the caller's own role. Its secret is in the answer and is
-         *     never shown again. Needs a login session: a token cannot make tokens. Refused to a caller
-         *     whose role cannot be read again later, such as a proxy user with no web UI session, since
-         *     the token acts with no more than its owner's role on each request.
+         *     never shown again. Needs a login session: a token cannot make tokens. The groups a trusted
+         *     proxy forwards for the caller are recorded, since the token acts with no more than its
+         *     owner's role on each request and the role is read from them. Refused to a caller whose role
+         *     cannot be read again later.
          */
         post: operations["create"];
         delete?: never;
@@ -8243,6 +8244,8 @@ export interface components {
              * @description when it stops being accepted, null for never
              */
             expiresAt?: string | null;
+            /** @description the role it was made with */
+            grantedRole: components["schemas"]["Role"];
             /**
              * Format: uuid
              * @description the token's id
@@ -8270,8 +8273,11 @@ export interface components {
              * @example a1B2c3D4
              */
             prefix: string;
-            /** @description what a request with the token may do */
-            role: components["schemas"]["Role"];
+            /**
+             * @description what a request with the token may do now: the role it was made with, or its owner's role
+             *     now when that is lower; null while its owner has no role, when the token is refused
+             */
+            role?: components["schemas"]["Role"] | null;
         };
         /** @description The data of `TokenCreated` and `TokenRevoked`. */
         TokenChanged: {
