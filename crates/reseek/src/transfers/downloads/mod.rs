@@ -9,6 +9,7 @@
 //! run one at a time. Every record written is pushed to the `transfers` topic.
 
 mod attempt;
+mod away;
 mod complete;
 mod destination;
 mod enqueue;
@@ -175,6 +176,8 @@ pub struct Downloads {
   job_syncs: Turns,
   /// the local queue: the order waiting downloads start in
   starts: starts::Starts,
+  /// which users downloads wait on are offline
+  away: away::Away,
   /// the jobs whose files are still being enqueued
   open_jobs: jobs::Open,
   /// the enqueue calls of the API that may run at once
@@ -244,6 +247,7 @@ impl Downloads {
       turns: Turns::default(),
       job_syncs: Turns::default(),
       starts: starts::Starts::default(),
+      away: away::Away::default(),
       open_jobs: jobs::Open::default(),
       enqueue_calls: Semaphore::new(ENQUEUE_CALLS),
       resuming: tokio::sync::Mutex::default(),
@@ -555,6 +559,18 @@ impl Downloads {
     }
     entry.arrived = true;
     true
+  }
+
+  /// Takes the `presence` the server gave for `username`: their downloads stop asking when it
+  /// is offline, and those waiting for them try again when it is not.
+  pub fn presence(&self, username: &str, presence: api_types::users::UserPresence) {
+    let offline = presence == api_types::users::UserPresence::Offline;
+    self.away.heard(username, offline);
+  }
+
+  /// After a login: the downloads waiting for a user who was offline try them again.
+  pub fn login(&self) {
+    self.away.logged_in();
   }
 
   /// Cancels every unfinished download from `username`, who was just blocked, when `scopes`

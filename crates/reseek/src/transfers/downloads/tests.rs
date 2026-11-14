@@ -674,24 +674,20 @@ async fn a_stop_waits_past_its_limit_for_a_download_moving_its_file() {
 async fn a_reorder_of_the_local_queue_is_written_to_the_database() {
   let app = app(TRUSTED, &[]).await;
   let downloads = &app.state.downloads;
-  // no slot, so every resumed download waits in the queue
-  downloads.starts.set_limit(Some(0));
+  // waiting in the local queue for a request none of whose files may take a turn
+  let request = downloads.starts.request();
   let mut ids = Vec::new();
+  // kept to the end, as the tasks that wait would be
+  let mut _waiting = Vec::new();
   for name in ["1.flac", "2.flac", "3.flac"] {
-    let mut held = Record::download("alice", &format!("@@a\\Album\\{name}"), 10);
-    held.paused = true;
-    insert(&app, &held).await;
-    ids.push(held.id);
-  }
-  let resume = json!({ "ids": ids, "action": "resume" });
-  app
-    .call("POST", "/api/v0/transfers/downloads/bulk", Some(resume))
-    .await;
-  for _ in 0..1000 {
-    if downloads.queue_order().len() == 3 {
-      break;
-    }
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    let record = Record::download("alice", &format!("@@a\\Album\\{name}"), 10);
+    insert(&app, &record).await;
+    let position = read(&app, record.id).await.queue_position.unwrap();
+    let wait = downloads
+      .starts
+      .wait(record.id, "alice", position, Some((request, 0)), false);
+    _waiting.push(wait);
+    ids.push(record.id);
   }
   assert_eq!(downloads.queue_order(), ids);
 
@@ -1180,6 +1176,353 @@ async fn an_albums_files_are_asked_of_their_user_in_the_order_enqueued() {
   }
   assert!(enqueued.await.unwrap()[0].is_ok());
   assert_eq!(asked, album);
+}
+
+/// A peer the daemon reaches at a loopback listener of the test's, through a scripted server
+/// that says where each listener's user is while they are online, and that they are offline
+/// otherwise.
+struct Peers {
+  server: crate::testing::soulseek::Server,
+  listeners: std::collections::HashMap<&'static str, tokio::net::TcpListener>,
+  online: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+}
+
+impl Peers {
+  /// `usernames`, online, for a daemon `app` logs in to the server.
+  async fn start(app: &TestApp, usernames: &[&'static str]) -> Self {
+    use soulseek_proto::server::{
+      GetPeerAddressResponse, UserStats, UserStatus, WatchUserResponse, WatchedUser,
+    };
+    use soulseek_proto::{ServerRequest, ServerResponse, UserPresence};
+
+    let mut listeners = std::collections::HashMap::new();
+    let mut ports = std::collections::HashMap::new();
+    for username in usernames {
+      let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+      ports.insert(username.to_string(), listener.local_addr().unwrap().port());
+      listeners.insert(*username, listener);
+    }
+    let online = std::sync::Arc::new(std::sync::Mutex::new(
+      usernames
+        .iter()
+        .map(|u| u.to_string())
+        .collect::<std::collections::HashSet<_>>(),
+    ));
+    let seen = online.clone();
+    let server = crate::testing::soulseek::Server::start(move |request| {
+      let is_online = |username: &str| reseek_shares::lock(&seen).contains(username);
+      let presence = |username: &str| {
+        if is_online(username) {
+          UserPresence::Online
+        } else {
+          UserPresence::Offline
+        }
+      };
+      match request {
+        ServerRequest::GetPeerAddress(asked) => {
+          let here = is_online(&asked.username);
+          vec![ServerResponse::GetPeerAddress(GetPeerAddressResponse {
+            username: asked.username.clone(),
+            ip: if here {
+              std::net::Ipv4Addr::LOCALHOST
+            } else {
+              std::net::Ipv4Addr::UNSPECIFIED
+            },
+            port: if here {
+              ports[&asked.username].into()
+            } else {
+              0
+            },
+            obfuscation: None,
+          })]
+        }
+        ServerRequest::GetStatus(asked) => vec![ServerResponse::GetStatus(UserStatus {
+          username: asked.username.clone(),
+          presence: presence(&asked.username),
+          is_privileged: false,
+        })],
+        ServerRequest::WatchUser(asked) => vec![ServerResponse::WatchUser(WatchUserResponse {
+          username: asked.username.clone(),
+          user: Some(WatchedUser {
+            status: presence(&asked.username),
+            stats: UserStats::default(),
+            country_code: None,
+          }),
+        })],
+        _ => Vec::new(),
+      }
+    })
+    .await;
+    server.login(app).await;
+    Self {
+      server,
+      listeners,
+      online,
+    }
+  }
+
+  /// Sets `username` online or offline, and has the server say so.
+  fn presence(&self, username: &str, online: bool) {
+    use soulseek_proto::server::UserStatus;
+    use soulseek_proto::{ServerResponse, UserPresence};
+
+    let mut users = reseek_shares::lock(&self.online);
+    if online {
+      users.insert(username.to_string());
+    } else {
+      users.remove(username);
+    }
+    drop(users);
+    self.server.send(vec![ServerResponse::GetStatus(UserStatus {
+      username: username.to_string(),
+      presence: if online {
+        UserPresence::Online
+      } else {
+        UserPresence::Offline
+      },
+      is_privileged: false,
+    })]);
+  }
+
+  /// The daemon's next message connection to `username`, past its introduction.
+  async fn connected(&self, username: &str) -> Peer {
+    let within = std::time::Duration::from_secs(10);
+    let (stream, _) = tokio::time::timeout(within, self.listeners[username].accept())
+      .await
+      .expect("the daemon connects")
+      .unwrap();
+    let mut peer = Peer {
+      stream,
+      buffer: Vec::new(),
+    };
+    let init = crate::testing::soulseek::next_frame(
+      &mut peer.stream,
+      &mut peer.buffer,
+      soulseek_proto::frame::FrameKind::Init,
+    )
+    .await;
+    assert!(matches!(
+      soulseek_proto::InitMessage::decode(&init).unwrap(),
+      soulseek_proto::InitMessage::PeerInit(_)
+    ));
+    peer
+  }
+}
+
+/// The test's side of a message connection the daemon made.
+struct Peer {
+  stream: tokio::net::TcpStream,
+  buffer: Vec<u8>,
+}
+
+impl Peer {
+  /// The next peer message the daemon sends, within `within`; none when none comes.
+  async fn next_within(
+    &mut self,
+    within: std::time::Duration,
+  ) -> Option<soulseek_proto::PeerMessage> {
+    let frame = tokio::time::timeout(
+      within,
+      crate::testing::soulseek::next_frame(
+        &mut self.stream,
+        &mut self.buffer,
+        soulseek_proto::frame::FrameKind::Peer,
+      ),
+    )
+    .await
+    .ok()?;
+    Some(soulseek_proto::PeerMessage::decode(&frame).unwrap())
+  }
+
+  /// The next peer message the daemon sends, other than a question of its place in the queue.
+  async fn next(&mut self) -> soulseek_proto::PeerMessage {
+    loop {
+      let message = self
+        .next_within(std::time::Duration::from_secs(10))
+        .await
+        .expect("the daemon sends a message");
+      if !matches!(message, soulseek_proto::PeerMessage::PlaceInQueueRequest(_)) {
+        return message;
+      }
+    }
+  }
+
+  /// Reads the daemon's request for `filename`.
+  async fn asked_for(&mut self, filename: &str) {
+    match self.next().await {
+      soulseek_proto::PeerMessage::QueueDownload(asked) => {
+        assert_eq!(asked.filename.as_str(), filename);
+      }
+      other => panic!("not a request for {filename}: {other:?}"),
+    }
+  }
+
+  async fn send(&mut self, message: soulseek_proto::PeerMessage) {
+    use tokio::io::AsyncWriteExt;
+    self.stream.write_all(&message.encode()).await.unwrap();
+  }
+
+  /// Offers `filename` under `token`, and returns the daemon's answer.
+  async fn offer(&mut self, filename: &str, token: u32) -> soulseek_proto::peer::TransferResponse {
+    use soulseek_proto::peer::TransferRequest;
+    self
+      .send(soulseek_proto::PeerMessage::TransferRequest(
+        TransferRequest {
+          direction: soulseek_proto::TransferDirection::Upload,
+          token,
+          filename: filename.into(),
+          file_size: Some(10),
+        },
+      ))
+      .await;
+    match self.next().await {
+      soulseek_proto::PeerMessage::TransferResponse(answer) => answer,
+      other => panic!("not an answer to the offer: {other:?}"),
+    }
+  }
+}
+
+/// Enqueues `filename` from `username` and returns its download.
+async fn enqueued(app: &TestApp, username: &str, filename: &str) -> Uuid {
+  let group = super::Group {
+    username: username.into(),
+    files: vec![super::FileRequest {
+      filename: filename.into(),
+      size: 10,
+      position: None,
+    }],
+    destination: None,
+    folder: None,
+    search_id: None,
+  };
+  let results = app
+    .state
+    .downloads
+    .enqueue(Uuid::new_v4(), vec![group], false)
+    .await;
+  let enqueued = results.into_iter().next().unwrap().unwrap();
+  enqueued.enqueued[0].id
+}
+
+/// A user who goes offline while their file waits in their queue is waited for, and the try
+/// they were gone for does not count; once they are back the file is asked for again, and a
+/// failure while they are online counts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_download_whose_user_goes_offline_waits_for_them_without_spending_its_tries() {
+  let config = format!(
+    "[transfers.download.retry]\nattempts = 2\ndelay = \"1h\"\nmax_delay = \"1h\"\n{TRUSTED}"
+  );
+  let app = crate::testing::soulseek::app(&config).await;
+  let peers = Peers::start(&app, &["bob"]).await;
+  let file = "@@b\\Album\\1.flac";
+  let id = enqueued(&app, "bob", file).await;
+  let mut bob = peers.connected("bob").await;
+  bob.asked_for(file).await;
+  read_until(&app, id, |r| {
+    r.state.kind() == TransferStates::QueuedRemotely
+  })
+  .await;
+
+  peers.presence("bob", false);
+  let waiting = read_until(&app, id, Record::waits_for_user).await;
+  assert_eq!(
+    waiting.attempts, 1,
+    "the try bob was gone for does not count"
+  );
+  assert_eq!(waiting.next_attempt_at(), None);
+  assert!(waiting.transfer().waiting_for_user);
+
+  peers.presence("bob", true);
+  bob.asked_for(file).await;
+  let asked = read_until(&app, id, |r| !r.waits_for_user()).await;
+  assert_eq!(asked.attempts, 1);
+
+  // bob, online, fails it: that try counts
+  bob
+    .send(soulseek_proto::PeerMessage::UploadFailed(
+      soulseek_proto::peer::UploadFailed {
+        filename: file.into(),
+      },
+    ))
+    .await;
+  let retrying = read_until(&app, id, |r| r.next_attempt_at().is_some()).await;
+  assert_eq!(retrying.attempts, 2);
+  assert!(!retrying.waits_for_user());
+}
+
+/// A try that finds its user offline does not count: the download waits for them to come back,
+/// and is asked of them then.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_download_whose_try_finds_its_user_offline_waits_for_them() {
+  let config = format!(
+    "[transfers.download.retry]\nattempts = 2\ndelay = \"1s\"\nmax_delay = \"30s\"\n{TRUSTED}"
+  );
+  let app = crate::testing::soulseek::app(&config).await;
+  let peers = Peers::start(&app, &["bob"]).await;
+  // bob went offline without the server telling us
+  reseek_shares::lock(&peers.online).remove("bob");
+  let file = "@@b\\Album\\1.flac";
+  let mut held = Record::download("bob", file, 10);
+  held.paused = true;
+  insert(&app, &held).await;
+  let resume = json!({ "ids": [held.id], "action": "resume" });
+  app
+    .call("POST", "/api/v0/transfers/downloads/bulk", Some(resume))
+    .await;
+  let waiting = read_until(&app, held.id, Record::waits_for_user).await;
+  assert_eq!(waiting.attempts, 1);
+  // longer than the retries would have taken
+  tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+  let still = read(&app, held.id).await;
+  assert!(still.waits_for_user(), "{:?}", still.state);
+  assert_eq!(still.attempts, 1);
+
+  peers.presence("bob", true);
+  let mut bob = peers.connected("bob").await;
+  bob.asked_for(file).await;
+}
+
+/// With one download slot, files waiting in their users' queues hold none: both are asked for,
+/// the first offered takes the slot, one offered while it is held is declined, and that one is
+/// asked for again once the slot is free.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_download_slot_is_taken_only_by_a_file_offered_and_one_declined_is_asked_again() {
+  use soulseek_proto::peer::TransferResponse;
+
+  let config = format!("[transfers.download]\nslots = 1\n{TRUSTED}");
+  let app = crate::testing::soulseek::app(&config).await;
+  let peers = Peers::start(&app, &["alice", "bob"]).await;
+  let (alices, bobs) = ("@@a\\Album\\1.flac", "@@b\\Album\\1.flac");
+  let first = enqueued(&app, "alice", alices).await;
+  let mut alice = peers.connected("alice").await;
+  alice.asked_for(alices).await;
+  enqueued(&app, "bob", bobs).await;
+  let mut bob = peers.connected("bob").await;
+  bob.asked_for(bobs).await;
+
+  assert!(matches!(
+    alice.offer(alices, 1).await,
+    TransferResponse::Allowed { token: 1, .. }
+  ));
+  assert_eq!(
+    bob.offer(bobs, 2).await,
+    TransferResponse::Denied {
+      token: 2,
+      message: "Queued".into(),
+    }
+  );
+  let early = bob.next_within(std::time::Duration::from_secs(1)).await;
+  assert!(
+    !matches!(early, Some(soulseek_proto::PeerMessage::QueueDownload(_))),
+    "asked again while the slot is held: {early:?}"
+  );
+  app
+    .state
+    .downloads
+    .cancel("alice", first, false)
+    .await
+    .unwrap();
+  bob.asked_for(bobs).await;
 }
 
 #[tokio::test]

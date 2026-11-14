@@ -568,6 +568,7 @@ export const transfer = (
     percentComplete: state === "InProgress" ? 40 : 100,
     attempts: 1,
     paused: false,
+    waitingForUser: false,
     removed: false
   }) satisfies Schemas["Transfer"];
 

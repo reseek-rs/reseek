@@ -6625,7 +6625,10 @@ export interface components {
                  * @description when the peer queued our download or the upload entered our queue, null until then
                  */
                 enqueuedAt?: string | null;
-                /** @description why the transfer failed, null when it did not */
+                /**
+                 * @description why the transfer failed, null when it did not; for a download waiting here, why it waits:
+                 *     the try a retry follows failed, or its user is offline
+                 */
                 exception?: string | null;
                 /**
                  * @description the remote filename exactly as the peer shares it, usually with `\` separators
@@ -6700,6 +6703,11 @@ export interface components {
                  * @example alice
                  */
                 username: string;
+                /**
+                 * @description a download waiting here for its user, who is offline: it tries again once they are back,
+                 *     and the tries it made while they were away do not count
+                 */
+                waitingForUser: boolean;
             }[];
             /**
              * Format: int64
@@ -8312,7 +8320,10 @@ export interface components {
              * @description when the peer queued our download or the upload entered our queue, null until then
              */
             enqueuedAt?: string | null;
-            /** @description why the transfer failed, null when it did not */
+            /**
+             * @description why the transfer failed, null when it did not; for a download waiting here, why it waits:
+             *     the try a retry follows failed, or its user is offline
+             */
             exception?: string | null;
             /**
              * @description the remote filename exactly as the peer shares it, usually with `\` separators
@@ -8387,6 +8398,11 @@ export interface components {
              * @example alice
              */
             username: string;
+            /**
+             * @description a download waiting here for its user, who is offline: it tries again once they are back,
+             *     and the tries it made while they were away do not count
+             */
+            waitingForUser: boolean;
         };
         /** @description Counts of a user's transfers in one direction. */
         TransferCounts: {

@@ -50,10 +50,9 @@ pub fn client_options(options: &Options, alternative: bool) -> Result<ClientOpti
     distributed_child_limit: soulseek.distributed_network.child_limit,
     maximum_concurrent_searches: soulseek.search.max_concurrent,
     maximum_concurrent_uploads: transfers.upload.slots,
-    maximum_concurrent_downloads: transfers
-      .download
-      .slots
-      .unwrap_or(ClientOptions::default().maximum_concurrent_downloads),
+    // the download engine keeps the download slots, which a download claims only once its
+    // peer offers the file; the client's would be held while it waits in the peer's queue
+    maximum_concurrent_downloads: ClientOptions::default().maximum_concurrent_downloads,
     // the client takes 0 as no limit
     maximum_upload_speed: transfers.upload_speed_limit(alternative).unwrap_or(0),
     maximum_download_speed: transfers.download_speed_limit(alternative).unwrap_or(0),
@@ -332,7 +331,11 @@ mod tests {
     .unwrap();
     assert_eq!(limited.maximum_upload_speed, 100);
     assert_eq!(limited.maximum_concurrent_uploads, 3);
-    assert_eq!(limited.maximum_concurrent_downloads, 4);
+    assert_eq!(
+      limited.maximum_concurrent_downloads,
+      i32::MAX as u32,
+      "the download engine keeps the download slots"
+    );
   }
 
   /// A client started with the options of `previous` and patched to `current` runs with the

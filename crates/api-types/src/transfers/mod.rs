@@ -202,7 +202,8 @@ pub struct Transfer {
   /// moves whenever an upload starts or ends: `GET /api/v0/transfers/uploads/{username}/{id}/why`
   /// gives it
   pub place_in_queue: Option<u32>,
-  /// why the transfer failed, null when it did not
+  /// why the transfer failed, null when it did not; for a download waiting here, why it waits:
+  /// the try a retry follows failed, or its user is offline
   pub exception: Option<String>,
   /// attempts made so far for a download, 0 for an upload
   pub attempts: u32,
@@ -226,6 +227,12 @@ pub struct Transfer {
   #[serde(default)]
   #[schema(required = true)]
   pub paused: bool,
+  /// a download waiting here for its user, who is offline: it tries again once they are back,
+  /// and the tries it made while they were away do not count
+  // events stored by a build without it hold transfers with no such field
+  #[serde(default)]
+  #[schema(required = true)]
+  pub waiting_for_user: bool,
   /// the states the transfer went through, oldest first; null unless asked for
   pub state_history: Option<Vec<TransferStateChange>>,
 }

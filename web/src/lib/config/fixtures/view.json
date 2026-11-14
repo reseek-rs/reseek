@@ -3509,7 +3509,7 @@
       "envVar": "RESEEK_DOWNLOAD_SLOTS",
       "cliFlag": "--download-slots",
       "kind": "integer",
-      "doc": "Maximum number of downloads running at once. No limit when not set. Lowering it lets running downloads finish and starts no new one until fewer run.",
+      "doc": "Maximum number of downloads moving bytes at once; one waiting in a user's queue takes none. A file offered while every slot is taken is declined and asked for again once one is free. No limit when not set. Lowering it lets running downloads finish.",
       "choices": null,
       "default": null,
       "apply": "live",

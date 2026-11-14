@@ -23334,7 +23334,8 @@
                 "attempts",
                 "removed",
                 "percentComplete",
-                "paused"
+                "paused",
+                "waitingForUser"
               ],
               "properties": {
                 "attempts": {
@@ -23388,7 +23389,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "why the transfer failed, null when it did not"
+                  "description": "why the transfer failed, null when it did not; for a download waiting here, why it waits:\nthe try a retry follows failed, or its user is offline"
                 },
                 "filename": {
                   "type": "string",
@@ -23491,6 +23492,10 @@
                   "type": "string",
                   "description": "the peer",
                   "example": "alice"
+                },
+                "waitingForUser": {
+                  "type": "boolean",
+                  "description": "a download waiting here for its user, who is offline: it tries again once they are back,\nand the tries it made while they were away do not count"
                 }
               }
             },
@@ -26427,7 +26432,8 @@
           "attempts",
           "removed",
           "percentComplete",
-          "paused"
+          "paused",
+          "waitingForUser"
         ],
         "properties": {
           "attempts": {
@@ -26481,7 +26487,7 @@
               "string",
               "null"
             ],
-            "description": "why the transfer failed, null when it did not"
+            "description": "why the transfer failed, null when it did not; for a download waiting here, why it waits:\nthe try a retry follows failed, or its user is offline"
           },
           "filename": {
             "type": "string",
@@ -26584,6 +26590,10 @@
             "type": "string",
             "description": "the peer",
             "example": "alice"
+          },
+          "waitingForUser": {
+            "type": "boolean",
+            "description": "a download waiting here for its user, who is offline: it tries again once they are back,\nand the tries it made while they were away do not count"
           }
         }
       },

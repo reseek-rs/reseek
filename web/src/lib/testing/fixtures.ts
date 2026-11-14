@@ -36,6 +36,7 @@ export const transfer = (fields: Partial<Transfer> = {}): Transfer => ({
   attempts: 1,
   removed: false,
   paused: false,
+  waitingForUser: false,
   ...fields
 });
 

@@ -408,15 +408,16 @@ async fn handle(app: &AppState, event: Event, session: &mut Session) {
 }
 
 /// A user's presence, which the server sends for watched users, for room members and in reply
-/// to our own requests, `asked`. A watched user's row, when they have one, is touched with it,
-/// which pushes their summary, and their statistics are asked for again when the server sent it
-/// on its own, since it pushes their presence and not what they share; a buddy whose presence
-/// it moved is told of.
+/// to our own requests, `asked`. Their downloads follow it, a watched user's row, when they have
+/// one, is touched with it, which pushes their summary, and their statistics are asked for again
+/// when the server sent it on its own, since it pushes their presence and not what they share;
+/// a buddy whose presence it moved is told of.
 async fn user_status(app: &AppState, status: &soulseek_proto::server::UserStatus, asked: bool) {
   let username = &status.username;
   let presence = UserPresence::from(status.presence);
   trace!(username, ?presence, asked, "user status changed");
   app.messaging.member_status(username, presence);
+  app.downloads.presence(username, presence);
   let received = app
     .users
     .status_received(username, presence, status.is_privileged)
@@ -518,10 +519,12 @@ async fn connected(app: &AppState, number: u64) {
   app.network.forget_reconnect();
 }
 
-/// The server accepted our login: what needs the session runs in the background.
+/// The server accepted our login: the downloads waiting for a user who was offline try them
+/// again, and what needs the session runs in the background.
 fn logged_in(app: &AppState, username: &str) {
   info!(username, "Logged in to the Soulseek server");
   app.network.watchdog().logged_in();
+  app.downloads.login();
   tokio::spawn(after_login(app.clone()).in_current_span());
 }
 

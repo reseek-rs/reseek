@@ -24,6 +24,10 @@ pub const ASKED_ORDER: &str = "RequestedAt, rowid";
 /// [`ASKED_ORDER`] reversed, the newest first.
 pub const NEWEST_FIRST: &str = "RequestedAt DESC, rowid DESC";
 
+/// Why a download waits here for its user: they are offline. The reason is what marks the
+/// wait, which ends when they are back.
+pub const USER_OFFLINE: &str = "The user is offline";
+
 /// One transfer's row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
@@ -208,6 +212,7 @@ impl Record {
       remaining_time,
       local_path: self.local_path.clone(),
       paused: self.paused,
+      waiting_for_user: self.waits_for_user(),
       state_history: None,
     }
   }
@@ -220,6 +225,11 @@ impl Record {
     self.ended_at = time(snapshot.end_time);
     self.bytes_transferred = snapshot.bytes_transferred;
     self.average_speed = snapshot.average_speed;
+  }
+
+  /// Whether the download waits here for its user, who is offline, to come back.
+  pub fn waits_for_user(&self) -> bool {
+    self.state == State::WAITING && self.exception.as_deref() == Some(USER_OFFLINE)
   }
 
   /// Whether the transfer has finished, whatever the outcome.

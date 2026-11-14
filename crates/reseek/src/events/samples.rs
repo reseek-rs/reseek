@@ -218,6 +218,7 @@ fn blank_transfer() -> Transfer {
     remaining_time: None,
     local_path: None,
     paused: false,
+    waiting_for_user: false,
     state_history: None,
   }
 }

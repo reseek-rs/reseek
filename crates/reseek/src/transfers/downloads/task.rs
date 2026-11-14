@@ -1,9 +1,11 @@
 //! One download's task: it waits its turn in the local queue, checks its record, then tries
-//! the download, waiting longer before each new try and for a slot before each, until the file
-//! arrives, the download fails for good or it is canceled, and writes how it ended. A file its
-//! user offered unasked is tried at once, taking the offer, since the sender waits for our
-//! answer; a later try asks for it like any other. A stop of the daemon leaves the record as it
-//! is, for the stop to end.
+//! the download, waiting longer before each new try, until the file arrives, the download fails
+//! for good or it is canceled, and writes how it ended. A try that finds its user offline, or
+//! that their going offline stops, does not count: the download waits for them to be back and
+//! tries again. Nor does one whose offer came while every download slot was taken: it waits for
+//! a free slot and asks again. A file its user offered unasked is tried at once, taking the
+//! offer, since the sender waits for our answer; a later try asks for it like any other. A stop
+//! of the daemon leaves the record as it is, for the stop to end.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,17 +15,19 @@ use api_types::events::{DownloadFailureStage, DownloadFileFailed, Event};
 use api_types::transfers::TransferOutcome;
 use chrono::Utc;
 use reseek_shares::{backoff, lock};
+use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 use uuid::Uuid;
 
-use super::attempt::{Attempted, Failure};
+use super::attempt::{Attempted, Failure, Waits};
 use super::destination::incomplete_path;
 use super::starts::{Grant, Turn};
 use super::{Downloads, InFlight};
 use crate::files::WriteGuard;
 use crate::safety::Os;
+use crate::transfers::record::USER_OFFLINE;
 use crate::transfers::state::State;
 use crate::transfers::store::Saved;
 use crate::transfers::{Record, removal, store};
@@ -68,6 +72,17 @@ impl Ended {
   }
 }
 
+/// What a download's next try waits for first.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Next {
+  /// nothing: it is tried as soon as its turn comes
+  Now,
+  /// the wait before a retry
+  Retry(Duration),
+  /// a free download slot, the last try's offer having come while every one was taken
+  Slot,
+}
+
 /// The wait before try `attempt`, the second or a later one: `delay`, doubled for every try
 /// between the first and this one, plus the shared jitter, at most `max` in all.
 fn retry_wait(attempt: u32, delay: Duration, max: Duration) -> Duration {
@@ -97,7 +112,7 @@ impl Downloads {
     let first = (!offered).then(|| {
       self
         .starts
-        .wait(record.id, &record.username, position, Some(request))
+        .wait(record.id, &record.username, position, Some(request), false)
     });
     self.tasks.spawn(
       async move { this.run(record.id, position, first, cancel, offered).await }.instrument(span),
@@ -143,7 +158,7 @@ impl Downloads {
     cancel: &CancellationToken,
     mut offered: bool,
   ) -> Ended {
-    let (mut first_grant, mut gate) = match first {
+    let (mut first_ask, mut gate) = match first {
       None => (None, None),
       Some(first) => {
         let first = tokio::select! {
@@ -154,7 +169,7 @@ impl Downloads {
           _turn: turn,
           deadline: Instant::now() + HARD_LIMIT,
         });
-        (Some((first.slot, first.ask)), gate)
+        (Some(first.ask), gate)
       }
     };
     let mut record = match self.db.read(move |conn| store::get(conn, id)).await {
@@ -202,13 +217,14 @@ impl Downloads {
     };
     // a file sent unasked is downloaded at the size its offer was checked for, on every try
     let pushed = self.pushed(&record).await;
+    let mut away = self.away.follow(&record.username);
     record.attempts = 1;
     self.save(&record, false).await;
     let mut attempt = 1;
-    // the wait before the try about to start, none before the first
-    let mut delay: Option<Duration> = None;
+    // what the try about to start waits for first, nothing before the first
+    let mut next = Next::Now;
     loop {
-      if let Some(delay) = delay.take() {
+      if let Next::Retry(delay) = next {
         info!(
           attempt,
           seconds = delay.as_secs_f64().ceil() as u64,
@@ -223,20 +239,29 @@ impl Downloads {
           .expect("a download waiting to retry may wait again");
         self.save(&record, false).await;
       }
-      // held for this try; a retry waits for one in its place in the queue, keeping its
-      // request's turn. Taking an offer holds none
-      let (_slot, ask) = match first_grant.take() {
-        Some((slot, ask)) => (Some(slot), Some(ask)),
-        None if offered => (None, None),
+      // a user known to be offline is not asked; an offer they made unasked is taken
+      if !offered && *away.borrow_and_update() {
+        // the turns of the first grant are given up, so the user's other files go on to wait
+        // for them too, and the hard limit does not run while they are away
+        first_ask = None;
+        gate = None;
+        if !self.wait_for_user(&mut record, &mut away, cancel).await {
+          return self.canceled(id, Some(incomplete)).await;
+        }
+      }
+      let ask = match first_ask.take() {
+        Some(ask) => Some(ask),
+        None if offered => None,
         None => tokio::select! {
-          grant = self.starts.wait(id, &record.username, position, None) => {
-            (Some(grant.slot), Some(grant.ask))
+          grant = self.starts.wait(id, &record.username, position, None, next == Next::Slot) => {
+            Some(grant.ask)
           }
           () = cancel.cancelled() => return self.canceled(id, Some(incomplete)).await,
         },
       };
+      self.watch_user(&record.username);
       let taking = std::mem::take(&mut offered);
-      match self
+      let attempted = self
         .attempt(
           &mut record,
           &incomplete,
@@ -245,11 +270,22 @@ impl Downloads {
           taking,
           pushed,
           ask,
+          &mut away,
         )
-        .await
-      {
+        .await;
+      next = match attempted {
         Attempted::Succeeded(writing) => return Ended::Succeeded(record, incomplete, writing),
         Attempted::Abandoned => return Ended::Abandoned,
+        // the wait for the user is written at the top of the loop
+        Attempted::Waits(Waits::User) => Next::Now,
+        Attempted::Waits(Waits::Slot) => {
+          info!("download offered while every slot is taken; it asks again once one is free");
+          record
+            .enter(State::WAITING)
+            .expect("a download being tried may wait here again");
+          self.save(&record, true).await;
+          Next::Slot
+        }
         Attempted::Failed(failure) => {
           warn!(
             attempt,
@@ -280,11 +316,55 @@ impl Downloads {
             .expect("a try that failed may wait to be retried");
           record.attempts = attempt;
           record.exception = Some(failure.message);
-          delay = Some(wait);
           self.save(&record, true).await;
+          Next::Retry(wait)
         }
-      }
+      };
     }
+  }
+
+  /// Writes the download `record` as waiting for its user, who is offline, and waits until
+  /// `away` no longer says they are, then writes it as waiting for its turn; false when `cancel`
+  /// came first.
+  async fn wait_for_user(
+    &self,
+    record: &mut Record,
+    away: &mut watch::Receiver<bool>,
+    cancel: &CancellationToken,
+  ) -> bool {
+    if !record.waits_for_user() {
+      record
+        .enter(State::WAITING)
+        .expect("a download not completed may wait here");
+      record.exception = Some(USER_OFFLINE.to_string());
+      self.save(record, true).await;
+    }
+    self.watch_user(&record.username);
+    info!("download waits for its user to come back online");
+    tokio::select! {
+      // the user's entry is kept while this follows it, so the wait ends with them back
+      _ = away.wait_for(|offline| !offline) => {}
+      () = cancel.cancelled() => return false,
+    }
+    info!("the user of a waiting download is back; trying it again");
+    record
+      .enter(State::WAITING)
+      .expect("a download waiting for its user may wait here");
+    self.save(record, false).await;
+    true
+  }
+
+  /// Asks the server to tell us of `username`'s status, so their downloads hear when they go
+  /// offline or come back; once a session, on a task of its own, so no try waits for it.
+  fn watch_user(&self, username: &str) {
+    let client = self.network.client();
+    if !client.state().is_logged_in() || self.users.is_watched(username) {
+      return;
+    }
+    let (users, client, username) = (self.users.clone(), client.clone(), username.to_string());
+    self
+      .tasks
+      .spawn(async move { users.watch(&client, &username).await }.in_current_span());
   }
 
   /// The end of a download canceled while it was not trying: left for the stop when the
