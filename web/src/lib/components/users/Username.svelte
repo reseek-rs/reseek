@@ -8,7 +8,7 @@
   import { SERVER } from "#lib/chat/notices.js";
   import * as Menu from "#lib/components/ui/menu/menu.js";
   import { copyText } from "#lib/feedback/clipboard.svelte.js";
-  import { interaction } from "#lib/lists/interaction.svelte.js";
+  import { holdListOf } from "#lib/lists/interaction.svelte.js";
   import { userHref } from "#lib/nav.js";
   import { session } from "#lib/session.svelte.js";
   import { USERNAMES } from "#lib/ui/bindings.js";
@@ -80,7 +80,7 @@
   // another username's card or menu opening closes this one
   const active = $derived(open.owner === me ? shown : null);
   // the list the name is in holds still while its card or menu is open
-  $effect(() => (active ? interaction.hold() : undefined));
+  $effect(() => (active ? holdListOf(link) : undefined));
   // the user scrolling the page under the card closes it. A list that moves itself, to keep
   // its view as lines arrive, does not: the card follows its name, and hides while the name is
   // out of view

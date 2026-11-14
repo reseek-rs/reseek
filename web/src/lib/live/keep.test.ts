@@ -1,7 +1,7 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { Freeze, interaction } from "#lib/lists/interaction.svelte.js";
+import { Freeze } from "#lib/lists/interaction.svelte.js";
 import { frameText } from "#lib/testing/frames.js";
 import Keep from "#lib/testing/Keep.svelte";
 
@@ -174,9 +174,10 @@ describe("keepCurrent", () => {
     expect(reload).toHaveBeenCalledTimes(2);
   });
 
-  it("waits while a list is held and reloads once when it is let go", async () => {
-    await connected();
-    const release = interaction.hold();
+  it("waits while its list is held and reloads once when it is let go", async () => {
+    const freeze = new Freeze();
+    await connected(freeze);
+    const release = freeze.hold();
     send(LAGGED);
     await pass(RECONCILE_MS);
     setHidden(true);

@@ -1,10 +1,11 @@
+import { untrack } from "svelte";
 import { on } from "svelte/events";
 
 import { LIST } from "#lib/ui/bindings.js";
 import { inControl, isPressed } from "#lib/ui/keys.js";
 import { LONG_PRESS_MS } from "#lib/users/hover.svelte.js";
 
-import { interaction } from "./interaction.svelte";
+import { holdListOf } from "./interaction.svelte";
 
 /** Where a line's menu hangs: a point, or an element for the keys */
 export type MenuAnchor = HTMLElement | { getBoundingClientRect: () => DOMRect } | null;
@@ -41,6 +42,8 @@ export class LineMenu<L> {
   #press: ReturnType<typeof setTimeout> | undefined;
   /** the press that ends in a click opened the menu, so the click selects nothing */
   #pressed = false;
+  /** the list's container, which `attach` is on */
+  #node: HTMLElement | null = null;
 
   /** the line whose menu is open */
   readonly line: L | null = $derived.by(() => {
@@ -53,8 +56,16 @@ export class LineMenu<L> {
     // the hold follows whether a menu is open, not the line, which is a new object each time the
     // lines are made again
     const open = $derived(this.line !== null);
-    $effect(() => (open ? interaction.hold() : undefined));
+    $effect(() => (open ? holdListOf(untrack(() => this.#lineElement())) : undefined));
     $effect(() => () => this.#released());
+  }
+
+  /** the open line's element, or the list's container where the line isn't drawn */
+  #lineElement(): HTMLElement | null {
+    const key = this.#at?.key;
+    // compared rather than selected, as a key may hold characters a selector can't
+    const lines = this.#node?.querySelectorAll<HTMLElement>("[data-line]") ?? [];
+    return [...lines].find((line) => line.dataset.line === key) ?? this.#node;
   }
 
   /** where the open menu hangs */
@@ -99,6 +110,7 @@ export class LineMenu<L> {
 
   /** For `{@attach}` on the list's container */
   attach = (node: HTMLElement) => {
+    this.#node = node;
     const stops = [
       on(node, "contextmenu", this.#contextmenu),
       on(node, "pointerdown", this.#pointerdown),
@@ -116,6 +128,7 @@ export class LineMenu<L> {
     ];
     return () => {
       for (const stop of stops) stop();
+      if (this.#node === node) this.#node = null;
     };
   };
 

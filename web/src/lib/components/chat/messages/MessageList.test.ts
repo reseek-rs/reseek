@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fromPrivate, layout } from "#lib/chat/messages/messages.js";
 import { MessagePane, PAGE } from "#lib/chat/pane.svelte.js";
 import { dismiss, toasts } from "#lib/feedback/toast.svelte.js";
-import { Freeze, freezesWhileUsed, interaction } from "#lib/lists/interaction.svelte.js";
+import { Freeze, freezesWhileUsed } from "#lib/lists/interaction.svelte.js";
 import { ListWindow } from "#lib/lists/virtual.svelte.js";
 import { flush } from "#lib/testing/flush.js";
 import { press, focusByKeys } from "#lib/testing/keys.js";
@@ -135,7 +135,7 @@ describe("the message list", () => {
     history(250);
     // jsdom measures every line as 0 high, which would draw them all
     vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(24);
-    const { box } = await open();
+    const { pane, box } = await open();
     const to = vi.spyOn(ListWindow.prototype, "scrollTo").mockImplementation(() => {});
     box.focus();
     press(box, "ArrowUp");
@@ -152,12 +152,12 @@ describe("the message list", () => {
     press(document.querySelector('[role="menuitem"]')!, "Escape");
     await flush();
     expect(document.querySelector('[role="menu"]')).toBeNull();
-    expect(interaction.frozen).toBe(false);
+    expect(pane.messages.freeze.frozen).toBe(false);
   });
 
   it("opens a message's menu at a right-click, and leaves the browser's on a day's line", async () => {
     history(3);
-    await open();
+    const { pane } = await open();
     const at = { bubbles: true, cancelable: true, clientX: 5, clientY: 5 };
     const day = document.querySelector('[role="separator"]')!;
     const onDay = new MouseEvent("contextmenu", at);
@@ -172,7 +172,7 @@ describe("the message list", () => {
     await flush();
     expect(onMessage.defaultPrevented).toBe(true);
     expect(document.querySelector('[role="menuitem"]')?.textContent).toContain("Copy text");
-    expect(interaction.frozen).toBe(true);
+    expect(pane.messages.freeze.frozen).toBe(true);
     // the line menu marks the message as every list's lines are marked
     expect([...document.querySelectorAll("[data-menu-open]")]).toEqual([message]);
     // of the three messages, only the one right-clicked opens its menu
@@ -181,7 +181,7 @@ describe("the message list", () => {
     await flush();
     expect(document.querySelector('[role="menu"]')).toBeNull();
     expect(document.querySelector("[data-menu-open]")).toBeNull();
-    expect(interaction.frozen).toBe(false);
+    expect(pane.messages.freeze.frozen).toBe(false);
     // the pointer leaves the keys where they were: no message became the one they are on
     expect(document.querySelector("[data-message][tabindex]")).toBeNull();
     expect(document.activeElement?.closest("[data-message]")).toBeNull();

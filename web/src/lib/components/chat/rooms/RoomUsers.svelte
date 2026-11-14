@@ -19,7 +19,7 @@
   import { confirmation } from "#lib/feedback/confirm.svelte.js";
   import { toast } from "#lib/feedback/toast.svelte.js";
   import { formatCount, formatSpeed, plural } from "#lib/format.js";
-  import { freezesWhileUsed, heldOrder, interaction } from "#lib/lists/interaction.svelte.js";
+  import { freezesWhileUsed, heldOrder } from "#lib/lists/interaction.svelte.js";
   import { ListControl } from "#lib/lists/list.svelte.js";
   import { keepsScroll } from "#lib/lists/scroll.svelte.js";
   import { userHref } from "#lib/nav.js";
@@ -55,7 +55,7 @@
   // the list holds still while it is pressed, selected in or a name's card or menu is open from it
   // svelte-ignore state_referenced_locally
   const hold = heldOrder<Line>((l) => l.key, members.users.freeze);
-  $effect(() => (menuFor ? interaction.hold() : undefined));
+  $effect(() => (menuFor ? members.users.freeze.hold() : undefined));
   const lines = $derived.by(() => {
     const filter = typed.trim().toLowerCase();
     const shown = all.filter((u) => !filter || u.username.toLowerCase().includes(filter));

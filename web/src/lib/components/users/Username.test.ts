@@ -1,7 +1,7 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { interaction } from "#lib/lists/interaction.svelte.js";
+import { Freeze, freezesWhileUsed } from "#lib/lists/interaction.svelte.js";
 import { userSummary } from "#lib/testing/fixtures.js";
 import { CLOSE_DELAY_MS, OPEN_DELAY_MS } from "#lib/users/hover.svelte.js";
 
@@ -41,6 +41,10 @@ const pointer = (type: string, pointerType: string) => {
 describe("a username", () => {
   let component: ReturnType<typeof mount> | null = null;
   let link: HTMLAnchorElement;
+  /** the list the name is in, and another list beside it */
+  const own = new Freeze();
+  const other = new Freeze();
+  let detach: (() => void)[] = [];
   const card = () => document.querySelector('[role="dialog"][aria-label="Profile of alice"]');
 
   beforeEach(() => {
@@ -52,11 +56,15 @@ describe("a username", () => {
           new Response(JSON.stringify(summary), { headers: { "Content-Type": "application/json" } })
       )
     );
-    component = mount(Username, { target: document.body, props: { name: "alice" } });
+    const list = document.body.appendChild(document.createElement("div"));
+    const beside = document.body.appendChild(document.createElement("div"));
+    detach = [freezesWhileUsed(own)(list), freezesWhileUsed(other)(beside)];
+    component = mount(Username, { target: list, props: { name: "alice" } });
     flushSync();
     link = document.querySelector("a")!;
   });
   afterEach(() => {
+    for (const stop of detach) stop();
     if (component) unmount(component);
     component = null;
     document.body.innerHTML = "";
@@ -72,7 +80,9 @@ describe("a username", () => {
     await vi.advanceTimersByTimeAsync(1);
     flushSync();
     expect(card()).not.toBeNull();
-    expect(interaction.frozen).toBe(true);
+    // the list the name is in holds still while its card is open, the one beside it does not
+    expect(own.frozen).toBe(true);
+    expect(other.frozen).toBe(false);
     expect(card()!.textContent).toContain("2 uploads");
     // a preview of the profile: the picture, the text's first lines, the note and the group
     expect(card()!.querySelector("img")?.getAttribute("src")).toMatch(
@@ -90,7 +100,7 @@ describe("a username", () => {
     await vi.advanceTimersByTimeAsync(CLOSE_DELAY_MS);
     flushSync();
     expect(card()).toBeNull();
-    expect(interaction.frozen).toBe(false);
+    expect(own.frozen).toBe(false);
   });
 
   it("doesn't open for a pointer that passes over, or on touch", async () => {

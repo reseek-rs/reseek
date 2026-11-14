@@ -17,6 +17,7 @@
     windowOf
   } from "#lib/dashboard/reports.js";
   import { VIEWS } from "#lib/dashboard/series.js";
+  import { Freeze, heldBy } from "#lib/lists/interaction.svelte.js";
   import { keepCurrent } from "#lib/live/keep.svelte.js";
 
   import AreaChart from "./AreaChart.svelte";
@@ -33,7 +34,9 @@
   /** the window ends when it was chosen or last reloaded, not at every render */
   let now = $state(Date.now());
   const span = $derived(windowOf(dashboardPrefs.range, now));
-  keepCurrent(() => (now = Date.now()));
+  // a name's card open in the statistics holds the reload that would reorder them
+  const freeze = new Freeze();
+  keepCurrent(() => (now = Date.now()), undefined, freeze);
 
   // a transfer that finishes shows in the reports: a reload follows, at most every 30 s
   let counted: number | null = null;
@@ -155,7 +158,7 @@
   {/each}
 </nav>
 
-<Card>
+<Card {@attach heldBy(freeze)}>
   {#if tab === "users"}
     <Leaderboard {span} range={dashboardPrefs.range} />
   {:else if tab === "content"}

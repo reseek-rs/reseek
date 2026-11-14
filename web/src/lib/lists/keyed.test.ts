@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import Rows from "#lib/testing/Rows.svelte";
 
-import { interaction } from "./interaction.svelte";
 import { Keyed, patch, same } from "./keyed.svelte";
 
 type Row = { id: string; name: string; size: number };
@@ -106,7 +105,7 @@ describe("a keyed list on screen", () => {
     const list = new Keyed<Row>((row) => row.id);
     list.reconcile(rows(["1", "one", 1], ["2", "two", 2]));
     const items = render(list);
-    const release = interaction.hold();
+    const release = list.freeze.hold();
     list.reconcile(rows(["2", "two", 2]));
     flushSync();
     expect(items()).toHaveLength(2);

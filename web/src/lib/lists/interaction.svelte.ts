@@ -1,23 +1,16 @@
 import { untrack } from "svelte";
 
 /**
- * What holds lists still while the user is in the middle of something they must not move under,
- * and the work waiting for it to end. While it holds, lists take appends only and keep removed
- * rows until it ends. A list's own freeze, made with no argument, follows `interaction` as well,
- * which holds every list
+ * What holds a list still while the user is in the middle of something they must not move under,
+ * and the work waiting for it to end. While it holds, the list takes appends only and keeps
+ * removed rows until it ends
  */
 export class Freeze {
   #holds = $state(0);
   #thawed: (() => void)[] = [];
-  #outer: Freeze | null;
-
-  // the default is read when a list's freeze is made, after `interaction` below, which passes null
-  constructor(outer: Freeze | null = interaction) {
-    this.#outer = outer;
-  }
 
   get frozen(): boolean {
-    return this.#holds > 0 || !!this.#outer?.frozen;
+    return this.#holds > 0;
   }
 
   /** Freezes until the returned function is called. Callable from an effect: the count it
@@ -29,28 +22,49 @@ export class Freeze {
       if (released) return;
       released = true;
       const left = untrack(() => (this.#holds -= 1));
-      // what waited here may still wait for the outer freeze
-      if (left === 0) for (const run of this.#thawed.splice(0)) this.whenThawed(run);
+      if (left === 0) for (const run of this.#thawed.splice(0)) run();
     };
   }
 
   /** Runs `run` once nothing holds, now when nothing does */
   whenThawed(run: () => void) {
     if (this.#holds > 0) this.#thawed.push(run);
-    else if (this.#outer?.frozen) this.#outer.whenThawed(() => this.whenThawed(run));
     else run();
   }
 }
 
-/** Holds every list: a hover card, or a menu open from a line */
-export const interaction = new Freeze(null);
+/** The freeze of each list's element, which a name's card or a line's menu inside it holds */
+const lists = new WeakMap<Element, Freeze>();
+
+/**
+ * For `{@attach}` on a list's element: a name's card or a line's menu open inside it holds
+ * `freeze`. `freezesWhileUsed` does this as well
+ */
+export const heldBy = (freeze: Freeze) => (node: HTMLElement) => {
+  lists.set(node, freeze);
+  return () => {
+    if (lists.get(node) === freeze) lists.delete(node);
+  };
+};
+
+/**
+ * Holds the list `node` is in, the nearest one up from it, until the returned function is called;
+ * undefined outside every list. For a card or a menu that opens from inside a list
+ */
+export const holdListOf = (node: Element | null): (() => void) | undefined => {
+  for (let at = node; at; at = at.parentElement) {
+    const freeze = lists.get(at);
+    if (freeze) return freeze.hold();
+  }
+  return undefined;
+};
 
 /**
  * Keeps a list's order while `freeze` holds it: the lines keep the places they had and new ones
  * go below; once nothing holds it, the order given is taken. Make one per list and give it each
  * fresh order from a `$derived`
  */
-export const heldOrder = <T>(key: (item: T) => string, freeze: Freeze = interaction) => {
+export const heldOrder = <T>(key: (item: T) => string, freeze: Freeze) => {
   let shown: T[] = [];
   return (fresh: T[]): T[] => {
     if (!freeze.frozen || !shown.length) return (shown = fresh);
@@ -70,11 +84,13 @@ const QUIET = { capture: true, passive: true } as const;
 
 /**
  * Holds `freeze` while the pointer is pressed in the element or a selection that isn't collapsed
- * lies in it. A selection holds only while the user is at the page: after `SELECTION_IDLE_MS`
- * with no pointer or key activity the list catches up, and their next move holds it again. For
- * `{@attach}` on a list's element
+ * lies in it, and while a name's card or a line's menu in it is open (`heldBy`). A selection
+ * holds only while the user is at the page: after `SELECTION_IDLE_MS` with no pointer or key
+ * activity the list catches up, and their next move holds it again. For `{@attach}` on a list's
+ * element
  */
 export const freezesWhileUsed = (freeze: Freeze) => (node: HTMLElement) => {
+  const listed = heldBy(freeze)(node);
   let pressed: (() => void) | null = null;
   let selecting: (() => void) | null = null;
   let idle: ReturnType<typeof setTimeout> | undefined;
@@ -131,6 +147,7 @@ export const freezesWhileUsed = (freeze: Freeze) => (node: HTMLElement) => {
   window.addEventListener("pointercancel", release);
   document.addEventListener("selectionchange", selection);
   return () => {
+    listed();
     node.removeEventListener("pointerdown", down);
     window.removeEventListener("pointerup", release);
     window.removeEventListener("pointercancel", release);

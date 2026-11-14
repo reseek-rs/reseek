@@ -15,7 +15,7 @@
   import Tooltip from "#lib/components/ui/Tooltip.svelte";
   import Username from "#lib/components/users/Username.svelte";
   import { formatCount, formatDate, shortTime } from "#lib/format.js";
-  import { interaction } from "#lib/lists/interaction.svelte.js";
+  import { Freeze, heldBy } from "#lib/lists/interaction.svelte.js";
   import { roomHref } from "#lib/nav.js";
 
   /** the button that shows the chat list on a narrow screen */
@@ -38,6 +38,8 @@
   const connected = $derived(app.isServerConnected);
 
   let box = $state<HTMLElement | null>(null);
+  /** held while a name's card or menu in the feed is open */
+  const freeze = new Freeze();
   let atBottom = $state(true);
   /** messages shown since the view left the bottom */
   let fresh = $state(0);
@@ -58,7 +60,7 @@
     const now = shown.at(-1)?.id ?? 0;
     if (now === count) return;
     count = now;
-    if (atBottom && !interaction.frozen) void tick().then(toBottom);
+    if (atBottom && !freeze.frozen) void tick().then(toBottom);
     else fresh += 1;
   });
 </script>
@@ -98,7 +100,8 @@
         tabindex="0"
         aria-live="off"
         aria-label="Messages in public rooms"
-        onscroll={seen}>
+        onscroll={seen}
+        {@attach heldBy(freeze)}>
         {#each shown as line (line.id)}
           {@const action = actionOf(line.message)}
           <div class="flex items-baseline gap-2 px-3 py-0.5 text-sm leading-5">

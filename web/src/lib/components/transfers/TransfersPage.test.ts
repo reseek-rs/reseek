@@ -6,7 +6,6 @@ import InspectorPane from "#lib/components/inspector/InspectorPane.svelte";
 import { toasts } from "#lib/feedback/toast.svelte.js";
 import { UNDO_MS } from "#lib/feedback/undo.js";
 import { inspectorPrefs, SETTLE_MS } from "#lib/inspector/inspector.svelte.js";
-import { interaction } from "#lib/lists/interaction.svelte.js";
 import { remember } from "#lib/lists/scroll.svelte.js";
 import { live } from "#lib/live/live.svelte.js";
 import { session } from "#lib/session.svelte.js";
@@ -128,7 +127,7 @@ describe("the transfers table", () => {
     held();
 
     // while the user holds the table, a row that sorts first waits at the end
-    const release = interaction.hold();
+    const release = downloads.list.freeze.hold();
     const early = transfer({ filename: "x\\a.flac" });
     net.frame("transfers.added", early);
     await flushFaked();
@@ -603,7 +602,7 @@ describe("the transfers table", () => {
         .map((chip) => chip.textContent?.replace(/\s+/g, "") ?? "")
         .find((text) => text.startsWith("Queued"));
     expect(queued()).toBe("Queued2");
-    const release = interaction.hold();
+    const release = downloads.list.freeze.hold();
     net.frame("transfers.removed", { id: a.id, username: a.username, direction: "Download" });
     await flushFaked();
     expect(row(a.id)).not.toBeNull();

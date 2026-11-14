@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { chat } from "#lib/chat/chat.svelte.js";
 import { pins } from "#lib/chat/pins.svelte.js";
-import { Freeze, freezesWhileUsed, interaction } from "#lib/lists/interaction.svelte.js";
+import { Freeze, freezesWhileUsed } from "#lib/lists/interaction.svelte.js";
 import { session } from "#lib/session.svelte.js";
 import { conversation, joinedRoom } from "#lib/testing/fixtures.js";
 import { active, press, ticked } from "#lib/testing/keys.js";
@@ -116,7 +116,7 @@ describe("the chat list", () => {
         l.getAttribute("data-line")
       );
     expect(keys()).toEqual(["user:alice", "user:bob"]);
-    const release = interaction.hold();
+    const release = chat.freeze.hold();
     chat.conversations.get("bob")!.lastMessage = {
       localId: 9,
       id: 9,

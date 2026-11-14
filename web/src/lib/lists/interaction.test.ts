@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { Freeze, freezesWhileUsed, interaction, SELECTION_IDLE_MS } from "./interaction.svelte";
+import { freezesWhileUsed, holdListOf, SELECTION_IDLE_MS } from "./interaction.svelte";
 import { Keyed } from "./keyed.svelte";
 
 type Row = { id: string };
@@ -43,7 +43,6 @@ describe("a text selection", () => {
     expect(keys(chat.rows)).toEqual(["a", "b"]);
     expect(chat.rows.removed.has("a")).toBe(true);
     expect(keys(other.rows)).toEqual(["b"]);
-    expect(interaction.frozen).toBe(false);
 
     document.getSelection()!.removeAllRanges();
     document.dispatchEvent(new Event("selectionchange"));
@@ -100,20 +99,25 @@ describe("a text selection", () => {
   });
 });
 
-describe("a list's freeze", () => {
-  it("follows what holds every list, and runs what waited once both let go", () => {
-    const freeze = new Freeze();
-    const run = vi.fn();
-    const everyList = interaction.hold();
-    expect(freeze.frozen).toBe(true);
-    const own = freeze.hold();
-    freeze.whenThawed(run);
-    everyList();
-    expect(run).not.toHaveBeenCalled();
-    const again = interaction.hold();
-    own();
-    expect(run).not.toHaveBeenCalled();
-    again();
-    expect(run).toHaveBeenCalledOnce();
+describe("a card or a menu open in a list", () => {
+  afterEach(() => (document.body.innerHTML = ""));
+
+  it("holds the nearest list it is in, and no other", () => {
+    const outer = list();
+    const inner = list();
+    outer.element.append(inner.element);
+    const line = inner.element.appendChild(document.createElement("span"));
+    const release = holdListOf(line)!;
+    expect(inner.rows.freeze.frozen).toBe(true);
+    expect(outer.rows.freeze.frozen).toBe(false);
+    inner.rows.remove("a");
+    expect(keys(inner.rows)).toEqual(["a", "b"]);
+    release();
+    expect(keys(inner.rows)).toEqual(["b"]);
+    expect(holdListOf(document.body.appendChild(document.createElement("p")))).toBeUndefined();
+    outer.detach();
+    inner.detach();
+    // a list no longer drawn is held by nothing
+    expect(holdListOf(line)).toBeUndefined();
   });
 });
