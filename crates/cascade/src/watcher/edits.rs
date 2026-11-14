@@ -769,6 +769,12 @@ mod tests {
       current.files[0].revision.as_deref(),
       Some(written.revision.as_str())
     );
+    // a connection that took the new password without a reconnect still waits for the port
+    watcher
+      .reconnected_keys(&["server.password"], &current)
+      .await
+      .unwrap();
+    assert_eq!(watcher.current().pending_reconnect, ["server.port"]);
     watcher.reconnected(&current).await.unwrap();
     assert!(watcher.current().pending_reconnect.is_empty());
     assert_eq!(watcher.current().pending_restart, ["debug"]);

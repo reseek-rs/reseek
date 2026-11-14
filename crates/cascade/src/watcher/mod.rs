@@ -156,6 +156,23 @@ fn unchanged_since<T>(shared: &Shared<T>, read: Option<&str>) -> Result<(), Erro
   }
 }
 
+/// Lists in the values in effect the keys that wait for a reconnect since the values of the
+/// last one, when that list changed. Called with the state locked.
+fn show_pending_reconnect<T: Clone>(state: &State<T>, shared: &Shared<T>) {
+  let current = shared.current.borrow().clone();
+  let waiting = pending(
+    &current.schema,
+    &state.reconnected,
+    &current.tree,
+    Apply::Reconnect,
+  );
+  if waiting != current.pending_reconnect {
+    let mut loaded = (*current).clone();
+    loaded.pending_reconnect = waiting;
+    shared.current.send_replace(Arc::new(loaded));
+  }
+}
+
 /// `set` with the secrets its lists of tables and user-keyed maps show as `*****` put back
 /// from the values in effect. Called with the state locked, so the secrets put back are the
 /// ones the change is made over.
@@ -374,18 +391,27 @@ impl<T: Root> Watcher<T> {
     self
       .blocking(move |state, shared| {
         state.reconnected = tree;
-        let current = shared.current.borrow().clone();
-        let waiting = pending(
-          &current.schema,
-          &state.reconnected,
-          &current.tree,
-          Apply::Reconnect,
-        );
-        if waiting != current.pending_reconnect {
-          let mut loaded = (*current).clone();
-          loaded.pending_reconnect = waiting;
-          shared.current.send_replace(Arc::new(loaded));
+        show_pending_reconnect(state, shared);
+      })
+      .await
+  }
+
+  /// Marks the values `with` gives `keys` as ones the application's connection runs with
+  /// already, as a reconnect does for every key, for a connection that took them without one.
+  pub async fn reconnected_keys(&self, keys: &[&str], with: &Loaded<T>) -> Result<(), Error> {
+    let taken: Vec<(String, Option<Value>)> = keys
+      .iter()
+      .map(|key| (key.to_string(), tree::get(&with.tree, key).cloned()))
+      .collect();
+    self
+      .blocking(move |state, shared| {
+        for (key, value) in taken {
+          match value {
+            Some(value) => tree::set(&mut state.reconnected, &key, value),
+            None => tree::remove(&mut state.reconnected, &key),
+          }
         }
+        show_pending_reconnect(state, shared);
       })
       .await
   }
