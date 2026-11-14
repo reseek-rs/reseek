@@ -27,8 +27,8 @@ const KEPT: chrono::Duration = chrono::Duration::days(30);
 
 static LOGS_MISSED: LogLimiter = LogLimiter::new();
 
-/// How long a configuration stands unchanged before the sessions of users it gives no role are
-/// ended, so a file read half written does not end them for good.
+/// How long the authentication options stand unchanged before the sessions of users they give
+/// no role are ended, so a file read half written does not end them for good.
 const SETTLE: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub(super) fn spawn(app: &AppState) {
@@ -60,31 +60,43 @@ async fn follow_configuration(app: AppState) {
   }
 }
 
-/// Ends the sessions of users the configuration gives no role, each time a configuration has
-/// stood unchanged for [`SETTLE`], the one the daemon starts with included.
+/// Ends the sessions of users the configuration gives no role, each time the authentication
+/// options have stood unchanged for [`SETTLE`], the ones the daemon starts with included. Only
+/// they give a session its role, so another change does not start the wait over.
 async fn end_roleless_sessions(app: AppState) {
   let mut loads = app.config.subscribe();
-  loads.borrow_and_update();
+  let mut standing = loads.borrow_and_update().values.web.authentication.clone();
+  let mut since = tokio::time::Instant::now();
+  let mut settled = false;
   loop {
-    // a change starts the wait over, also one that lands as the wait ends
-    let settled = tokio::select! {
-      biased;
-      changed = loads.changed() => match changed {
-        Ok(()) => false,
-        Err(_) => return,
-      },
-      () = app.shutdown.cancelled() => return,
-      () = tokio::time::sleep(SETTLE) => true,
+    let stood = async move {
+      if settled {
+        std::future::pending().await
+      } else {
+        tokio::time::sleep_until(since + SETTLE).await;
+      }
     };
-    if !settled {
-      continue;
-    }
-    if let Err(e) = crate::auth::end_sessions_without_role(&app).await {
-      warn!(error = ?e, "the sessions of users with no role now were not ended");
-    }
+    // a change starts the wait over, also one that lands as the wait ends
     tokio::select! {
+      biased;
+      changed = loads.changed() => {
+        if changed.is_err() {
+          return;
+        }
+        let loaded = loads.borrow_and_update();
+        if loaded.values.web.authentication != standing {
+          standing = loaded.values.web.authentication.clone();
+          since = tokio::time::Instant::now();
+          settled = false;
+        }
+      }
       () = app.shutdown.cancelled() => return,
-      changed = loads.changed() => if changed.is_err() { return },
+      () = stood => {
+        settled = true;
+        if let Err(e) = crate::auth::end_sessions_without_role(&app).await {
+          warn!(error = ?e, "the sessions of users with no role now were not ended");
+        }
+      }
     }
   }
 }
@@ -309,6 +321,25 @@ mod tests {
     until_ended(&app, &cookie).await;
     reload(&app, VIEWER).await;
     assert_eq!(status(&app, &cookie).await, 401, "it takes a new sign-in");
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn a_removal_stands_while_other_options_keep_changing() {
+    let app = app(VIEWER, &[]).await;
+    let cookie = signed_in(&app).await;
+    reload(&app, "").await;
+    // a change every 5 s for 30 s, which would put off the end each time
+    for n in 0..6 {
+      pass(Duration::from_secs(4)).await;
+      reload(&app, &format!("[web]\nhostnames = [\"{n}.lan\"]\n")).await;
+    }
+    for _ in 0..20 {
+      if ended(&app, &cookie).await {
+        return;
+      }
+      tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the session was not ended");
   }
 
   #[tokio::test(start_paused = true)]
