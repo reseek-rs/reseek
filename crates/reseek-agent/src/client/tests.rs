@@ -588,7 +588,7 @@ async fn a_login_names_the_share_schema_and_a_refusal_for_it_is_the_agents() {
   agent.login_refused(LoginFailure::SchemaMismatch);
   agent.socket_ended(false, true);
   assert_eq!(warnings.count("authentication challenge"), 0);
-  let refused = r#"reason="login refused: SchemaMismatch" the relay controller refused this agent"#;
+  let refused = r#"reason="this agent's share index schema is not the controller's" the relay controller refused this agent"#;
   assert_eq!(warnings.count(refused), 1);
 }
 

@@ -319,10 +319,25 @@ impl AgentClient {
         // a refusal of the configuration is warned about as the socket ends, an expired
         // challenge here; each once until a socket is ready
         let refusal = match reason {
+          LoginFailure::UnknownAgent => format!("the controller has no agent named {}", self.name),
+          LoginFailure::AddressNotAllowed => {
+            "the controller does not allow this agent's address".to_string()
+          }
+          LoginFailure::ChallengeExpired => {
+            "the login came after its challenge expired".to_string()
+          }
+          LoginFailure::BadCredential => {
+            "the secret does not match the controller's for this agent".to_string()
+          }
+          LoginFailure::IncompatibleVersion => {
+            "this agent's version is not on the controller's release line".to_string()
+          }
+          LoginFailure::SchemaMismatch => {
+            "this agent's share index schema is not the controller's".to_string()
+          }
           LoginFailure::AnotherDevice => {
             format!("another device is connected as {}", self.name)
           }
-          reason => format!("login refused: {reason:?}"),
         };
         if configuration {
           debug!(?reason, "the relay controller refused the login");
