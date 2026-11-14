@@ -4,7 +4,8 @@
 //! configuration in effect gives no role. A session cookie that is not valid is cleared and the
 //! next ways are tried; one whose user the configuration gives no role right now is answered 403
 //! and kept, since that configuration may not stand. A session the proxy step started ends when
-//! the proxy forwards someone else or a different role for them.
+//! the proxy forwards someone else or a different role for them, and takes the groups it
+//! forwards for the same user and role.
 
 use std::net::IpAddr;
 
@@ -341,7 +342,9 @@ enum CookieSession {
 
 /// The session a cookie value names with the role `options` give its user, unless the proxy
 /// step started it and the proxy now forwards someone else or a different role; that session is
-/// revoked. `used` records the request as a use of the session, which keeps it from going idle.
+/// revoked. Forwarded groups or an email for the same user and role are recorded, so the
+/// session and the user's tokens follow what the proxy says now. `used` records the request as a
+/// use of the session, which keeps it from going idle.
 async fn cookie_session(
   app: &AppState,
   value: &str,
@@ -349,7 +352,7 @@ async fn cookie_session(
   options: &crate::config::Options,
   used: bool,
 ) -> Result<CookieSession, ApiError> {
-  let Some((session, role)) = session_of(app, value, presented, options, used).await? else {
+  let Some((mut session, role)) = session_of(app, value, presented, options, used).await? else {
     return Ok(CookieSession::Invalid);
   };
   let found = |session, role: Option<Role>| match role {
@@ -367,6 +370,18 @@ async fn cookie_session(
     return Ok(found(session, role));
   };
   if named.subject() == session.subject && named.role(proxy) == role {
+    let sign_in = &mut session.sign_in;
+    if named.groups != sign_in.groups || named.email != sign_in.email {
+      debug!(
+        subject = session.subject,
+        "the proxy forwards new groups for its session's user"
+      );
+      sessions::record_forwarded(&app.auth.db, &session.subject, &named)
+        .await
+        .map_err(ApiError::internal)?;
+      sign_in.groups = named.groups;
+      sign_in.email = named.email;
+    }
     return Ok(found(session, role));
   }
   debug!(
@@ -911,6 +926,50 @@ mod tests {
     assert_eq!(me().await.json()["role"], "ReadOnly");
     reload(config("default = \"deny\"\n")).await;
     assert_eq!(me().await.status, 403, "withheld until the removal stands");
+  }
+
+  #[tokio::test]
+  async fn a_proxy_session_takes_the_groups_the_proxy_forwards_now() {
+    use crate::testing::{set_cookie, with};
+    let config = |mapping: &str| {
+      format!(
+        "[web]\ntrusted_proxies = [\"127.0.0.1/32\"]\n[web.authentication.proxy]\nenabled = \
+         true\n[web.authentication.proxy.role_mapping]\nreadwrite = [\"users\"]\n{mapping}"
+      )
+    };
+    let app = app(&config(""), &[]).await.with_page();
+    let proxied = |r, groups: &str| {
+      with(
+        with(r, "x-authentik-username", "alice"),
+        "x-authentik-groups",
+        groups,
+      )
+    };
+    let page = app.send(proxied(request("GET", "/", None), "users")).await;
+    let cookie = set_cookie(&page.headers, "reseek_session").unwrap();
+    let me = |r| with(r, "cookie", &cookie);
+    // a group that gives no role yet, so the role is the same and the session goes on
+    let joined = app
+      .send(proxied(
+        me(request("GET", "/api/v0/session", None)),
+        "users|ops",
+      ))
+      .await;
+    assert_eq!(joined.json()["role"], "ReadWrite");
+    assert!(set_cookie(&joined.headers, "reseek_session").is_none());
+
+    std::fs::write(
+      app.dir.path().join("config.toml"),
+      config("administrator = [\"ops\"]\n"),
+    )
+    .unwrap();
+    app.state.config.reload().await.unwrap();
+    let alone = app.send(me(request("GET", "/api/v0/session", None))).await;
+    assert_eq!(
+      alone.json()["role"],
+      "Administrator",
+      "the cookie alone acts with the groups forwarded last"
+    );
   }
 
   #[tokio::test]

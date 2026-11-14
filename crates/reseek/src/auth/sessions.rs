@@ -11,6 +11,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{OptionalExtension, Row, params};
 
+use super::proxy::Forwarded;
 use super::roles::{Mapping, provider_role};
 use super::secret::Secret;
 use super::{local, oidc};
@@ -363,7 +364,39 @@ pub async fn create(db: &Database, new: NewSession) -> Result<StoredSession, DbE
   Ok(session)
 }
 
-/// The last sign-in of `subject`, `None` when it never signed in to a session.
+/// Records what a trusted proxy says about `subject` now, its name, email and groups, which the
+/// role of its sessions and tokens is read from. The time of its last login stays.
+pub async fn record_forwarded(
+  db: &Database,
+  subject: &str,
+  forwarded: &Forwarded,
+) -> Result<(), DbError> {
+  let subject = subject.to_string();
+  let name = forwarded.username.clone();
+  let email = forwarded.email.clone();
+  let claims = serde_json::to_string(&forwarded.groups).expect("a list of strings always encodes");
+  db.write(move |conn| {
+    conn.execute(
+      "INSERT INTO identities (subject, provider, name, email, claims_json, first_login_at, \
+       last_login_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6) ON CONFLICT (subject) DO UPDATE SET \
+       provider = excluded.provider, name = excluded.name, email = excluded.email, claims_json = \
+       excluded.claims_json",
+      params![
+        subject,
+        Origin::Proxy.stored(),
+        name,
+        email,
+        claims,
+        timestamp(Utc::now())
+      ],
+    )
+  })
+  .await
+  .map(drop)
+}
+
+/// The last sign-in of `subject`, `None` when none was recorded: it never signed in to a session
+/// nor made a token with only a proxy's forwarded identity.
 pub async fn last_sign_in(db: &Database, subject: &str) -> Result<Option<SignIn>, DbError> {
   let subject = subject.to_string();
   db.read(move |conn| {
