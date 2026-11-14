@@ -358,7 +358,8 @@
         siblings={line.siblings}
         inside={() => foldersUnder(line.node)}
         name={line.node.label}
-        {ontoggle} />
+        {ontoggle}
+        dormant />
       {@render folder(line.node, line.depth)}
     </div>
   {:else}

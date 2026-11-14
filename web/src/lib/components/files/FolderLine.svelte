@@ -12,6 +12,7 @@
   import Tooltip from "#lib/components/ui/Tooltip.svelte";
   import { FILE_ACTIONS as A } from "#lib/files/actions.js";
   import { folderCaption } from "#lib/files/summary.js";
+  import { wakeOnPointer } from "#lib/lists/wake.js";
   import type { FolderNode } from "#lib/tree/folders.js";
 
   type Props = {
@@ -32,6 +33,10 @@
 
   /** why a locked folder is dimmed */
   const LOCKED_HINT = "Locked: shared only with their buddies or privileged users";
+
+  /** the line's tooltips wait for a mouse or a pen to come to its name */
+  let dormant = $state(true);
+  const pointed = wakeOnPointer(() => (dormant = false));
 </script>
 
 <!-- a folder's line after its toggle: its tick, icon, name and what it holds, then its actions -->
@@ -42,9 +47,13 @@
     indeterminate={tick.indeterminate}
     onCheckedChange={tick.ontick} />
 {/if}
-<span class={["flex min-w-0 flex-1 items-center gap-1.5", node.locked && "opacity-50"]}>
+<!-- the pointer only wakes the line's tooltips here; it takes no input of its own -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<span
+  class={["flex min-w-0 flex-1 items-center gap-1.5", node.locked && "opacity-50"]}
+  onpointerenter={pointed}>
   {#if node.locked}
-    <Tooltip text={LOCKED_HINT} dense spoken>
+    <Tooltip text={LOCKED_HINT} dense spoken {dormant}>
       {#snippet child({ props })}
         <LockIcon {...props} class="size-4 shrink-0 text-fg-muted" />
       {/snippet}
@@ -56,7 +65,7 @@
   {/if}
   <span class="name-count flex-1 gap-1.5">
     <!-- cut in the middle, so the end that tells deep folders apart stays in view -->
-    <Tooltip text={node.locked ? undefined : node.path} dense>
+    <Tooltip text={node.locked ? undefined : node.path} dense {dormant}>
       {#snippet child({ props })}
         <span
           {...props}

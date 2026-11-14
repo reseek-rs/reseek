@@ -118,6 +118,38 @@ describe("browse progress", () => {
     );
   });
 
+  it("mounts a line's tooltips once a mouse comes to it", async () => {
+    fakeNetwork((url) =>
+      url.pathname.endsWith("/users/alice/browse")
+        ? {
+            directories: [
+              { name: "Music", fileCount: 2, files: [sharedFile("1.flac"), sharedFile("2.flac")] },
+              { name: "Music\\CD2", fileCount: 0, files: [] }
+            ],
+            directoryCount: 2,
+            lockedDirectories: [],
+            lockedDirectoryCount: 0
+          }
+        : undefined
+    );
+    component = mount(BrowsePage, { target: document.body, props: { user: "alice", path: null } });
+    await flushFaked();
+    await flushFaked();
+    const line = (key: string) =>
+      document.querySelector<HTMLElement>(`[role=rowgroup] [data-line="${CSS.escape(key)}"]`)!;
+    const tips = (key: string) => line(key).querySelectorAll("[data-tooltip-trigger]").length;
+    const keys = ["folder:Music\\CD2", "Music\\1.flac", "Music\\2.flac"];
+    expect(keys.map(tips)).toEqual([0, 0, 0]);
+    const mouse = (target: Element) =>
+      target.dispatchEvent(new PointerEvent("pointerenter", { pointerType: "mouse" }));
+    // a folder's toggle, its name, and a file's name each wake what they hold
+    mouse(line(keys[0]).querySelector("button[aria-expanded]")!);
+    mouse(line(keys[0]).querySelector(".name-count")!.parentElement!);
+    mouse(line(keys[1]).querySelectorAll("[role=gridcell]")[1]);
+    await flushFaked();
+    expect(keys.map(tips)).toEqual([2, 1, 0]);
+  });
+
   it("downloads a folder whose line is ticked in it, and some of its files loose", async () => {
     const net = fakeNetwork((url) => {
       if (url.pathname.endsWith("/transfers/downloads/jobs")) return { id: "j", groups: [] };

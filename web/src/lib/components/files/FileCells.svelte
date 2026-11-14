@@ -16,6 +16,7 @@
   import { downloadOf, starting } from "#lib/files/downloads.js";
   import { kindOf } from "#lib/files/kinds.js";
   import { formatAttributes, formatBytes, formatSeconds, getFileName } from "#lib/format.js";
+  import { wakeOnPointer } from "#lib/lists/wake.js";
   import { session } from "#lib/session.svelte.js";
   import { act } from "#lib/transfers/actions.js";
   import { fillOf } from "#lib/transfers/states.js";
@@ -50,6 +51,9 @@
   const asked = $derived(starting.has(fileKey(username, file.filename)));
   const fill = $derived(fillOf(download, asked));
   const shows = (column: FileColumn) => columns.includes(column);
+  /** the row's tooltips wait for a mouse or a pen to come to the name's cell */
+  let dormant = $state(true);
+  const pointed = wakeOnPointer(() => (dormant = false));
 </script>
 
 <!-- the cells of a remote file's row, each a gridcell, in the order `columns` gives; behind them
@@ -64,14 +68,16 @@
 {/if}
 <!-- the name is cut in the middle, where names that share a start keep their ends in view -->
 {#snippet nameText()}
-  <Tooltip text={file.filename} dense>
+  <Tooltip text={file.filename} dense {dormant}>
     {#snippet child({ props })}<span {...props} class="flex min-w-0"
         ><MiddleTruncate text={name} /></span
       >{/snippet}
   </Tooltip>
 {/snippet}
 
-<span role="gridcell" class="flex min-w-0 items-center gap-1.5 pr-2">
+<!-- the pointer only wakes the tooltips, all in this cell, here; it takes no input of its own -->
+<!-- svelte-ignore a11y_interactive_supports_focus -->
+<span role="gridcell" class="flex min-w-0 items-center gap-1.5 pr-2" onpointerenter={pointed}>
   <Icon class="size-4 shrink-0 text-fg-muted" />
   {#if !shows("size")}
     <!-- a phone gives the name the row's width, with the size under it -->
@@ -88,7 +94,7 @@
   {:else if fill === "done"}
     <CheckIcon class="size-4 shrink-0 text-success-icon" aria-label="Downloaded" />
   {:else if fill === "failed" && download && session.can("ReadWrite")}
-    <Tooltip text={download.exception ?? undefined}>
+    <Tooltip text={download.exception ?? undefined} {dormant}>
       {#snippet child({ props })}
         <Button
           {...props}

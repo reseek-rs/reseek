@@ -2,6 +2,7 @@
   import ChevronRightIcon from "@lucide/svelte/icons/chevron-right";
 
   import Tooltip from "#lib/components/ui/Tooltip.svelte";
+  import { wakeOnPointer } from "#lib/lists/wake.js";
   import { alsoToggled, type Expansion } from "#lib/tree/expansion.svelte.js";
   import { TOGGLE_REM } from "#lib/tree/indent.js";
   import { cn } from "#lib/ui/cn.js";
@@ -19,7 +20,10 @@
     name: string;
     /** after it opened or closed, with the keys that changed */
     ontoggle?: (open: boolean, keys: string[]) => void;
-    /** its tooltip waits for its line to wake, as `Tooltip`'s `dormant` */
+    /**
+     * its tooltip waits, as `Tooltip`'s `dormant`, until its line wakes or a mouse or a pen comes
+     * to it
+     */
     dormant?: boolean;
     class?: string;
   };
@@ -36,11 +40,12 @@
   }: Props = $props();
 
   const open = $derived(expansion.isOpen(key));
+  let pointed = $state(false);
 </script>
 
 <Tooltip
   text={`${mac ? "Option" : "Alt"}-click for the folders beside it too, ${mac ? "Cmd" : "Ctrl"}-click for every folder inside`}
-  {dormant}>
+  dormant={dormant && !pointed}>
   {#snippet child({ props })}
     <button
       {...props}
@@ -53,6 +58,7 @@
       style:height={`${TOGGLE_REM}rem`}
       aria-expanded={open}
       aria-label={`${open ? "Close" : "Open"} ${name}`}
+      onpointerenter={wakeOnPointer(() => (pointed = true))}
       onclick={(e) => {
         const also = alsoToggled(e, key, siblings, inside);
         expansion.toggle(key, also);
