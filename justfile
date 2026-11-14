@@ -130,7 +130,7 @@ test: web-install
     @[ -n "$({{ just_executable() }} --justfile {{ justfile() }} soulfind-bin)" ] || echo "soulfind not found at SOULFIND_BIN or on PATH: the soulfind suites were skipped"
     pnpm --dir web test
 
-[doc("formatting, clippy, the UI's linters and types, and the generated files up to date")]
+[doc("formatting, clippy, the UI's linters and types, the workflows, and the generated files up to date")]
 lint: web-install
     cargo fmt --all --check
     cargo fmt --manifest-path fuzz/Cargo.toml --all --check
@@ -138,6 +138,7 @@ lint: web-install
     pnpm --dir web lint
     pnpm --dir web check
     pnpm --dir web api-check
+    actionlint
     @view="$({{ just_executable() }} --justfile {{ justfile() }} config-view)" \
       || { echo "the settings fixture could not be generated" >&2; exit 1; }; \
       printf '%s\n' "$view" | diff -q web/src/lib/config/fixtures/view.json - > /dev/null \

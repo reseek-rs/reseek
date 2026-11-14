@@ -153,6 +153,8 @@
                 pnpm
 
                 nixfmt
+                # `just lint` checks the workflows with it
+                actionlint
                 git
               ]
               # the browser `just web-e2e` drives, and the linker .cargo/config.toml names
