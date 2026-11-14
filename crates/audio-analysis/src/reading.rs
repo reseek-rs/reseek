@@ -4,36 +4,57 @@
 //! reading works from the spread over windows, not an average, so a band-limited minority of
 //! the time or of the band reads as mixed sources rather than as a transcode.
 
-use api_types::analysis::{AnalysisFlag, AnalysisMeasures, AnalysisVerdict, EncoderGuess};
+use serde::Serialize;
 
-use super::aggregate::{measures, middle, percentile, upsample_ratio};
-use super::engine::Measured;
-use super::flags::findings;
-use super::measure::{Step, Window};
-use super::thresholds::{
-  CEILING, CLEAR_DB, CLUSTER_HZ, CONFIDENCE_CAP, CONSISTENT_SHARE, FEW_SECONDS, FULL_BAND,
-  HIGH_BITRATE_KBPS, HIGH_STEP_DB, INNER_SHELF_DB, MIN_SECONDS, MIN_WINDOWS, MIXED_SHARE,
-  NATURAL_LIMIT, OTHER_RATE_EDGES, PROFILES, Profile, QUIET_DBFS, TRANSCODE_SHARE, profile_at,
-};
+use crate::aggregate::{Measures, measures, middle, percentile, upsample_ratio};
+use crate::engine::Measured;
+use crate::flags::{Flag, findings};
+use crate::measure::{Step, Window};
+use crate::thresholds::{Profile, ReadingThresholds};
 
 /// The top of the band of a 48 kHz recording; a file whose band goes past it is hi-res.
 const HI_RES_TOP_HZ: f64 = 24_000.0;
 
+/// What the analyzer makes of the cutoff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+  /// nearly every window reaches the top of the claimed band without an encoder's shelf
+  Consistent,
+  /// nearly every window stops at the same known encoder cutoff with a sharp shelf
+  LikelyTranscode,
+  /// part of the time or part of the band is band-limited while the rest is full band, as when
+  /// one low-bitrate stem is mixed into a lossless track
+  MixedSources,
+  /// too little audio, or measures that fit no pattern
+  Inconclusive,
+}
+
+/// The encoder setting a cutoff matches.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct EncoderGuess {
+  /// the setting's name, as its profile gives it
+  pub profile: String,
+  /// how sure the analyzer is of the match, from 0 to 1
+  pub confidence: f64,
+}
+
 /// What the analyzer makes of a file.
-#[derive(Clone, Debug, PartialEq)]
-pub(in crate::analysis) struct Reading {
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reading {
   /// the reading of the cutoff
-  pub verdict: AnalysisVerdict,
-  /// how sure it is, from 0 to [`CONFIDENCE_CAP`]
+  pub verdict: Verdict,
+  /// how sure it is, from 0 to the confidence cap
   pub confidence: f64,
   /// findings independent of the cutoff
-  pub flags: Vec<AnalysisFlag>,
+  pub flags: Vec<Flag>,
   /// the encoder setting the cutoff matches
   pub encoder_guess: Option<EncoderGuess>,
   /// what it found, in words
   pub summary: String,
   /// the aggregate measures
-  pub measures: AnalysisMeasures,
+  pub measures: Measures,
   /// what made the reading less reliable
   pub limitations: Vec<String>,
   /// the cutoff to mark on the spectrogram, when the content stops short of the top
@@ -41,8 +62,8 @@ pub(in crate::analysis) struct Reading {
 }
 
 /// The reading of the cutoff alone, before the findings independent of it are added.
-struct Verdict {
-  verdict: AnalysisVerdict,
+struct CutoffReading {
+  verdict: Verdict,
   confidence: f64,
   encoder_guess: Option<EncoderGuess>,
   summary: String,
@@ -66,12 +87,14 @@ impl Seen {
   /// reaches the top only through a floor that just clears the cutoff line, above a step at an
   /// encoder's cutoff, stops at that step: hiss or dither over a filtered recording is not
   /// full-band content.
-  fn of(window: &Window, top: f64) -> Self {
+  fn of(window: &Window, top: f64, thresholds: &ReadingThresholds) -> Self {
     let floor = window.inner_shelf.filter(|step| {
-      window.cutoff_hz.is_some_and(|c| c >= FULL_BAND * top)
-        && step.drop >= INNER_SHELF_DB
-        && profile_at(step.hz).is_some()
-        && step.clearance < CLEAR_DB
+      window
+        .cutoff_hz
+        .is_some_and(|c| c >= thresholds.full_band * top)
+        && step.drop >= thresholds.inner_shelf_db
+        && thresholds.profile_at(step.hz).is_some()
+        && step.clearance < thresholds.clear_db
     });
     match floor {
       Some(step) => Self {
@@ -85,7 +108,7 @@ impl Seen {
       },
       None => Self {
         cutoff_hz: window.cutoff_hz,
-        sharp: window.sharp(),
+        sharp: window.sharp(thresholds),
         inner_shelf: window.inner_shelf,
         rms_dbfs: window.rms_dbfs,
         seconds: window.seconds,
@@ -95,13 +118,14 @@ impl Seen {
 }
 
 /// The windows that are not near-silent, as the reading counts them.
-struct Heard {
+struct Heard<'a> {
   windows: Vec<Seen>,
   /// the top of the band the content is judged against, in Hz
   top: f64,
+  thresholds: &'a ReadingThresholds,
 }
 
-impl Heard {
+impl<'a> Heard<'a> {
   /// How many seconds of audio the windows hold, a short last one by its length.
   fn seconds(&self) -> f64 {
     self.windows.iter().map(|w| w.seconds).sum()
@@ -113,14 +137,16 @@ impl Heard {
   }
 
   fn full(&self, window: &Seen) -> bool {
-    window.cutoff_hz.is_some_and(|c| c >= FULL_BAND * self.top)
+    window
+      .cutoff_hz
+      .is_some_and(|c| c >= self.thresholds.full_band * self.top)
   }
 
   /// A window that stops short of the top at an encoder's cutoff, with a sharp shelf.
-  fn limited(&self, window: &Seen) -> Option<&'static Profile> {
+  fn limited(&self, window: &Seen) -> Option<&'a Profile> {
     let cutoff = window.cutoff_hz?;
     (!self.full(window) && window.sharp)
-      .then(|| lower_profile_at(cutoff))
+      .then(|| lower_profile_at(self.thresholds, cutoff))
       .flatten()
   }
 
@@ -133,8 +159,8 @@ impl Heard {
   /// A full-band window with a band-limited layer under it at an encoder's cutoff.
   fn layered(&self, window: &Seen) -> Option<f64> {
     self
-      .stepped(window, INNER_SHELF_DB)
-      .filter(|hz| lower_profile_at(*hz).is_some())
+      .stepped(window, self.thresholds.inner_shelf_db)
+      .filter(|hz| lower_profile_at(self.thresholds, *hz).is_some())
   }
 }
 
@@ -162,15 +188,17 @@ fn problems(measured: &Measured) -> Vec<String> {
 
 /// The profile at `hz` when it is one below the highest bitrates: a cut where those cut is
 /// also where recordings are filtered, so it is no sign of a lossy part in a mix either.
-fn lower_profile_at(hz: f64) -> Option<&'static Profile> {
-  profile_at(hz).filter(|p| p.kbps < HIGH_BITRATE_KBPS)
+fn lower_profile_at(thresholds: &ReadingThresholds, hz: f64) -> Option<&Profile> {
+  thresholds
+    .profile_at(hz)
+    .filter(|p| p.kbps < thresholds.high_bitrate_kbps)
 }
 
-/// Reads what `measured` found.
-pub(in crate::analysis) fn read(measured: &Measured) -> Reading {
+/// Reads what `measured` found with `thresholds`.
+pub fn read(measured: &Measured, thresholds: &ReadingThresholds) -> Reading {
   let Some(claimed) = &measured.claimed else {
     return Reading {
-      verdict: AnalysisVerdict::Inconclusive,
+      verdict: Verdict::Inconclusive,
       confidence: 0.0,
       flags: Vec::new(),
       encoder_guess: None,
@@ -189,13 +217,20 @@ pub(in crate::analysis) fn read(measured: &Measured) -> Reading {
   let upsample_ratio = (claimed.sample_rate > 48_000).then(|| upsample_ratio(&windows));
   let measures = measures(measured, &windows, upsample_ratio);
   let median = measures.cutoff_median_hz.map(f64::from);
-  let found_beside = findings(claimed, &windows, median, &measures);
+  let found_beside = findings(claimed, &windows, median, &measures, thresholds);
   // an upsampled file is judged against the band of the rate it was made at
   let top = found_beside.source_edge.unwrap_or(nyquist);
-  let windows: Vec<Seen> = windows.iter().map(|w| Seen::of(w, top)).collect();
+  let windows: Vec<Seen> = windows
+    .iter()
+    .map(|w| Seen::of(w, top, thresholds))
+    .collect();
   let cutoffs: Vec<f64> = windows.iter().filter_map(|w| w.cutoff_hz).collect();
   let median = (!cutoffs.is_empty()).then(|| middle(&cutoffs));
-  let heard = Heard { windows, top };
+  let heard = Heard {
+    windows,
+    top,
+    thresholds,
+  };
   let mut limitations = problems(measured);
   if measured.sampled {
     limitations.push(format!(
@@ -211,7 +246,7 @@ pub(in crate::analysis) fn read(measured: &Measured) -> Reading {
   }
   let mut found = verdict(&heard, median, claimed.lossless, measured.bitrate_kbps);
   let heard_seconds = heard.seconds();
-  if heard_seconds < FEW_SECONDS {
+  if heard_seconds < thresholds.few_seconds() {
     limitations.push(format!(
       "Only {heard_seconds:.1} s of the audio is above silence, too little for a reliable reading"
     ));
@@ -222,15 +257,15 @@ pub(in crate::analysis) fn read(measured: &Measured) -> Reading {
   }
   // a lossy file read as consistent with its own bitrate stops where its own encoder cuts,
   // which needs no other explanation
-  let own_cutoff = !claimed.lossless && found.verdict == AnalysisVerdict::Consistent;
+  let own_cutoff = !claimed.lossless && found.verdict == Verdict::Consistent;
   if let Some(edge) = found_beside.source_edge
-    && let Some(profile) = profile_at(edge)
-    && found.verdict != AnalysisVerdict::MixedSources
+    && let Some(profile) = thresholds.profile_at(edge)
+    && found.verdict != Verdict::MixedSources
     && !own_cutoff
   {
     // the edge of the lower rate is also where an encoder cuts: either could be the source
-    found = Verdict {
-      verdict: AnalysisVerdict::Inconclusive,
+    found = CutoffReading {
+      verdict: Verdict::Inconclusive,
       confidence: 0.4,
       encoder_guess: Some(EncoderGuess {
         profile: profile.name.to_string(),
@@ -250,15 +285,17 @@ pub(in crate::analysis) fn read(measured: &Measured) -> Reading {
       cutoff_hz: Some(edge),
     };
   }
-  if found.verdict != AnalysisVerdict::Consistent
+  if found.verdict != Verdict::Consistent
     && let Some(cut) = found.cutoff_hz
-    && let Some((edge, rate)) = OTHER_RATE_EDGES
+    && let Some(edge) = thresholds
+      .other_rate_edges
       .iter()
-      .find(|(edge, _)| (cut - edge).abs() <= CLUSTER_HZ)
+      .find(|edge| (cut - edge.hz).abs() <= thresholds.cluster_hz)
   {
     limitations.push(format!(
-      "Audio recorded at {rate} and converted to this rate has the same sharp cutoff at {}",
-      khz(*edge)
+      "Audio recorded at {} and converted to this rate has the same sharp cutoff at {}",
+      edge.rate,
+      khz(edge.hz)
     ));
   }
   limitations.extend(found.limitations);
@@ -278,51 +315,59 @@ pub(in crate::analysis) fn read(measured: &Measured) -> Reading {
 }
 
 /// Reads the cutoff of the non-silent windows, whose median cutoff is `median`.
-fn verdict(heard: &Heard, median: Option<f64>, lossless: bool, bitrate: Option<u32>) -> Verdict {
+fn verdict(
+  heard: &Heard,
+  median: Option<f64>,
+  lossless: bool,
+  bitrate: Option<u32>,
+) -> CutoffReading {
+  let t = heard.thresholds;
   let count = heard.windows.len();
   let seconds = heard.seconds();
-  let mut reading = Verdict {
-    verdict: AnalysisVerdict::Inconclusive,
+  let mut reading = CutoffReading {
+    verdict: Verdict::Inconclusive,
     confidence: 0.3,
     encoder_guess: None,
     summary: String::new(),
     limitations: Vec::new(),
-    cutoff_hz: median.filter(|m| *m < FULL_BAND * heard.top),
+    cutoff_hz: median.filter(|m| *m < t.full_band * heard.top),
   };
-  let Some(median) = median.filter(|_| count >= MIN_WINDOWS && seconds >= MIN_SECONDS) else {
+  let Some(median) = median.filter(|_| count >= t.min_windows && seconds >= t.min_seconds) else {
     reading.confidence = 0.2;
     reading.summary = format!(
-      "Only {seconds:.1} s of the audio is above silence; a reading needs at least {MIN_SECONDS:.0} s."
+      "Only {seconds:.1} s of the audio is above silence; a reading needs at least {:.0} s.",
+      t.min_seconds
     );
     return reading;
   };
-  let near = |hz: f64| heard.share(|w| w.cutoff_hz.is_some_and(|c| (c - hz).abs() <= CLUSTER_HZ));
+  let near = |hz: f64| heard.share(|w| w.cutoff_hz.is_some_and(|c| (c - hz).abs() <= t.cluster_hz));
   let clustered = near(median);
   let sharp_share = heard.share(|w| {
     w.sharp
       && w
         .cutoff_hz
-        .is_some_and(|c| (c - median).abs() <= CLUSTER_HZ)
+        .is_some_and(|c| (c - median).abs() <= t.cluster_hz)
   }) / clustered.max(f64::EPSILON);
   // a lossy file's own encoder cuts off too: only a cutoff well below its bitrate's counts
   let below_claim =
     |profile: &Profile| lossless || bitrate.is_some_and(|kbps| profile.kbps * 3 / 2 <= kbps);
 
-  if let Some(profile) = lower_profile_at(median).filter(|p| below_claim(p))
-    && clustered >= TRANSCODE_SHARE
+  if let Some(profile) = lower_profile_at(t, median).filter(|p| below_claim(p))
+    && clustered >= t.transcode_share
     && sharp_share >= 0.5
   {
-    let evidence = 0.6 * ((clustered - TRANSCODE_SHARE) / (1.0 - TRANSCODE_SHARE)).clamp(0.0, 1.0)
+    let evidence = 0.6
+      * ((clustered - t.transcode_share) / (1.0 - t.transcode_share)).clamp(0.0, 1.0)
       + 0.4 * sharp_share;
     let confidence = 0.6 + 0.38 * evidence;
     reading
       .limitations
       .push("Of several lossy generations, only the lowest cutoff shows".to_string());
-    reading.verdict = AnalysisVerdict::LikelyTranscode;
-    reading.confidence = confidence.min(CONFIDENCE_CAP);
+    reading.verdict = Verdict::LikelyTranscode;
+    reading.confidence = confidence.min(t.confidence_cap);
     reading.encoder_guess = Some(EncoderGuess {
       profile: profile.name.to_string(),
-      confidence: (clustered * (0.5 + 0.5 * sharp_share)).min(CONFIDENCE_CAP),
+      confidence: (clustered * (0.5 + 0.5 * sharp_share)).min(t.confidence_cap),
     });
     reading.cutoff_hz = Some(median);
     reading.summary = format!(
@@ -334,8 +379,8 @@ fn verdict(heard: &Heard, median: Option<f64>, lossless: bool, bitrate: Option<u
     return reading;
   }
 
-  if let Some(profile) = profile_at(median).filter(|_| lossless)
-    && clustered >= TRANSCODE_SHARE
+  if let Some(profile) = t.profile_at(median).filter(|_| lossless)
+    && clustered >= t.transcode_share
     && sharp_share >= 0.5
   {
     reading.cutoff_hz = Some(median);
@@ -363,11 +408,11 @@ fn verdict(heard: &Heard, median: Option<f64>, lossless: bool, bitrate: Option<u
     .filter_map(|w| w.cutoff_hz)
     .collect();
   let limited_share = limited.len() as f64 / count as f64;
-  if limited_share >= MIXED_SHARE && full >= MIXED_SHARE {
+  if limited_share >= t.mixed_share && full >= t.mixed_share {
     let at = middle(&limited);
-    reading.verdict = AnalysisVerdict::MixedSources;
+    reading.verdict = Verdict::MixedSources;
     reading.confidence = 0.5 + 0.35 * (limited_share.min(full) / 0.5).min(1.0);
-    reading.encoder_guess = profile_at(at).map(|p| EncoderGuess {
+    reading.encoder_guess = t.profile_at(at).map(|p| EncoderGuess {
       profile: p.name.to_string(),
       confidence: 0.5,
     });
@@ -387,11 +432,11 @@ fn verdict(heard: &Heard, median: Option<f64>, lossless: bool, bitrate: Option<u
     .filter_map(|w| heard.layered(w))
     .collect();
   let layered_share = layers.len() as f64 / count as f64;
-  if layered_share >= MIXED_SHARE {
+  if layered_share >= t.mixed_share {
     let at = middle(&layers);
-    reading.verdict = AnalysisVerdict::MixedSources;
+    reading.verdict = Verdict::MixedSources;
     reading.confidence = 0.5 + 0.35 * layered_share.min(1.0);
-    reading.encoder_guess = profile_at(at).map(|p| EncoderGuess {
+    reading.encoder_guess = t.profile_at(at).map(|p| EncoderGuess {
       profile: p.name.to_string(),
       confidence: 0.5,
     });
@@ -409,13 +454,18 @@ fn verdict(heard: &Heard, median: Option<f64>, lossless: bool, bitrate: Option<u
   let high_steps: Vec<f64> = heard
     .windows
     .iter()
-    .filter_map(|w| heard.stepped(w, HIGH_STEP_DB))
-    .filter(|hz| profile_at(*hz).is_some_and(|p| p.kbps >= HIGH_BITRATE_KBPS))
+    .filter_map(|w| heard.stepped(w, t.high_step_db))
+    .filter(|hz| {
+      t.profile_at(*hz)
+        .is_some_and(|p| p.kbps >= t.high_bitrate_kbps)
+    })
     .collect();
-  if high_steps.len() as f64 / count as f64 >= MIXED_SHARE {
+  if high_steps.len() as f64 / count as f64 >= t.mixed_share {
     let at = middle(&high_steps);
     // every step here is at a profile
-    let profile = profile_at(at).map_or("a high bitrate", |p| p.name);
+    let profile = t
+      .profile_at(at)
+      .map_or("a high bitrate", |p| p.name.as_str());
     reading.encoder_guess = Some(EncoderGuess {
       profile: profile.to_string(),
       confidence: 0.4,
@@ -433,20 +483,20 @@ fn verdict(heard: &Heard, median: Option<f64>, lossless: bool, bitrate: Option<u
   }
 
   let open = heard.share(|w| heard.full(w) || !w.sharp);
-  if open >= CONSISTENT_SHARE {
-    if full >= CONSISTENT_SHARE {
-      let windows = ((count - MIN_WINDOWS) as f64 / 100.0).min(1.0);
+  if open >= t.consistent_share {
+    if full >= t.consistent_share {
+      let windows = ((count - t.min_windows) as f64 / 100.0).min(1.0);
       let mut confidence = 0.7 + 0.25 * windows;
       if quiet(heard) {
         confidence -= 0.1;
       }
-      reading.verdict = AnalysisVerdict::Consistent;
-      reading.confidence = confidence.min(CONFIDENCE_CAP);
+      reading.verdict = Verdict::Consistent;
+      reading.confidence = confidence.min(t.confidence_cap);
       // a step that is no encoder's cutoff can still lie under the band
       let stepped = heard
         .windows
         .iter()
-        .any(|w| heard.stepped(w, HIGH_STEP_DB).is_some());
+        .any(|w| heard.stepped(w, t.high_step_db).is_some());
       reading.summary = format!(
         "{} of the time reaches {}, near the top of the {} band{}.",
         percent(full),
@@ -465,8 +515,8 @@ fn verdict(heard: &Heard, median: Option<f64>, lossless: bool, bitrate: Option<u
        heavy equalization can look like a shelf"
         .to_string(),
     );
-    if median >= NATURAL_LIMIT * heard.top {
-      reading.verdict = AnalysisVerdict::Consistent;
+    if median >= t.natural_limit * heard.top {
+      reading.verdict = Verdict::Consistent;
       reading.confidence = 0.7;
       reading.summary = format!(
         "The content rolls off gently from about {}, not at the sharp cutoff of an encoder.",
@@ -495,17 +545,18 @@ fn verdict(heard: &Heard, median: Option<f64>, lossless: bool, bitrate: Option<u
   // the top of its cutoffs
   if !lossless && let Some(kbps) = bitrate {
     let cutoffs: Vec<f64> = heard.windows.iter().filter_map(|w| w.cutoff_hz).collect();
-    let edge = percentile(&cutoffs, CEILING).unwrap_or(median);
-    let too_low = PROFILES
+    let edge = percentile(&cutoffs, t.ceiling).unwrap_or(median);
+    let too_low = t
+      .profiles
       .iter()
       .rev()
       .find(|p| below_claim(p))
       .map_or(0.0, |p| p.hz);
-    if edge > too_low + CLUSTER_HZ {
+    if edge > too_low + t.cluster_hz {
       reading.cutoff_hz = Some(edge);
-      let profile = profile_at(edge);
-      if keeps_its_bitrate(edge, kbps) {
-        reading.verdict = AnalysisVerdict::Consistent;
+      let profile = t.profile_at(edge);
+      if keeps_its_bitrate(t, edge, kbps) {
+        reading.verdict = Verdict::Consistent;
         reading.confidence = 0.7 + 0.1 * near(edge);
         reading.summary = match profile {
           Some(profile) => format!(
@@ -538,7 +589,7 @@ fn verdict(heard: &Heard, median: Option<f64>, lossless: bool, bitrate: Option<u
       return reading;
     }
   }
-  reading.summary = if sharp_share >= 0.5 && clustered >= TRANSCODE_SHARE {
+  reading.summary = if sharp_share >= 0.5 && clustered >= t.transcode_share {
     format!(
       "The content stops at {} with a sharp shelf, which is not the cutoff of a common encoder.",
       khz(median)
@@ -552,13 +603,14 @@ fn verdict(heard: &Heard, median: Option<f64>, lossless: bool, bitrate: Option<u
 /// Whether a cut at `edge` keeps what a file of `kbps` does: it sits at the cutoff of a bitrate
 /// no lower than the highest one up to `kbps`, or past every cutoff of that bitrate. A file below
 /// every bitrate known keeps whatever it does.
-fn keeps_its_bitrate(edge: f64, kbps: u32) -> bool {
-  let Some(own) = PROFILES.iter().map(|p| p.kbps).filter(|p| *p <= kbps).max() else {
+fn keeps_its_bitrate(thresholds: &ReadingThresholds, edge: f64, kbps: u32) -> bool {
+  let profiles = &thresholds.profiles;
+  let Some(own) = profiles.iter().map(|p| p.kbps).filter(|p| *p <= kbps).max() else {
     return true;
   };
-  match profile_at(edge) {
+  match thresholds.profile_at(edge) {
     Some(profile) => profile.kbps >= own,
-    None => PROFILES
+    None => profiles
       .iter()
       .filter(|p| p.kbps == own)
       .all(|p| edge > p.hz),
@@ -568,7 +620,7 @@ fn keeps_its_bitrate(edge: f64, kbps: u32) -> bool {
 /// Whether the middle window is quiet.
 fn quiet(heard: &Heard) -> bool {
   let levels: Vec<f64> = heard.windows.iter().map(|w| w.rms_dbfs).collect();
-  percentile(&levels, 0.5).is_some_and(|level| level < QUIET_DBFS)
+  percentile(&levels, 0.5).is_some_and(|level| level < heard.thresholds.quiet_dbfs)
 }
 
 /// A frequency as kHz to one decimal, without a trailing `.0`.
@@ -586,7 +638,7 @@ fn percent(share: f64) -> String {
 mod tests {
   use super::*;
 
-  fn heard(cutoffs: &[f64]) -> Heard {
+  fn heard<'a>(cutoffs: &[f64], thresholds: &'a ReadingThresholds) -> Heard<'a> {
     Heard {
       windows: cutoffs
         .iter()
@@ -599,6 +651,7 @@ mod tests {
         })
         .collect(),
       top: 24_000.0,
+      thresholds,
     }
   }
 
@@ -614,50 +667,50 @@ mod tests {
       (21_000.0, 30),
       (15_500.0, 20),
     ]);
-    let found = verdict(&heard(&cuts), Some(20_250.0), false, Some(256));
-    assert_eq!(
-      found.verdict,
-      AnalysisVerdict::Consistent,
-      "{}",
-      found.summary
+    let found = verdict(
+      &heard(&cuts, &ReadingThresholds::default()),
+      Some(20_250.0),
+      false,
+      Some(256),
     );
+    assert_eq!(found.verdict, Verdict::Consistent, "{}", found.summary);
   }
 
   #[test]
   fn a_ceiling_too_low_for_the_bitrate_is_not_called_consistent() {
     let cuts = spread(&[(15_500.0, 40), (16_500.0, 40), (17_500.0, 40)]);
-    let found = verdict(&heard(&cuts), Some(16_500.0), false, Some(256));
-    assert_ne!(
-      found.verdict,
-      AnalysisVerdict::Consistent,
-      "{}",
-      found.summary
+    let found = verdict(
+      &heard(&cuts, &ReadingThresholds::default()),
+      Some(16_500.0),
+      false,
+      Some(256),
     );
+    assert_ne!(found.verdict, Verdict::Consistent, "{}", found.summary);
   }
 
   #[test]
   fn a_full_band_minority_too_small_to_mix_does_not_hide_a_transcode() {
     // a 128 kbps source in a 320 kbps MP3 with a full-band intro under the mixed-sources share
     let cuts = spread(&[(16_000.0, 88), (20_000.0, 12)]);
-    let found = verdict(&heard(&cuts), Some(16_000.0), false, Some(320));
-    assert_eq!(
-      found.verdict,
-      AnalysisVerdict::LikelyTranscode,
-      "{}",
-      found.summary
+    let found = verdict(
+      &heard(&cuts, &ReadingThresholds::default()),
+      Some(16_000.0),
+      false,
+      Some(320),
     );
+    assert_eq!(found.verdict, Verdict::LikelyTranscode, "{}", found.summary);
   }
 
   #[test]
   fn a_cutoff_below_its_bitrates_own_but_above_two_thirds_of_it_is_inconclusive() {
     let cuts = spread(&[(16_000.0, 100)]);
-    let found = verdict(&heard(&cuts), Some(16_000.0), false, Some(190));
-    assert_eq!(
-      found.verdict,
-      AnalysisVerdict::Inconclusive,
-      "{}",
-      found.summary
+    let found = verdict(
+      &heard(&cuts, &ReadingThresholds::default()),
+      Some(16_000.0),
+      false,
+      Some(190),
     );
+    assert_eq!(found.verdict, Verdict::Inconclusive, "{}", found.summary);
     assert_eq!(found.confidence, 0.4);
     let guess = found.encoder_guess.unwrap();
     assert_eq!(
@@ -670,11 +723,11 @@ mod tests {
       found.summary
     );
     let own = verdict(
-      &heard(&spread(&[(18_600.0, 100)])),
+      &heard(&spread(&[(18_600.0, 100)]), &ReadingThresholds::default()),
       Some(18_600.0),
       false,
       Some(190),
     );
-    assert_eq!(own.verdict, AnalysisVerdict::Consistent, "{}", own.summary);
+    assert_eq!(own.verdict, Verdict::Consistent, "{}", own.summary);
   }
 }

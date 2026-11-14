@@ -7,6 +7,7 @@ use std::fs::File;
 use std::ops::Range;
 use std::path::Path;
 
+use serde::Serialize;
 use symphonia::core::audio::GenericAudioBufferRef;
 use symphonia::core::audio::sample::{i24, u24};
 use symphonia::core::audio::{Audio, AudioBuffer};
@@ -17,16 +18,20 @@ use symphonia::core::codecs::audio::{
   AudioCodecId, AudioCodecParameters, AudioDecoder, AudioDecoderOptions,
 };
 use symphonia::core::errors::{Error, SeekErrorKind};
-use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
-use symphonia::core::io::{MediaSource, MediaSourceStream};
+use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::{Time, TimeBase, Timestamp};
 use symphonia_common::apple::audio::alac::MagicCookie;
 use tracing::{debug, trace};
 
+/// What a caller opens audio from a source of its own with: the source, and what the audio
+/// might be.
+pub use symphonia::core::formats::probe::Hint;
+pub use symphonia::core::io::MediaSource;
+
 /// The most channels the analyzer reads; the rest of a surround file is left out.
-pub(in crate::analysis) const ANALYZED_CHANNELS: usize = 2;
+const ANALYZED_CHANNELS: usize = 2;
 
 /// The highest sample rate the analyzer reads; a window holds a second of samples, so a header
 /// claiming more is not trusted with the memory.
@@ -36,8 +41,9 @@ const MAX_RATE: u32 = 768_000;
 const MAX_SKIPPED: u32 = 1000;
 
 /// The format a file's container and codec claim.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Claimed {
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Claimed {
   /// the codec's short name, such as `flac` or `mp3`
   pub codec: String,
   /// samples per second
@@ -53,7 +59,7 @@ pub(crate) struct Claimed {
 }
 
 /// An audio file open for decoding.
-pub(crate) struct Decoder {
+pub struct Decoder {
   format: Box<dyn FormatReader>,
   decoder: Box<dyn AudioDecoder>,
   track: u32,
@@ -62,7 +68,7 @@ pub(crate) struct Decoder {
   /// what the file claims
   pub claimed: Claimed,
   /// the channels analyzed: one for mono, else the first two
-  pub channels: usize,
+  pub(crate) channels: usize,
   /// decoded samples not taken yet, one vector per analyzed channel
   pending: Vec<Vec<f32>>,
   /// where the next sample of `pending` starts in `pending`
@@ -79,7 +85,7 @@ pub(crate) struct Decoder {
   /// per byte
   densest: Option<(u64, u64)>,
   /// packets the decoder could not read and skipped
-  pub skipped: u32,
+  pub(crate) skipped: u32,
   /// why the last packet skipped could not be read
   pub last_skipped: Option<String>,
   /// why decoding stopped before the end of the file, when it did
@@ -91,7 +97,7 @@ pub(crate) struct Decoder {
 
 /// What filling a window gave.
 #[derive(Debug, PartialEq, Eq)]
-pub(in crate::analysis) enum Filled {
+pub(crate) enum Filled {
   /// the window is full
   Full,
   /// the file ended first; the window holds this many frames
@@ -101,7 +107,7 @@ pub(in crate::analysis) enum Filled {
 impl Decoder {
   /// Opens the file at `path`, finding its container from its contents and its extension, and
   /// reads its bytes through the source `through` makes of it.
-  pub fn open_through(
+  pub(crate) fn open_through(
     path: &Path,
     through: impl FnOnce(File) -> Box<dyn MediaSource>,
   ) -> Result<Self, String> {
@@ -191,14 +197,14 @@ impl Decoder {
   /// The bits per sample the integer samples decoded so far use: the sample type's width less
   /// the low bits that were zero in every one. `None` for float samples and while every sample
   /// was zero.
-  pub fn bits_used(&self) -> Option<u32> {
+  pub(crate) fn bits_used(&self) -> Option<u32> {
     let (set, width) = self.bits?;
     (set != 0).then(|| width - set.trailing_zeros().min(width))
   }
 
   /// The audio's bitrate in kbit/s from the packets decoded so far: their bytes over their
   /// length, so tags and cover art around the stream do not count. `None` before any.
-  pub fn bitrate_kbps(&self) -> Option<u32> {
+  pub(crate) fn bitrate_kbps(&self) -> Option<u32> {
     let (bytes, frames) = self.decoded;
     (frames > 0).then(|| {
       let seconds = frames as f64 / f64::from(self.claimed.sample_rate);
@@ -211,14 +217,14 @@ impl Decoder {
   /// tables that can point many packets at the same bytes, and cannot hold more audio than its
   /// bytes at its densest packet, so the bound is as good as the packets read. `None` before a
   /// packet is decoded, or when the source does not say how long it is.
-  pub fn most_seconds(&self) -> Option<f64> {
+  pub(crate) fn most_seconds(&self) -> Option<f64> {
     let (bytes, frames) = self.densest?;
     let held = self.file_bytes? as f64 * frames as f64 / bytes as f64;
     Some(held / f64::from(self.claimed.sample_rate))
   }
 
   /// Fills `window`, one vector per analyzed channel, with the next `frames` sample frames.
-  pub(in crate::analysis) fn fill(&mut self, window: &mut [Vec<f32>], frames: usize) -> Filled {
+  pub(crate) fn fill(&mut self, window: &mut [Vec<f32>], frames: usize) -> Filled {
     for channel in window.iter_mut() {
       channel.clear();
     }
@@ -240,7 +246,7 @@ impl Decoder {
   }
 
   /// Moves to `seconds` from the start, dropping what was decoded and not taken.
-  pub fn seek(&mut self, seconds: f64) -> Result<(), String> {
+  pub(crate) fn seek(&mut self, seconds: f64) -> Result<(), String> {
     let time = Time::try_from_secs_f64(seconds).ok_or("the position is out of range")?;
     self
       .format
@@ -508,9 +514,7 @@ fn note_bits(bits: &mut Option<(u32, u32)>, decoded: &GenericAudioBufferRef<'_>)
 #[cfg(test)]
 mod tests {
   use super::*;
-
-  /// A 16-bit ALAC tone in an MP4 container.
-  const TONE: &[u8] = include_bytes!("../../files/fixtures/tone.m4a");
+  use crate::fixtures::TONE;
 
   fn opened(bytes: Vec<u8>) -> Decoder {
     let mut hint = Hint::new();
@@ -520,13 +524,7 @@ mod tests {
 
   #[test]
   fn a_skip_decodes_only_from_the_packet_holding_the_frame() {
-    let bytes = crate::files::two_tracks();
-    assert_eq!(
-      opened(bytes.clone()).seek_frame(12_000),
-      Ok(false),
-      "no seek places a frame past where the second track ends"
-    );
-    let mut decoder = opened(bytes);
+    let mut decoder = opened(TONE.to_vec());
     decoder.skip_to_frame(12_000);
     let mut samples = Vec::new();
     assert_eq!(decoder.next_interleaved(&mut samples), Some(8192..12_288));

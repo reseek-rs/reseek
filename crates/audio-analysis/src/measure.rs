@@ -9,15 +9,12 @@ use std::sync::Arc;
 use realfft::num_complex::Complex;
 use realfft::{RealFftPlanner, RealToComplex};
 
-use super::picture::{self, BINS, Shown};
-use super::thresholds::{
-  CUTOFF_RANGE_DB, FLOOR_MARGIN_DB, FULL_BAND, HOLE_DEPTH_DB, HOLES_FROM_HZ, HOLES_TO_HZ,
-  INNER_SHELF_FROM_HZ, SHARP_SHELF_DB, SHELF_GAP_HZ, SHELF_SPAN_HZ, SILENCE_DBFS,
-};
-use super::totals::Totals;
+use crate::picture::{self, BINS, Shown};
+use crate::thresholds::{MeasureThresholds, ReadingThresholds};
+use crate::totals::Totals;
 
 /// The length of one spectrum frame in samples.
-pub(in crate::analysis) const FFT_SIZE: usize = 4096;
+pub(crate) const FFT_SIZE: usize = 4096;
 /// How far one frame starts after the one before.
 const HOP: usize = FFT_SIZE / 2;
 /// How wide the band is that a spectrum is smoothed over, either side of a bin.
@@ -36,20 +33,20 @@ const CODEC_PERIODS: [usize; 3] = [
 
 /// A step down in level inside a band that reaches the top.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(in crate::analysis) struct Step {
+pub struct Step {
   /// where it is, in Hz
   pub hz: f64,
   /// how much quieter the band above it is than the band below, in dB
   pub drop: f64,
-  /// how far the band above it is over the cutoff line (the loudest band less
-  /// [`CUTOFF_RANGE_DB`], or the quantization noise plus [`FLOOR_MARGIN_DB`] when that is
-  /// higher), in dB: a few dB is a noise floor that only just reaches the line
+  /// how far the band above it is over the cutoff line (the loudest band less `cutoff_range_db`,
+  /// or the quantization noise plus `floor_margin_db` when that is higher), in dB: a few dB is a
+  /// noise floor that only just reaches the line
   pub clearance: f64,
 }
 
 /// What one window measured.
 #[derive(Clone, Debug, PartialEq)]
-pub(in crate::analysis) struct Window {
+pub struct Window {
   /// where the window starts, in seconds
   pub t: f64,
   /// how long it is, in seconds: 1 but for a shorter last window
@@ -76,19 +73,21 @@ pub(in crate::analysis) struct Window {
 
 impl Window {
   /// Whether the window stops with an encoder's low-pass rather than a natural roll-off: its
-  /// shelf drops by [`SHARP_SHELF_DB`] or more.
-  pub fn sharp(&self) -> bool {
-    self.shelf_db.is_some_and(|shelf| shelf >= SHARP_SHELF_DB)
+  /// shelf drops by `sharp_shelf_db` or more.
+  pub(crate) fn sharp(&self, thresholds: &ReadingThresholds) -> bool {
+    self
+      .shelf_db
+      .is_some_and(|shelf| shelf >= thresholds.sharp_shelf_db)
   }
 
   /// Whether the window is too quiet to measure a spectrum in.
-  pub fn silent(&self) -> bool {
-    self.rms_dbfs < SILENCE_DBFS
+  fn silent(&self, thresholds: &MeasureThresholds) -> bool {
+    self.rms_dbfs < thresholds.silence_dbfs
   }
 }
 
 /// The spectrum analyzer for one sample rate: the frame transform and the window function.
-pub(in crate::analysis) struct Analyzer {
+pub(crate) struct Analyzer<'a> {
   fft: Arc<dyn RealToComplex<f32>>,
   hann: Vec<f32>,
   input: Vec<f32>,
@@ -102,11 +101,13 @@ pub(in crate::analysis) struct Analyzer {
   /// the level of one bin of the quantization noise integer samples carry, when they are
   /// integers
   quantization_db: Option<f64>,
+  /// what the windows are measured with
+  thresholds: &'a MeasureThresholds,
 }
 
-impl Analyzer {
+impl<'a> Analyzer<'a> {
   /// An analyzer for audio at `rate` samples per second.
-  pub fn new(rate: u32, bits: Option<u32>) -> Self {
+  pub fn new(rate: u32, bits: Option<u32>, thresholds: &'a MeasureThresholds) -> Self {
     let fft = RealFftPlanner::<f32>::new().plan_fft_forward(FFT_SIZE);
     let hann = (0..FFT_SIZE)
       .map(|i| {
@@ -126,6 +127,7 @@ impl Analyzer {
       bin_hz,
       frames: Vec::new(),
       quantization_db: bits.map(quantization_db),
+      thresholds,
     }
   }
 
@@ -161,7 +163,8 @@ impl Analyzer {
     };
     let half = (self.rate / 4.0 / self.bin_hz).ceil() as usize;
     window.energy = (power[half..].iter().sum(), power[1..].iter().sum());
-    if window.silent() {
+    let t = self.thresholds;
+    if window.silent(t) {
       return window;
     }
     let smoothed = smooth_db(&power, (SMOOTH_HZ / self.bin_hz).round() as usize);
@@ -169,8 +172,8 @@ impl Analyzer {
     // in a quiet passage the range would reach the quantization noise, which is no content
     let line = self
       .quantization_db
-      .map_or(peak - CUTOFF_RANGE_DB, |floor| {
-        (peak - CUTOFF_RANGE_DB).max(floor + FLOOR_MARGIN_DB)
+      .map_or(peak - t.cutoff_range_db, |floor| {
+        (peak - t.cutoff_range_db).max(floor + t.floor_margin_db)
       });
     let top = smoothed
       .iter()
@@ -183,7 +186,7 @@ impl Analyzer {
       .map(|(below, above)| below - above);
     window.holes = self.holes(cutoff);
     window.frame_score = frame_score;
-    if cutoff >= FULL_BAND * self.rate / 2.0 {
+    if cutoff >= t.full_band * self.rate / 2.0 {
       window.inner_shelf = self.inner_shelf(&smoothed, cutoff, line);
     }
     window
@@ -259,23 +262,16 @@ impl Analyzer {
   }
 
   /// The levels either side of `hz`: of the band below it and of the band above it, each
-  /// [`SHELF_SPAN_HZ`] wide and [`SHELF_GAP_HZ`] away; `None` when the band above passes the
-  /// top of the spectrum.
+  /// `shelf_span_hz` wide and `shelf_gap_hz` away; `None` when the band above passes the top of
+  /// the spectrum.
   fn step(&self, smoothed: &[f64], hz: f64) -> Option<(f64, f64)> {
     let nyquist = self.rate / 2.0;
-    if hz + SHELF_GAP_HZ + SHELF_SPAN_HZ > nyquist || hz < SHELF_GAP_HZ + SHELF_SPAN_HZ {
+    let (gap, span) = (self.thresholds.shelf_gap_hz, self.thresholds.shelf_span_hz);
+    if hz + gap + span > nyquist || hz < gap + span {
       return None;
     }
-    let below = self.level(
-      smoothed,
-      hz - SHELF_GAP_HZ - SHELF_SPAN_HZ,
-      hz - SHELF_GAP_HZ,
-    )?;
-    let above = self.level(
-      smoothed,
-      hz + SHELF_GAP_HZ,
-      hz + SHELF_GAP_HZ + SHELF_SPAN_HZ,
-    )?;
+    let below = self.level(smoothed, hz - gap - span, hz - gap)?;
+    let above = self.level(smoothed, hz + gap, hz + gap + span)?;
     Some((below, above))
   }
 
@@ -283,8 +279,9 @@ impl Analyzer {
   /// top, searched every 100 Hz, with how far the band above it is over `line`.
   fn inner_shelf(&self, smoothed: &[f64], cutoff: f64, line: f64) -> Option<Step> {
     let mut best: Option<Step> = None;
-    let mut hz = INNER_SHELF_FROM_HZ;
-    while hz + SHELF_GAP_HZ + SHELF_SPAN_HZ <= cutoff {
+    let t = self.thresholds;
+    let mut hz = t.inner_shelf_from_hz;
+    while hz + t.shelf_gap_hz + t.shelf_span_hz <= cutoff {
       if let Some((below, above)) = self.step(smoothed, hz)
         && best.is_none_or(|deepest| below - above > deepest.drop)
       {
@@ -299,22 +296,23 @@ impl Analyzer {
     best
   }
 
-  /// How many bins between 16 and 20 kHz, below `cutoff`, are much quieter than the bins
-  /// around them, per bin that is not, averaged over the window's frames. `None` when less
-  /// than a kilohertz of that band is below the cutoff.
+  /// How many bins from `holes_from_hz` to `holes_to_hz`, below `cutoff`, are much quieter than
+  /// the bins around them, per bin that is not, averaged over the window's frames. `None` when
+  /// less than a kilohertz of that band is below the cutoff.
   fn holes(&self, cutoff: f64) -> Option<f64> {
-    let high = HOLES_TO_HZ.min(cutoff - SHELF_GAP_HZ * 2.0);
-    if high - HOLES_FROM_HZ < 1000.0 || self.frames.is_empty() {
+    let t = self.thresholds;
+    let high = t.holes_to_hz.min(cutoff - t.shelf_gap_hz * 2.0);
+    if high - t.holes_from_hz < 1000.0 || self.frames.is_empty() {
       return None;
     }
-    let range = self.bins(HOLES_FROM_HZ, high);
+    let range = self.bins(t.holes_from_hz, high);
     let radius = (SMOOTH_HZ * 2.0 / self.bin_hz).round() as usize;
     let mut ratios = 0.0;
     for frame in &self.frames {
       let smoothed = smooth_db(frame, radius);
       let (mut holes, mut populated) = (0u32, 0u32);
       for bin in range.clone() {
-        if db(frame[bin]) < smoothed[bin] - HOLE_DEPTH_DB {
+        if db(frame[bin]) < smoothed[bin] - t.hole_depth_db {
           holes += 1;
         } else {
           populated += 1;

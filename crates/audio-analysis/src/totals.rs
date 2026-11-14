@@ -9,7 +9,7 @@ const LEVELS_FROM_DB: f64 = -160.0;
 
 /// The running figures over every analyzed sample.
 #[derive(Clone, Debug, Default)]
-pub(in crate::analysis) struct Totals {
+pub(crate) struct Totals {
   samples: u64,
   sum: f64,
   clipped: u64,

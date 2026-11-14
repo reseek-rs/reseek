@@ -1,0 +1,35 @@
+[package]
+name = "audio-analysis"
+description = "Reads an audio file's spectrum a second at a time and judges whether it is what its format claims, such as a FLAC made from an MP3"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "AGPL-3.0-only"
+
+[features]
+# the generated audio and the sample file the analyzer is tested on, for the tests of the crates
+# that use this one
+testing = ["dep:flacenc", "dep:mp3lame-encoder"]
+
+[dependencies]
+realfft = "3"
+serde.workspace = true
+# decodes every audio format the analyzer reads, streamed
+symphonia = { version = "0.6", features = ["all"] }
+symphonia-common = "0.6"
+tracing.workspace = true
+
+flacenc = { version = "0.5", default-features = false, optional = true }
+# builds the LAME source it carries with autotools (`configure`, `make`, a C compiler), for
+# the test fixtures only; nothing of it is in a program
+mp3lame-encoder = { version = "0.3", optional = true }
+
+[dev-dependencies]
+# make the lossless and lossy audio the analyzer is tested on
+flacenc = { version = "0.5", default-features = false }
+mp3lame-encoder = "0.3"
+proptest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

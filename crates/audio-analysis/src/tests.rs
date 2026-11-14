@@ -3,15 +3,16 @@
 //! as a transcode or as mixed.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use api_types::analysis::{AnalysisFlag, AnalysisVerdict};
 use mp3lame_encoder::Bitrate;
-use tokio_util::sync::CancellationToken;
 
-use super::engine::{self, Settings};
-use super::fixtures::{self, Audio, lo_fi, music, music_for, pink, tone};
-use super::reading::{self, Reading};
+use crate::engine::{self, Settings};
+use crate::fixtures::{self, Audio, lo_fi, music, music_for, pink, tone};
+use crate::flags::Flag;
+use crate::reading::{Reading, Verdict};
+use crate::thresholds::{MeasureThresholds, ReadingThresholds};
 
 fn settings() -> Settings {
   Settings {
@@ -19,7 +20,13 @@ fn settings() -> Settings {
     sampled_windows: 240,
     deadline: Instant::now() + Duration::from_secs(600),
     progress: None,
+    canceled: None,
+    thresholds: MeasureThresholds::default(),
   }
+}
+
+fn read(measured: &engine::Measured) -> Reading {
+  crate::reading::read(measured, &ReadingThresholds::default())
 }
 
 fn analyzed(path: &Path) -> Reading {
@@ -28,8 +35,8 @@ fn analyzed(path: &Path) -> Reading {
 
 /// The reading of the file at `path`, with what it saw for an assertion to print.
 fn explained(path: &Path) -> (Reading, String) {
-  let measured = engine::run(path, &settings(), &CancellationToken::new()).unwrap();
-  let reading = reading::read(&measured);
+  let measured = engine::run(path, &settings()).unwrap();
+  let reading = read(&measured);
   let why = engine::explain(&measured, &reading);
   (reading, why)
 }
@@ -45,7 +52,7 @@ fn not_fake(reading: &Reading) {
   assert!(
     !matches!(
       reading.verdict,
-      AnalysisVerdict::LikelyTranscode | AnalysisVerdict::MixedSources
+      Verdict::LikelyTranscode | Verdict::MixedSources
     ),
     "{reading:#?}"
   );
@@ -55,7 +62,7 @@ fn not_fake(reading: &Reading) {
 fn lossless_music_reads_consistent_with_no_frame_rhythm_or_top_band_gaps() {
   let dir = tempfile::tempdir().unwrap();
   let reading = analyzed(&flac(dir.path(), "a.flac", &music(1, 44_100, pink), 16));
-  assert_eq!(reading.verdict, AnalysisVerdict::Consistent, "{reading:#?}");
+  assert_eq!(reading.verdict, Verdict::Consistent, "{reading:#?}");
   assert!(reading.confidence >= 0.7, "{reading:#?}");
   assert!(reading.flags.is_empty());
   assert_eq!(reading.encoder_guess, None);
@@ -73,11 +80,7 @@ fn reads_as_a_transcode_of(bitrate: Bitrate, profile: &str) {
   let dir = tempfile::tempdir().unwrap();
   let through = fixtures::through_mp3(&music(1, 44_100, pink), bitrate, dir.path());
   let reading = analyzed(&flac(dir.path(), "t.flac", &through, 16));
-  assert_eq!(
-    reading.verdict,
-    AnalysisVerdict::LikelyTranscode,
-    "{reading:#?}"
-  );
+  assert_eq!(reading.verdict, Verdict::LikelyTranscode, "{reading:#?}");
   assert!(reading.confidence >= 0.6, "{reading:#?}");
   let guess = reading.encoder_guess.as_ref().unwrap();
   assert_eq!(guess.profile, profile, "{reading:#?}");
@@ -110,7 +113,7 @@ fn a_320_kbps_transcode_is_not_read_as_consistent() {
   let dir = tempfile::tempdir().unwrap();
   let through = fixtures::through_mp3(&music(1, 44_100, pink), Bitrate::Kbps320, dir.path());
   let reading = analyzed(&flac(dir.path(), "t.flac", &through, 16));
-  assert_ne!(reading.verdict, AnalysisVerdict::Consistent, "{reading:#?}");
+  assert_ne!(reading.verdict, Verdict::Consistent, "{reading:#?}");
   assert!(reading.confidence <= 0.75, "{reading:#?}");
 }
 
@@ -120,12 +123,12 @@ fn an_honest_mp3_is_judged_against_its_own_bitrate() {
   let honest = dir.path().join("honest.mp3");
   fixtures::write_mp3(&music(1, 44_100, pink), Bitrate::Kbps128, &honest);
   let reading = analyzed(&honest);
-  assert_eq!(reading.verdict, AnalysisVerdict::Consistent, "{reading:#?}");
+  assert_eq!(reading.verdict, Verdict::Consistent, "{reading:#?}");
 }
 
 /// Content that stops at 16 kHz, where older encoders and 32 kHz sources stop too, as an MP3 at
 /// `bitrate`, reads as `verdict`.
-fn a_16_khz_cut_as_an_mp3_reads(bitrate: Bitrate, verdict: AnalysisVerdict) {
+fn a_16_khz_cut_as_an_mp3_reads(bitrate: Bitrate, verdict: Verdict) {
   let dir = tempfile::tempdir().unwrap();
   let path = dir.path().join("cut16.mp3");
   fixtures::write_mp3(
@@ -139,12 +142,12 @@ fn a_16_khz_cut_as_an_mp3_reads(bitrate: Bitrate, verdict: AnalysisVerdict) {
 
 #[test]
 fn a_16_khz_cut_is_a_128_kbps_mp3s_own_cutoff() {
-  a_16_khz_cut_as_an_mp3_reads(Bitrate::Kbps128, AnalysisVerdict::Consistent);
+  a_16_khz_cut_as_an_mp3_reads(Bitrate::Kbps128, Verdict::Consistent);
 }
 
 #[test]
 fn a_16_khz_cut_in_a_320_kbps_mp3_fits_either_explanation() {
-  a_16_khz_cut_as_an_mp3_reads(Bitrate::Kbps320, AnalysisVerdict::Inconclusive);
+  a_16_khz_cut_as_an_mp3_reads(Bitrate::Kbps320, Verdict::Inconclusive);
 }
 
 #[test]
@@ -153,11 +156,11 @@ fn a_cover_larger_than_the_audio_does_not_raise_an_mp3s_bitrate() {
   let honest = dir.path().join("honest.mp3");
   fixtures::write_mp3(&music(1, 44_100, pink), Bitrate::Kbps128, &honest);
   fixtures::add_cover(&honest, 2_000_000);
-  let measured = engine::run(&honest, &settings(), &CancellationToken::new()).unwrap();
+  let measured = engine::run(&honest, &settings()).unwrap();
   let kbps = measured.bitrate_kbps.unwrap();
   assert!((120..=136).contains(&kbps), "{kbps} kbps");
-  let reading = reading::read(&measured);
-  assert_eq!(reading.verdict, AnalysisVerdict::Consistent, "{reading:#?}");
+  let reading = read(&measured);
+  assert_eq!(reading.verdict, Verdict::Consistent, "{reading:#?}");
 }
 
 #[test]
@@ -167,11 +170,7 @@ fn a_128_kbps_mp3_encoded_again_at_320_kbps_keeps_the_lower_cutoff() {
   let inflated = dir.path().join("inflated.mp3");
   fixtures::write_mp3(&through, Bitrate::Kbps320, &inflated);
   let reading = analyzed(&inflated);
-  assert_eq!(
-    reading.verdict,
-    AnalysisVerdict::LikelyTranscode,
-    "{reading:#?}"
-  );
+  assert_eq!(reading.verdict, Verdict::LikelyTranscode, "{reading:#?}");
 }
 
 #[test]
@@ -179,8 +178,8 @@ fn an_upsample_is_flagged_beside_the_verdict() {
   let dir = tempfile::tempdir().unwrap();
   let source = music(1, 44_100, pink);
   let reading = analyzed(&flac(dir.path(), "up.flac", &source.resampled(96_000), 24));
-  assert_eq!(reading.flags, [AnalysisFlag::Upsampled], "{reading:#?}");
-  assert_eq!(reading.verdict, AnalysisVerdict::Consistent, "{reading:#?}");
+  assert_eq!(reading.flags, [Flag::Upsampled], "{reading:#?}");
+  assert_eq!(reading.verdict, Verdict::Consistent, "{reading:#?}");
   assert!(reading.measures.upsample_ratio.unwrap() < 0.001);
 }
 
@@ -190,7 +189,7 @@ fn padded_bits_are_flagged_beside_the_verdict() {
   let padded = dir.path().join("padded.flac");
   fixtures::write_flac(&music(1, 44_100, pink), 24, true, &padded);
   let reading = analyzed(&padded);
-  assert_eq!(reading.flags, [AnalysisFlag::BitPadded], "{reading:#?}");
+  assert_eq!(reading.flags, [Flag::BitPadded], "{reading:#?}");
   assert_eq!(reading.measures.bit_depth_effective, Some(16));
 }
 
@@ -231,11 +230,7 @@ fn a_lossy_layer_under_a_full_band_bed_reads_as_mixed_sources() {
   // a full-band bed 23 dB under a stem from a 128 kbps MP3, all the way through
   let layered = stem.mixed(&music(4, 44_100, pink), 0.071);
   let reading = analyzed(&flac(dir.path(), "layered.flac", &layered, 16));
-  assert_eq!(
-    reading.verdict,
-    AnalysisVerdict::MixedSources,
-    "{reading:#?}"
-  );
+  assert_eq!(reading.verdict, Verdict::MixedSources, "{reading:#?}");
   assert!(reading.summary.contains("step"), "{}", reading.summary);
 }
 
@@ -246,11 +241,7 @@ fn a_lossy_part_before_lossless_audio_reads_as_mixed_sources() {
   // the first twelve seconds from the MP3, the rest lossless
   let intro = stem.spliced(&music(1, 44_100, pink), 12);
   let reading = analyzed(&flac(dir.path(), "intro.flac", &intro, 16));
-  assert_eq!(
-    reading.verdict,
-    AnalysisVerdict::MixedSources,
-    "{reading:#?}"
-  );
+  assert_eq!(reading.verdict, Verdict::MixedSources, "{reading:#?}");
   assert!(
     reading.summary.starts_with("65% of the time is full-band"),
     "{}",
@@ -265,11 +256,7 @@ fn a_320_kbps_stem_under_a_bed_reads_as_that_cut(gain: f32) {
   let stem = fixtures::through_mp3(&music(3, 44_100, pink), Bitrate::Kbps320, dir.path());
   let layered = stem.mixed(&music(4, 44_100, pink), gain);
   let (reading, why) = explained(&flac(dir.path(), "layered320.flac", &layered, 16));
-  assert_eq!(
-    reading.verdict,
-    AnalysisVerdict::Inconclusive,
-    "{gain}: {why}"
-  );
+  assert_eq!(reading.verdict, Verdict::Inconclusive, "{gain}: {why}");
   let guess = reading.encoder_guess.as_ref().unwrap();
   assert_eq!(
     (guess.profile.as_str(), guess.confidence),
@@ -310,11 +297,7 @@ fn a_pure_tone_is_inconclusive_not_fake() {
     16,
   ));
   not_fake(&reading);
-  assert_eq!(
-    reading.verdict,
-    AnalysisVerdict::Inconclusive,
-    "{reading:#?}"
-  );
+  assert_eq!(reading.verdict, Verdict::Inconclusive, "{reading:#?}");
 }
 
 /// A synth line at `hz` low-passed at 20 kHz: a line spectrum, with gaps between its harmonics,
@@ -323,11 +306,7 @@ fn a_synth_line_filtered_at_20_khz_reads_as_that_cut(hz: f64) {
   let dir = tempfile::tempdir().unwrap();
   let saw = fixtures::harmonics(hz, 20_000.0, 1.0);
   let reading = analyzed(&flac(dir.path(), "saw.flac", &saw, 16));
-  assert_eq!(
-    reading.verdict,
-    AnalysisVerdict::Inconclusive,
-    "{hz}: {reading:#?}"
-  );
+  assert_eq!(reading.verdict, Verdict::Inconclusive, "{hz}: {reading:#?}");
   assert!(reading.encoder_guess.is_some(), "{hz}");
 }
 
@@ -352,11 +331,7 @@ fn a_clipped_pulse_filtered_at_20_khz_reads_as_that_cut() {
     reading.measures.clipped_samples_pct.unwrap() > 0.0,
     "{reading:#?}"
   );
-  assert_eq!(
-    reading.verdict,
-    AnalysisVerdict::Inconclusive,
-    "{reading:#?}"
-  );
+  assert_eq!(reading.verdict, Verdict::Inconclusive, "{reading:#?}");
 }
 
 /// White noise at `dbfs`, a stand-in for tape hiss.
@@ -367,7 +342,7 @@ fn hiss(dbfs: f64) -> Audio {
 }
 
 /// The reading of `audio` written as a 16-bit FLAC, which must be `verdict`.
-fn reads(dir: &Path, name: &str, audio: &Audio, verdict: AnalysisVerdict) -> Reading {
+fn reads(dir: &Path, name: &str, audio: &Audio, verdict: Verdict) -> Reading {
   let (reading, why) = explained(&flac(dir, "floor.flac", audio, 16));
   assert_eq!(reading.verdict, verdict, "{name}: {why}");
   reading
@@ -382,7 +357,7 @@ fn hiss_over_a_20_khz_cut_neither_hides_nor_fakes_it(db: f64) {
     dir.path(),
     &format!("hiss {db}"),
     &hissy,
-    AnalysisVerdict::Inconclusive,
+    Verdict::Inconclusive,
   );
   assert!(reading.encoder_guess.is_some());
 }
@@ -407,7 +382,7 @@ fn a_quiet_20_khz_cut_reads_as_that_cut(level: f64) {
     dir.path(),
     &format!("quiet {level}"),
     &quiet,
-    AnalysisVerdict::Inconclusive,
+    Verdict::Inconclusive,
   );
 }
 
@@ -430,7 +405,7 @@ fn a_128_kbps_transcode_under_hiss_is_still_a_transcode() {
     dir.path(),
     "transcode under hiss",
     &hissy,
-    AnalysisVerdict::LikelyTranscode,
+    Verdict::LikelyTranscode,
   );
 }
 
@@ -444,7 +419,7 @@ fn a_128_kbps_stem_over_a_bed_too_quiet_to_count_is_still_a_transcode() {
     dir.path(),
     "stem over a quiet bed",
     &bedded,
-    AnalysisVerdict::LikelyTranscode,
+    Verdict::LikelyTranscode,
   );
 }
 
@@ -457,11 +432,7 @@ fn too_little_audio_is_inconclusive() {
     &music_for(12, 1, 44_100, pink),
     16,
   ));
-  assert_eq!(
-    reading.verdict,
-    AnalysisVerdict::Inconclusive,
-    "{reading:#?}"
-  );
+  assert_eq!(reading.verdict, Verdict::Inconclusive, "{reading:#?}");
   assert!(reading.confidence <= 0.5);
   assert!(
     reading.summary.starts_with("Only 12.0 s"),
@@ -481,14 +452,14 @@ fn a_long_file_is_sampled_at_windows_spread_over_it() {
     progress: Some(progress.clone()),
     ..settings()
   };
-  let measured = engine::run(&path, &settings, &CancellationToken::new()).unwrap();
+  let measured = engine::run(&path, &settings).unwrap();
   assert!(measured.sampled);
   assert_eq!(measured.windows.len(), 20);
   assert_eq!(progress.load(std::sync::atomic::Ordering::Relaxed), 1000);
   let starts: Vec<f64> = measured.windows.iter().map(|w| w.t).collect();
   assert_eq!(starts.first(), Some(&0.0));
   assert_eq!(starts.last(), Some(&32.0), "the last whole second");
-  let reading = reading::read(&measured);
+  let reading = read(&measured);
   assert!(
     reading
       .limitations
@@ -502,20 +473,19 @@ fn a_long_file_is_sampled_at_windows_spread_over_it() {
 fn a_canceled_analysis_stops_and_one_out_of_time_reports_what_it_has() {
   let dir = tempfile::tempdir().unwrap();
   let path = flac(dir.path(), "a.flac", &music(1, 44_100, pink), 16);
-  let canceled = CancellationToken::new();
-  canceled.cancel();
-  assert_eq!(
-    engine::run(&path, &settings(), &canceled).unwrap_err(),
-    engine::Canceled
-  );
+  let canceled = Settings {
+    canceled: Some(Arc::new(|| true)),
+    ..settings()
+  };
+  assert_eq!(engine::run(&path, &canceled).unwrap_err(), engine::Canceled);
   let late = Settings {
     deadline: Instant::now(),
     ..settings()
   };
-  let measured = engine::run(&path, &late, &CancellationToken::new()).unwrap();
+  let measured = engine::run(&path, &late).unwrap();
   assert!(measured.windows.is_empty());
-  let reading = reading::read(&measured);
-  assert_eq!(reading.verdict, AnalysisVerdict::Inconclusive);
+  let reading = read(&measured);
+  assert_eq!(reading.verdict, Verdict::Inconclusive);
   assert!(
     reading
       .limitations
@@ -543,8 +513,8 @@ proptest::proptest! {
     ];
     let mut input = headers[header].to_vec();
     input.extend_from_slice(&bytes);
-    let measured = engine::read_bytes(input, &settings(), &CancellationToken::new()).unwrap();
-    reading::read(&measured);
+    let measured = engine::read_bytes(input, &settings()).unwrap();
+    read(&measured);
   }
 }
 
@@ -555,7 +525,7 @@ fn a_cut_where_the_highest_bitrates_cut_reads_as_that_cut(rate: u32, hz: f64) {
   let reading = analyzed(&flac(dir.path(), "cut.flac", &audio, 16));
   assert_eq!(
     reading.verdict,
-    AnalysisVerdict::Inconclusive,
+    Verdict::Inconclusive,
     "{rate} {hz}: {reading:#?}"
   );
   assert!(reading.encoder_guess.is_some(), "{rate} {hz}");
@@ -588,7 +558,7 @@ fn a_17_khz_cut_reads_as_a_transcode(rate: u32) {
   let reading = analyzed(&flac(dir.path(), "cut.flac", &audio, 16));
   assert_eq!(
     reading.verdict,
-    AnalysisVerdict::LikelyTranscode,
+    Verdict::LikelyTranscode,
     "{rate}: {reading:#?}"
   );
 }
@@ -623,12 +593,12 @@ fn a_file_without_a_stated_length_is_read_only_so_far() {
     max_full_seconds: 10.0,
     ..settings()
   };
-  let measured = engine::run(&path, &settings, &CancellationToken::new()).unwrap();
+  let measured = engine::run(&path, &settings).unwrap();
   assert_eq!(measured.claimed.as_ref().unwrap().frames, None);
   assert!(!measured.sampled);
   assert_eq!(measured.windows.len(), 10);
   assert_eq!(measured.duration, 10.0);
-  let reading = reading::read(&measured);
+  let reading = read(&measured);
   assert!(
     reading
       .limitations
@@ -643,7 +613,7 @@ fn a_file_shorter_than_it_states_reports_the_length_read() {
   let dir = tempfile::tempdir().unwrap();
   let path = dir.path().join("short.flac");
   stating(&path, fixtures::SECONDS, 600 * 44_100);
-  let measured = engine::run(&path, &settings(), &CancellationToken::new()).unwrap();
+  let measured = engine::run(&path, &settings()).unwrap();
   assert!(!measured.sampled);
   assert_eq!(measured.windows.len(), fixtures::SECONDS);
   assert!(
@@ -658,11 +628,11 @@ fn a_file_stating_a_huge_length_reports_only_what_was_read() {
   let dir = tempfile::tempdir().unwrap();
   let path = dir.path().join("huge.flac");
   stating(&path, 4, (1 << 36) - 1);
-  let measured = engine::run(&path, &settings(), &CancellationToken::new()).unwrap();
+  let measured = engine::run(&path, &settings()).unwrap();
   assert!(measured.sampled);
   assert!(measured.duration <= 4.0, "{}", measured.duration);
   assert!(!measured.windows.is_empty());
-  let reading = reading::read(&measured);
+  let reading = read(&measured);
   assert!(
     reading
       .limitations
@@ -698,10 +668,10 @@ fn a_seek_past_what_a_file_holds_ends_the_length_where_reading_stopped() {
   bytes[21] = (bytes[21] & 0xf0) | ((frames >> 32) as u8 & 0x0f);
   bytes[22..26].copy_from_slice(&(frames as u32).to_be_bytes());
   std::fs::write(&path, &bytes).unwrap();
-  let measured = engine::run(&path, &settings(), &CancellationToken::new()).unwrap();
+  let measured = engine::run(&path, &settings()).unwrap();
   assert!(measured.sampled);
   assert!(measured.duration <= 12.0, "{}", measured.duration);
-  let reading = reading::read(&measured);
+  let reading = read(&measured);
   assert!(
     reading
       .limitations
@@ -756,11 +726,7 @@ fn a_cutoff_at_a_lower_rates_band_edge_is_not_read_as_a_transcode(
 ) {
   let dir = tempfile::tempdir().unwrap();
   let (reading, why) = explained(&flac(dir.path(), "up.flac", audio, 24));
-  assert_eq!(
-    reading.verdict,
-    AnalysisVerdict::Inconclusive,
-    "{name}: {why}"
-  );
+  assert_eq!(reading.verdict, Verdict::Inconclusive, "{name}: {why}");
   assert!(reading.flags.is_empty(), "{name}: {reading:#?}");
   assert_eq!(
     reading.encoder_guess.as_ref().unwrap().profile,
@@ -822,7 +788,7 @@ fn quiet_tails_of_honest_dynamic_music_read_consistent() {
   let dir = tempfile::tempdir().unwrap();
   let honest = fixtures::classical(90);
   let reading = analyzed(&flac(dir.path(), "classical.flac", &honest, 16));
-  assert_eq!(reading.verdict, AnalysisVerdict::Consistent, "{reading:#?}");
+  assert_eq!(reading.verdict, Verdict::Consistent, "{reading:#?}");
 }
 
 #[test]
@@ -831,11 +797,7 @@ fn quiet_tails_of_transcoded_dynamic_music_do_not_reach_the_quantization_noise()
   // its quiet tails would otherwise reach the 16-bit noise and read as full-band windows
   let through = fixtures::through_mp3(&fixtures::classical(90), Bitrate::Kbps192, dir.path());
   let reading = analyzed(&flac(dir.path(), "classical192.flac", &through, 16));
-  assert_eq!(
-    reading.verdict,
-    AnalysisVerdict::LikelyTranscode,
-    "{reading:#?}"
-  );
+  assert_eq!(reading.verdict, Verdict::LikelyTranscode, "{reading:#?}");
 }
 
 #[test]
@@ -845,7 +807,7 @@ fn a_cliff_at_an_old_equipment_rate_reads_as_its_encoder_and_says_so() {
   // 192 kbps MP3 cuts, and the reading cannot tell them apart
   let audio = music(1, 37_800, pink).resampled(44_100);
   let (reading, why) = explained(&flac(dir.path(), "xa.flac", &audio, 16));
-  assert_eq!(reading.verdict, AnalysisVerdict::LikelyTranscode, "{why}");
+  assert_eq!(reading.verdict, Verdict::LikelyTranscode, "{why}");
   assert!(
     reading.limitations.iter().any(|l| l.contains("37.8 kHz")),
     "{reading:#?}"
@@ -860,11 +822,7 @@ fn a_reading_needs_thirty_whole_seconds_of_audio() {
     channel.truncate(44_100 * 299 / 10);
   }
   let reading = analyzed(&flac(dir.path(), "short.flac", &audio, 16));
-  assert_eq!(
-    reading.verdict,
-    AnalysisVerdict::Inconclusive,
-    "{reading:#?}"
-  );
+  assert_eq!(reading.verdict, Verdict::Inconclusive, "{reading:#?}");
 }
 
 #[test]
@@ -879,7 +837,7 @@ fn a_file_stating_more_than_its_bytes_hold_is_as_long_as_they_hold() {
     sampled_windows: 20,
     ..settings()
   };
-  let measured = engine::run(&path, &settings, &CancellationToken::new()).unwrap();
+  let measured = engine::run(&path, &settings).unwrap();
   let stated = measured.claimed.as_ref().unwrap().frames.unwrap() as f64 / 44_100.0;
   assert!(stated > 1e10, "the file states {stated} s");
   // two bytes a sample frame
@@ -894,7 +852,7 @@ fn a_file_stating_more_than_its_bytes_hold_is_as_long_as_they_hold() {
     measured.windows.iter().all(|w| w.t < measured.duration),
     "every window is inside the length"
   );
-  let reading = reading::read(&measured);
+  let reading = read(&measured);
   assert!(
     reading
       .limitations

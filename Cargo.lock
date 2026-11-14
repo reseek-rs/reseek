@@ -169,6 +169,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "audio-analysis"
+version = "0.1.0"
+dependencies = [
+ "flacenc",
+ "mp3lame-encoder",
+ "proptest",
+ "realfft",
+ "serde",
+ "symphonia",
+ "symphonia-common",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3375,6 +3390,7 @@ dependencies = [
  "api-types",
  "argon2",
  "async-trait",
+ "audio-analysis",
  "axum",
  "base64 0.23.1",
  "bytes",
@@ -3384,7 +3400,6 @@ dependencies = [
  "crab_nat",
  "crc32fast",
  "directories",
- "flacenc",
  "flate2",
  "form_urlencoded",
  "futures-util",
@@ -3396,7 +3411,6 @@ dependencies = [
  "igd-next",
  "image",
  "mime_guess",
- "mp3lame-encoder",
  "netdev",
  "notify",
  "openidconnect",
@@ -3405,7 +3419,6 @@ dependencies = [
  "proptest",
  "rand 0.10.3",
  "rcgen",
- "realfft",
  "regex",
  "reqwest",
  "reseek-relay-proto",
@@ -3425,8 +3438,6 @@ dependencies = [
  "soulseek-client",
  "soulseek-proto",
  "subtle",
- "symphonia",
- "symphonia-common",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.21",

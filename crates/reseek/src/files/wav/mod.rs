@@ -9,17 +9,15 @@ use std::io::{self, Cursor, Seek, SeekFrom};
 use std::ops::Range;
 use std::path::Path;
 
+use audio_analysis::decode::{Decoder, Hint, MediaSource};
 use axum::body::{Body, Bytes};
 use axum::response::Response;
 use futures_util::{StreamExt, stream};
-use symphonia::core::formats::probe::Hint;
-use symphonia::core::io::MediaSource;
 use tracing::{debug, error, warn};
 
 use super::ServeSpeed;
 use super::aiff::{self, Header};
 use super::serve::{self, Entity, Ranged, Served};
-use crate::analysis::Decoder;
 use crate::api::error::ApiError;
 use crate::services::ContentRequest;
 use pcm::{Pcm, Reopen, Source};
@@ -388,4 +386,4 @@ pub(super) async fn respond(
 }
 
 #[cfg(test)]
-pub(super) mod tests;
+mod tests;

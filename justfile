@@ -220,7 +220,7 @@ soulfind:
 fuzz-seed:
     cargo test -p soulseek-proto --lib -- --ignored --exact testing::write_fuzz_corpus
     mkdir -p fuzz/corpus/wav_stream
-    cp crates/reseek/src/files/fixtures/tone.m4a fuzz/corpus/wav_stream/
+    cp crates/audio-analysis/src/fixtures/tone.m4a fuzz/corpus/wav_stream/
 
 # the fuzz crate is a workspace of its own, so its lockfile starts as a copy of the main one: the
 # targets build against the versions the daemon ships with, and cargo adds only the fuzz crates

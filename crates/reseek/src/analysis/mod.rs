@@ -6,7 +6,6 @@
 //! analyzer reads files under the downloads and incomplete directories and files uploaded for it,
 //! and never changes one.
 
-mod analyzer;
 mod eviction;
 mod jobs;
 mod kept;
@@ -31,6 +30,7 @@ use api_types::analysis::{
 use api_types::auth::Principal;
 use api_types::files::FileRoot;
 use async_trait::async_trait;
+use audio_analysis::picture;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -51,8 +51,6 @@ use crate::jobs::Jobs;
 use crate::live::Live;
 use crate::services::{AnalysisService, FileTarget, Piece};
 use crate::sync::Slots;
-pub(crate) use analyzer::decode::Decoder;
-use analyzer::{engine, picture, reading};
 use jobs::{Queued, Running};
 use report::modified_text;
 pub use store::SCHEMA;
@@ -163,23 +161,6 @@ impl Analysis {
       .ok_or_else(|| ApiError::not_found(format!("'{path}' has not been analyzed")))?;
     self.unreadable(&stored.report.path, stored.unreadable.as_deref());
     Ok(stored)
-  }
-}
-
-/// The analyzer's verdict on audio held in memory, read as a downloaded file is, given ten
-/// seconds. It exists for fuzzing the decoders and the measures with arbitrary bytes; the
-/// daemon reads files.
-#[doc(hidden)]
-pub fn verdict_of(bytes: Vec<u8>) -> api_types::analysis::AnalysisVerdict {
-  let settings = engine::Settings {
-    max_full_seconds: 900.0,
-    sampled_windows: 240,
-    deadline: std::time::Instant::now() + std::time::Duration::from_secs(10),
-    progress: None,
-  };
-  match engine::read_bytes(bytes, &settings, &CancellationToken::new()) {
-    Ok(measured) => reading::read(&measured).verdict,
-    Err(engine::Canceled) => unreachable!("nothing cancels this token"),
   }
 }
 

@@ -1,6 +1,8 @@
 //! The WAV header and the range mapping, and ALAC files made hostile by editing a tone's boxes:
 //! the length and timing they state, and the packets they hold.
 
+use audio_analysis::fixtures::TONE;
+
 use super::*;
 
 #[test]
@@ -67,10 +69,6 @@ fn the_header_says_what_the_pcm_is() {
   assert_eq!(&header[36..40], b"data");
   assert_eq!(u32_at(40), 60);
 }
-
-/// A 16-bit stereo ALAC tone at 8000 Hz in an MP4 container: four packets of 4096, 4096, 4096
-/// and 3712 frames, one after the other in its media data.
-const TONE: &[u8] = include_bytes!("../fixtures/tone.m4a");
 
 /// Where the box `kind` starts; each kind the tests change is in the tone once.
 fn box_at(bytes: &[u8], kind: &[u8; 4]) -> usize {
@@ -233,7 +231,7 @@ fn a_range_past_the_last_packet_is_silence_as_in_the_whole() {
 
 /// The tone with a second track holding only the first packet again, so it ends 4096 frames in,
 /// and a seek that moves every track finds no place in it for a later frame.
-pub fn two_tracks() -> Vec<u8> {
+fn two_tracks() -> Vec<u8> {
   let trak_at = box_at(TONE, b"trak");
   let trak = TONE[trak_at..][..get(TONE, trak_at) as usize].to_vec();
   let trak_end = trak_at + trak.len();
@@ -248,6 +246,14 @@ pub fn two_tracks() -> Vec<u8> {
   put(&mut bytes, moov, grown);
   bytes.splice(trak_end..trak_end, second);
   bytes
+}
+
+#[test]
+fn no_seek_places_a_frame_past_where_another_track_ends() {
+  let mut hint = Hint::new();
+  hint.with_extension("m4a");
+  let mut decoder = Decoder::from_source(Box::new(Cursor::new(two_tracks())), &hint).unwrap();
+  assert_eq!(decoder.seek_frame(12_000), Ok(false));
 }
 
 #[test]

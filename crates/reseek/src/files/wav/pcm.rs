@@ -4,13 +4,11 @@
 
 use std::io::{self, Read, Seek, SeekFrom};
 
+use audio_analysis::decode::{Decoder, Hint, MediaSource};
 use axum::body::Bytes;
-use symphonia::core::formats::probe::Hint;
-use symphonia::core::io::MediaSource;
 
 use super::super::aiff::{self, Aiff};
 use super::{Format, Opened};
-use crate::analysis::Decoder;
 
 /// How much PCM one piece of the response read from an AIFF file holds, at least, and how
 /// much silence one piece holds at most.

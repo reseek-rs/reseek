@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
   "crates/api-client",
+  "crates/audio-analysis",
   "crates/api-types",
   "crates/cascade",
   "crates/cascade-derive",
@@ -26,6 +27,7 @@ publish = false
 
 [workspace.dependencies]
 api-client = { path = "crates/api-client" }
+audio-analysis = { path = "crates/audio-analysis" }
 api-types = { path = "crates/api-types" }
 cascade = { path = "crates/cascade" }
 cascade-derive = { path = "crates/cascade-derive" }

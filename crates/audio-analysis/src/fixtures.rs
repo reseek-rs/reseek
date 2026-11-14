@@ -1,6 +1,7 @@
 //! Audio the analyzer is tested on, made in the test from a fixed seed: noise shaped like
 //! music's spectrum, written as FLAC, and the same noise through the LAME MP3 encoder and back
-//! for the transcodes. Nothing here is fetched or shipped as a binary.
+//! for the transcodes. The one file kept as bytes is a short ALAC tone, which nothing here can
+//! encode.
 
 use std::path::Path;
 
@@ -10,7 +11,11 @@ use mp3lame_encoder::{Bitrate, Builder, DualPcm, FlushNoGap, Quality};
 use realfft::RealFftPlanner;
 use realfft::num_complex::Complex;
 
-use super::decode::{Decoder, Filled};
+use crate::decode::{Decoder, Filled};
+
+/// A 16-bit stereo ALAC tone at 8000 Hz in an MP4 container: four packets of 4096, 4096, 4096
+/// and 3712 frames, one after the other in its media data.
+pub const TONE: &[u8] = include_bytes!("fixtures/tone.m4a");
 
 /// How long most generated files are, in seconds: more than the 30 s a reading needs.
 pub const SECONDS: usize = 34;

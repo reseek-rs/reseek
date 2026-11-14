@@ -509,8 +509,11 @@ async fn aiff_is_served_as_little_endian_pcm_and_a_range_lands_on_its_place() {
 #[tokio::test]
 async fn alac_decodes_to_pcm_whose_ranges_match_the_whole_across_packets() {
   let app = with_files(CONFIG).await;
-  let tone = include_bytes!("../../files/fixtures/tone.m4a");
-  std::fs::write(app.state.paths.downloads.join("tone.m4a"), tone).unwrap();
+  std::fs::write(
+    app.state.paths.downloads.join("tone.m4a"),
+    audio_analysis::fixtures::TONE,
+  )
+  .unwrap();
   let uri = wav_uri("tone.m4a");
   let whole = app.send(request("GET", &uri, None)).await;
   assert_eq!(

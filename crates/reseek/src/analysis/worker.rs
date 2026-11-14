@@ -13,14 +13,15 @@ use api_types::events::{Event, FileAnalysisComplete};
 use api_types::files::FileRoot;
 use api_types::jobs::{JobKind, JobPartState, JobState};
 use api_types::live::LiveFrame;
+use audio_analysis::engine::{self, Settings};
+use audio_analysis::{MeasureThresholds, ReadingThresholds, reading};
 use chrono::{DateTime, Utc};
 use reseek_shares::lock;
 use tokio::sync::broadcast::error::RecvError;
+use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, info, info_span, warn};
 use uuid::Uuid;
 
-use super::analyzer::engine::{self, Settings};
-use super::analyzer::reading;
 use super::jobs::Running;
 use super::report::{assemble, kept_name, layout, modified_text};
 use super::{Analysis, kept, store, uploads};
@@ -190,14 +191,16 @@ impl Analysis {
   }
 }
 
-/// How an analysis runs under the options now.
-fn settings(options: &Options, progress: Arc<AtomicU32>) -> Settings {
+/// How an analysis runs under the options now, until `cancel`.
+fn settings(options: &Options, progress: Arc<AtomicU32>, cancel: CancellationToken) -> Settings {
   let analysis = &options.analysis;
   Settings {
     max_full_seconds: f64::from(analysis.max_full_minutes) * 60.0,
     sampled_windows: analysis.sampled_windows as usize,
     deadline: Instant::now() + analysis.timeout,
     progress: Some(progress),
+    canceled: Some(Arc::new(move || cancel.is_cancelled())),
+    thresholds: MeasureThresholds::default(),
   }
 }
 
@@ -216,7 +219,7 @@ async fn run(analysis: Arc<Analysis>, running: Running) {
 
 async fn finish(analysis: &Analysis, job: &Running, started: Instant) -> Done {
   let current = analysis.config.current();
-  let settings = settings(&current.values, job.progress.clone());
+  let settings = settings(&current.values, job.progress.clone(), job.cancel.clone());
   let scale = current.values.analysis.spectrogram.scale.into();
   let cancel = job.cancel.clone();
   let file = job.file.clone();
@@ -233,12 +236,13 @@ async fn finish(analysis: &Analysis, job: &Running, started: Instant) -> Done {
   let span = tracing::Span::current();
   let worked = tokio::task::spawn_blocking(move || {
     let _entered = span.enter();
-    let measured = engine::run(&file.resolved, &settings, &cancel)?;
+    let measured = engine::run(&file.resolved, &settings)?;
     // a job canceled since its last window leaves nothing behind
     if cancel.is_cancelled() {
       return Err(engine::Canceled);
     }
-    let read = reading::read(&measured);
+    let thresholds = ReadingThresholds::default();
+    let read = reading::read(&measured, &thresholds);
     let mut problem = None;
     let drawn = measured.claimed.as_ref().and_then(|claimed| {
       let max_hz = f64::from(claimed.sample_rate) / 2.0;
@@ -251,6 +255,7 @@ async fn finish(analysis: &Analysis, job: &Running, started: Instant) -> Done {
             measured.sampled,
             read.cutoff_hz,
             scale,
+            &thresholds,
           );
           Some((layout, bytes))
         }

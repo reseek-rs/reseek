@@ -1,8 +1,8 @@
 //! One analysis from file to measures: the file is decoded a window at a time, in full or, for
-//! a long file, at windows spread evenly over it, and each window is measured. It runs on a
-//! blocking thread, stops promptly when canceled, and stops with what it has when its time
+//! a long file, at windows spread evenly over it, and each window is measured. It blocks the
+//! thread it runs on, stops promptly when canceled, and stops with what it has when its time
 //! is up. The file's bytes are read through a source that stops giving them at either, so a
-//! container that is slow to open or to seek in holds the worker no longer than a window does.
+//! container that is slow to open or to seek in holds the thread no longer than a window does.
 
 use std::collections::BTreeSet;
 use std::io::{Read, Seek, SeekFrom};
@@ -13,16 +13,20 @@ use std::time::Instant;
 
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::io::MediaSource;
-use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use super::decode::{Claimed, Decoder, Filled};
-use super::measure::{Analyzer, FFT_SIZE, Window};
-use super::totals::Totals;
+use crate::decode::{Claimed, Decoder, Filled};
+use crate::measure::{Analyzer, FFT_SIZE, Window};
+use crate::thresholds::MeasureThresholds;
+use crate::totals::Totals;
+
+/// Says whether an analysis is canceled. It is asked between windows and before each read of the
+/// file's bytes, so it must answer quickly.
+pub type CancelCheck = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// How one analysis runs.
-#[derive(Clone, Debug)]
-pub(in crate::analysis) struct Settings {
+#[derive(Clone)]
+pub struct Settings {
   /// files up to this many seconds long are analyzed in full
   pub max_full_seconds: f64,
   /// how many windows a longer file is analyzed at
@@ -31,6 +35,16 @@ pub(in crate::analysis) struct Settings {
   pub deadline: Instant,
   /// where the analysis reports how far it is, in thousandths of the file
   pub progress: Option<Arc<AtomicU32>>,
+  /// once this says so, the analysis stops and reports nothing; none for an analysis nothing
+  /// cancels
+  pub canceled: Option<CancelCheck>,
+  /// what each window is measured with
+  pub thresholds: MeasureThresholds,
+}
+
+/// Whether `canceled` says the analysis is canceled; never without one.
+fn is_canceled(canceled: Option<&CancelCheck>) -> bool {
+  canceled.is_some_and(|canceled| canceled())
 }
 
 impl Settings {
@@ -44,7 +58,7 @@ impl Settings {
 
 /// What an analysis measured.
 #[derive(Debug)]
-pub(in crate::analysis) struct Measured {
+pub struct Measured {
   /// the format the file claims, `None` when it could not be opened as audio
   pub claimed: Option<Claimed>,
   /// how long the audio is, in seconds
@@ -54,20 +68,20 @@ pub(in crate::analysis) struct Measured {
   /// every analyzed window, in time order
   pub windows: Vec<Window>,
   /// the figures over every analyzed sample
-  pub totals: Totals,
+  pub(crate) totals: Totals,
   /// the bits per sample the integer samples use
-  pub bits_used: Option<u32>,
+  pub(crate) bits_used: Option<u32>,
   /// whether only windows spread over the file were analyzed
   pub sampled: bool,
   /// the channels left out of a file with more than two
-  pub channels_left_out: u32,
+  pub(crate) channels_left_out: u32,
   /// what made the analysis stop early or skip audio, in words for the report
-  pub problems: Vec<String>,
+  pub(crate) problems: Vec<String>,
 }
 
 /// The analysis was canceled; nothing is reported.
 #[derive(Debug, PartialEq, Eq)]
-pub(in crate::analysis) struct Canceled;
+pub struct Canceled;
 
 /// What an analysis that ran out of time says of it.
 const OUT_OF_TIME: &str = "The analysis ran out of time and covers only the part read by then";
@@ -76,15 +90,15 @@ const OUT_OF_TIME: &str = "The analysis ran out of time and covers only the part
 /// up, which ends whatever the decoder was doing with an error.
 struct Watched {
   inner: Box<dyn MediaSource>,
-  cancel: CancellationToken,
+  canceled: Option<CancelCheck>,
   deadline: Instant,
 }
 
 impl Watched {
-  fn new(inner: Box<dyn MediaSource>, settings: &Settings, cancel: &CancellationToken) -> Self {
+  fn new(inner: Box<dyn MediaSource>, settings: &Settings) -> Self {
     Self {
       inner,
-      cancel: cancel.clone(),
+      canceled: settings.canceled.clone(),
       deadline: settings.deadline,
     }
   }
@@ -92,7 +106,7 @@ impl Watched {
 
 impl Read for Watched {
   fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-    if self.cancel.is_cancelled() || Instant::now() >= self.deadline {
+    if is_canceled(self.canceled.as_ref()) || Instant::now() >= self.deadline {
       // not `Interrupted`, which readers try again
       return Err(std::io::Error::other("the analysis stopped"));
     }
@@ -117,31 +131,22 @@ impl MediaSource for Watched {
 }
 
 /// Analyzes the file at `path`.
-pub(in crate::analysis) fn run(
-  path: &Path,
-  settings: &Settings,
-  cancel: &CancellationToken,
-) -> Result<Measured, Canceled> {
+pub fn run(path: &Path, settings: &Settings) -> Result<Measured, Canceled> {
   let opened = Decoder::open_through(path, |file| {
-    Box::new(Watched::new(Box::new(file), settings, cancel))
+    Box::new(Watched::new(Box::new(file), settings))
   });
   if let Err(problem) = &opened {
     debug!(path = %path.display(), problem, "audio not opened");
   }
-  measure_opened(opened, settings, cancel)
+  measure_opened(opened, settings)
 }
 
 /// Analyzes audio held in memory, as a file's would be.
-pub(in crate::analysis) fn read_bytes(
-  bytes: Vec<u8>,
-  settings: &Settings,
-  cancel: &CancellationToken,
-) -> Result<Measured, Canceled> {
-  let source = Watched::new(Box::new(std::io::Cursor::new(bytes)), settings, cancel);
+pub fn read_bytes(bytes: Vec<u8>, settings: &Settings) -> Result<Measured, Canceled> {
+  let source = Watched::new(Box::new(std::io::Cursor::new(bytes)), settings);
   measure_opened(
     Decoder::from_source(Box::new(source), &Hint::new()),
     settings,
-    cancel,
   )
 }
 
@@ -150,11 +155,10 @@ pub(in crate::analysis) fn read_bytes(
 fn measure_opened(
   opened: Result<Decoder, String>,
   settings: &Settings,
-  cancel: &CancellationToken,
 ) -> Result<Measured, Canceled> {
   match opened {
-    Ok(decoder) => measure(decoder, settings, cancel),
-    Err(_) if cancel.is_cancelled() => Err(Canceled),
+    Ok(decoder) => measure(decoder, settings),
+    Err(_) if is_canceled(settings.canceled.as_ref()) => Err(Canceled),
     Err(_) if Instant::now() >= settings.deadline => Ok(unreadable(
       "The analysis ran out of time while opening the file".to_string(),
     )),
@@ -163,7 +167,7 @@ fn measure_opened(
 }
 
 /// What is reported for audio that could not be opened.
-pub(in crate::analysis) fn unreadable(problem: String) -> Measured {
+fn unreadable(problem: String) -> Measured {
   Measured {
     claimed: None,
     duration: 0.0,
@@ -178,15 +182,11 @@ pub(in crate::analysis) fn unreadable(problem: String) -> Measured {
 }
 
 /// Measures the audio `decoder` reads.
-pub(in crate::analysis) fn measure(
-  mut decoder: Decoder,
-  settings: &Settings,
-  cancel: &CancellationToken,
-) -> Result<Measured, Canceled> {
+fn measure(mut decoder: Decoder, settings: &Settings) -> Result<Measured, Canceled> {
   let claimed = decoder.claimed.clone();
   let rate = claimed.sample_rate as usize;
   let stated = claimed.frames.map(|frames| frames as f64 / rate as f64);
-  let mut analyzer = Analyzer::new(claimed.sample_rate, claimed.bit_depth);
+  let mut analyzer = Analyzer::new(claimed.sample_rate, claimed.bit_depth, &settings.thresholds);
   let mut buffer = vec![Vec::with_capacity(rate); decoder.channels];
   let mut measured = Measured {
     duration: stated.unwrap_or(0.0),
@@ -211,7 +211,6 @@ pub(in crate::analysis) fn measure(
         &mut buffer,
         &picks,
         settings,
-        cancel,
         &mut measured,
       )?
     }
@@ -224,7 +223,6 @@ pub(in crate::analysis) fn measure(
         &mut buffer,
         Windows::Upto(longest),
         settings,
-        cancel,
         &mut measured,
       )?
     }
@@ -277,12 +275,8 @@ fn picks(seconds: f64, count: usize) -> BTreeSet<u64> {
 
 /// Whether the analysis is to stop: an error when it was canceled, true when its time is up,
 /// which is noted once in `measured`.
-fn stop(
-  settings: &Settings,
-  cancel: &CancellationToken,
-  measured: &mut Measured,
-) -> Result<bool, Canceled> {
-  if cancel.is_cancelled() {
+fn stop(settings: &Settings, measured: &mut Measured) -> Result<bool, Canceled> {
+  if is_canceled(settings.canceled.as_ref()) {
     return Err(Canceled);
   }
   if Instant::now() >= settings.deadline {
@@ -299,10 +293,9 @@ fn stop(
 fn stopped_by_us(
   decoder: &mut Decoder,
   settings: &Settings,
-  cancel: &CancellationToken,
   measured: &mut Measured,
 ) -> Result<bool, Canceled> {
-  let ours = stop(settings, cancel, measured)?;
+  let ours = stop(settings, measured)?;
   if ours {
     decoder.stopped = None;
   }
@@ -371,7 +364,6 @@ fn whole(
   buffer: &mut [Vec<f32>],
   read: Windows<'_>,
   settings: &Settings,
-  cancel: &CancellationToken,
   measured: &mut Measured,
 ) -> Result<Reached, Canceled> {
   let rate = decoder.claimed.sample_rate as usize;
@@ -386,11 +378,11 @@ fn whole(
   let mut second = 0u64;
   loop {
     settings.report(second as f64 / expected.max(1.0));
-    if stop(settings, cancel, measured)? {
+    if stop(settings, measured)? {
       return Ok(Reached::Short(second as f64));
     }
     let filled = decoder.fill(buffer, rate);
-    if filled != Filled::Full && stopped_by_us(decoder, settings, cancel, measured)? {
+    if filled != Filled::Full && stopped_by_us(decoder, settings, measured)? {
       return Ok(Reached::Short(second as f64));
     }
     if let Windows::Upto(longest) = read
@@ -444,7 +436,6 @@ fn sampled(
   buffer: &mut [Vec<f32>],
   picks: &BTreeSet<u64>,
   settings: &Settings,
-  cancel: &CancellationToken,
   measured: &mut Measured,
 ) -> Result<Reached, Canceled> {
   let rate = decoder.claimed.sample_rate as usize;
@@ -452,7 +443,7 @@ fn sampled(
   let mut furthest = 0.0;
   for (index, &second) in picks.iter().enumerate() {
     settings.report(index as f64 / picks.len() as f64);
-    if stop(settings, cancel, measured)? {
+    if stop(settings, measured)? {
       return Ok(Reached::Sampled);
     }
     // the picks are spread over the stated length, which tables pointing many packets at the
@@ -461,7 +452,7 @@ fn sampled(
       return Ok(Reached::End(held));
     }
     if let Err(problem) = decoder.seek(second as f64) {
-      if stopped_by_us(decoder, settings, cancel, measured)? {
+      if stopped_by_us(decoder, settings, measured)? {
         return Ok(Reached::Sampled);
       }
       if index > 0 {
@@ -476,7 +467,6 @@ fn sampled(
         buffer,
         Windows::Only(picks),
         settings,
-        cancel,
         measured,
       )? {
         Reached::Short(_) => Ok(Reached::Sampled),
@@ -489,7 +479,7 @@ fn sampled(
       Filled::End(length) => length,
     };
     if filled != Filled::Full {
-      if stopped_by_us(decoder, settings, cancel, measured)? {
+      if stopped_by_us(decoder, settings, measured)? {
         return Ok(Reached::Sampled);
       }
       if length > 0 {
@@ -512,10 +502,7 @@ fn sampled(
 /// What a reading saw, for a failing test to print: the reading, then each window's start,
 /// level, cutoff, shelf and steepest inner step.
 #[cfg(test)]
-pub(in crate::analysis) fn explain(
-  measured: &Measured,
-  reading: &super::reading::Reading,
-) -> String {
+pub(crate) fn explain(measured: &Measured, reading: &crate::reading::Reading) -> String {
   let mut text = format!(
     "{:?} at {:.2}, guess {:?}, flags {:?}\n  {}\n  limitations {:?}\n  median {:?} Hz, \
      bitrate {:?} kbps\n",

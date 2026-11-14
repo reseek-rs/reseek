@@ -1,22 +1,22 @@
 //! Putting a report together from what was measured and read, and the names a file's report
-//! and its spectrogram and waveform are found by.
+//! and its spectrogram and waveform are found by. The analyzer's own types become the API's
+//! here and nowhere else.
 
 use std::time::SystemTime;
 
 use api_types::analysis::{
-  AnalysisWindow, AudioAnalysis, ClaimedFormat, GuideKind, GuideLine, SpectrogramLayout,
-  SpectrogramScale,
+  AnalysisFlag, AnalysisMeasures, AnalysisVerdict, AnalysisWindow, AudioAnalysis, ClaimedFormat,
+  EncoderGuess, GuideKind, GuideLine, SpectrogramLayout, SpectrogramScale,
 };
 use api_types::files::FileRoot;
+use audio_analysis::engine::Measured;
+use audio_analysis::picture::{BINS, COLUMNS_PER_SECOND, PEAKS_PER_SECOND};
+use audio_analysis::{Flag, Measures, Reading, ReadingThresholds, Verdict};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, SecondsFormat, Utc};
 use sha2::{Digest, Sha256};
 
-use super::analyzer::engine::Measured;
-use super::analyzer::picture::{BINS, COLUMNS_PER_SECOND, PEAKS_PER_SECOND};
-use super::analyzer::reading::Reading;
-use super::analyzer::thresholds::guides;
 use super::tiles::{TILE_SECONDS, tile_count};
 use crate::files::LocalFile;
 
@@ -59,16 +59,18 @@ impl From<crate::config::enums::SpectrogramScale> for SpectrogramScale {
 }
 
 /// How the spectrogram of audio `duration` seconds long whose band ends at `max_hz` is served,
-/// with a guide line at each common encoder cutoff below the top of the band, one at the top,
-/// and one at the analyzer's cutoff when it found one.
+/// with a guide line at each common encoder cutoff below the top of the band, as `thresholds`
+/// label them, one at the top, and one at the analyzer's cutoff when it found one.
 pub(super) fn layout(
   duration: f64,
   max_hz: f64,
   sampled: bool,
   cutoff_hz: Option<f64>,
   scale: SpectrogramScale,
+  thresholds: &ReadingThresholds,
 ) -> SpectrogramLayout {
-  let mut guides: Vec<GuideLine> = guides()
+  let mut guides: Vec<GuideLine> = thresholds
+    .guides()
     .filter(|(hz, _)| *hz < max_hz)
     .map(|(hz, label)| GuideLine {
       hz,
@@ -147,12 +149,15 @@ pub(super) fn assemble(
     analyzed_at,
     duration_seconds: measured.duration,
     claimed,
-    verdict: reading.verdict,
+    verdict: verdict(reading.verdict),
     confidence: (reading.confidence * 100.0).round() / 100.0,
-    flags: reading.flags,
-    encoder_guess: reading.encoder_guess,
+    flags: reading.flags.into_iter().map(flag).collect(),
+    encoder_guess: reading.encoder_guess.map(|guess| EncoderGuess {
+      profile: guess.profile,
+      confidence: guess.confidence,
+    }),
     summary: reading.summary,
-    measures: reading.measures,
+    measures: measures(reading.measures),
     windows: Some(windows),
     spectrogram_url: spectrogram_url(file.root, &file.relative),
     spectrogram: layout,
@@ -162,13 +167,54 @@ pub(super) fn assemble(
   }
 }
 
+fn verdict(verdict: Verdict) -> AnalysisVerdict {
+  match verdict {
+    Verdict::Consistent => AnalysisVerdict::Consistent,
+    Verdict::LikelyTranscode => AnalysisVerdict::LikelyTranscode,
+    Verdict::MixedSources => AnalysisVerdict::MixedSources,
+    Verdict::Inconclusive => AnalysisVerdict::Inconclusive,
+  }
+}
+
+fn flag(flag: Flag) -> AnalysisFlag {
+  match flag {
+    Flag::Upsampled => AnalysisFlag::Upsampled,
+    Flag::BitPadded => AnalysisFlag::BitPadded,
+  }
+}
+
+fn measures(measures: Measures) -> AnalysisMeasures {
+  AnalysisMeasures {
+    cutoff_hz_histogram: measures.cutoff_hz_histogram,
+    cutoff_median_hz: measures.cutoff_median_hz,
+    shelf_sharpness_db_p95: measures.shelf_sharpness_db_p95,
+    sfb21_holes: measures.sfb21_holes,
+    frame_artifact_score: measures.frame_artifact_score,
+    upsample_ratio: measures.upsample_ratio,
+    bit_depth_effective: measures.bit_depth_effective,
+    noise_floor_dbfs: measures.noise_floor_dbfs,
+    stereo_correlation: measures.stereo_correlation,
+    side_energy_db: measures.side_energy_db,
+    dc_offset: measures.dc_offset,
+    clipped_samples_pct: measures.clipped_samples_pct,
+    peak_dbfs: measures.peak_dbfs,
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
 
   #[test]
   fn the_encoder_guides_sit_at_the_cutoffs_the_analyzer_names() {
-    let sent = layout(60.0, 22_050.0, false, None, SpectrogramScale::Linear);
+    let sent = layout(
+      60.0,
+      22_050.0,
+      false,
+      None,
+      SpectrogramScale::Linear,
+      &ReadingThresholds::default(),
+    );
     let encoders: Vec<(f64, &str)> = sent
       .guides
       .iter()
