@@ -159,6 +159,20 @@ describe("state chips", () => {
       title: "Connection refused"
     });
     expect(stateChip(transfer({ state: "Completed, TimedOut" })).text).toBe("Timed out");
+    // its user is offline: it waits for them, its tries not counting meanwhile
+    expect(
+      stateChip(
+        transfer({
+          state: "Queued, Locally",
+          waitingForUser: true,
+          exception: "The user is offline"
+        })
+      )
+    ).toEqual({
+      text: "Waiting for user",
+      tone: "neutral",
+      title: "Starts again when they're back online"
+    });
     // rounded down, so a file a hair short of done never reads 100%
     expect(stateChip(transfer({ state: "InProgress", percentComplete: 99.6 })).text).toBe("99%");
   });

@@ -168,6 +168,13 @@ export const stateChip = (t: Transfer): { text: string; tone: Tone; title: strin
   const s = t.state;
   const name = stateName(s);
   if (t.paused && isCancelable(s)) return { text: "Paused", tone: "neutral", title: null };
+  if (t.waitingForUser) {
+    return {
+      text: "Waiting for user",
+      tone: "neutral",
+      title: "Starts again when they're back online"
+    };
+  }
   switch (stageOf(s)) {
     case "moving":
       // whole percents rounded down, as a group's are, so a file never reads 100% before it is done
