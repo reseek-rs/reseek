@@ -436,6 +436,24 @@ async fn a_file_already_being_sent_is_not_turned_away_by_the_limits_it_fills() {
   );
 }
 
+/// A peer asking again for a file already queued to them is answered as queued, though the
+/// limits count that file and turn a new one away.
+#[tokio::test]
+async fn a_file_asked_for_again_is_answered_queued_past_the_limits_it_fills() {
+  let (_files, app) = shared_app("[transfers.upload.limits]\nqueued = { files = 1 }\n").await;
+  let id = sending_shared(&app).await;
+  assert_eq!(asked(&app, "alice", SHARED).await, None);
+  assert_eq!(
+    asked(&app, "alice", "Music\\Album\\02.mp3")
+      .await
+      .as_deref(),
+    Some("Too many files")
+  );
+  let ids: Vec<Uuid> = uploads_of_shared(&app).await.iter().map(|r| r.id).collect();
+  assert_eq!(ids, [id], "the upload queued stands for the file");
+  assert_eq!(metric(&app, "reseek_enqueue_requests_accepted"), "1");
+}
+
 /// The uploads of `SHARED` to alice, removed ones included, oldest first.
 async fn uploads_of_shared(app: &TestApp) -> Vec<Record> {
   app

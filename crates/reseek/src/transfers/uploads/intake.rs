@@ -3,10 +3,11 @@
 //! request waits for its user's turn before it takes one of those, so one user cannot hold them
 //! all. When the requests waiting would take more than [`BACKLOG_MILLIS`] at the pace of the
 //! last ones accepted, a new request is dropped, since its peer would have given up by then.
-//! A request for a file not shared, or shared and gone from disk, is refused, and so is one
-//! past the limits of its user's group, unless the user is privileged. A request for a file of a
-//! relay agent that cannot say now whether it has it, being away, loading its shares or slow to
-//! answer, is failed instead, so the peer asks again.
+//! A request for a file queued to its user already is answered as queued. One for a file not
+//! shared, or shared and gone from disk, is refused, and so is one past the limits of its user's
+//! group, unless the user is privileged. A request for a file of a relay agent that cannot say
+//! now whether it has it, being away, loading its shares or slow to answer, is failed instead,
+//! so the peer asks again.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -234,6 +235,16 @@ impl Uploads {
     let (_turn, waiting) = self.intake.turn(username).await;
     let enqueue = &self.telemetry.metrics().enqueue;
     enqueue.queue_depth.set(waiting as f64);
+    // a peer asking again for a file queued to them is answered as queued, not decided again:
+    // the limits count that file, so they could turn it away
+    if self.sending_already(username, filename).await? {
+      enqueue.requests_accepted.inc();
+      debug!(
+        username,
+        filename, "upload request for a file already queued"
+      );
+      return Ok(());
+    }
     let started = Instant::now();
     let decision = self.decide(username, filename, sees).await;
     let decided = millis(started);
