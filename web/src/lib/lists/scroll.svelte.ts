@@ -95,7 +95,10 @@ export const landing = (mark: ScrollMark, keys: string[]) => {
 export class Return {
   #mark: ScrollMark | null;
   #until = performance.now() + WAIT_MS;
-  /** the offset the return last put the box at, null before it has put it anywhere */
+  /**
+   * the offset the return last put the box at, or where it first found the box before then;
+   * null until it has seen the box
+   */
   #at: number | null = null;
 
   constructor(mark: ScrollMark | null) {
@@ -109,15 +112,18 @@ export class Return {
   }
 
   /**
-   * Whether the return goes on. It ends once `box` is not where the return last put it: a scroll
-   * the return did not make, by the user or by the page, as to a row a link names. The browser
-   * holding the offset within content that shrank under it does not end it. Asked before every
-   * put as well as at every scroll event, since the page may scroll the box and add lines before
-   * the event comes
+   * Whether the return goes on. It ends once `box` is not where the return last put it, or where
+   * it first found it: a scroll the return did not make, by the user or by the page, as to a row
+   * a link names. The browser holding the offset within content that shrank under it does not
+   * end it. Asked before every put as well as at every scroll event, since the page may scroll
+   * the box and add lines before the event comes
    */
   holds(box: HTMLElement): boolean {
     if (!this.mark) return false;
-    if (this.#at === null) return true;
+    if (this.#at === null) {
+      this.#at = box.scrollTop;
+      return true;
+    }
     const top = box.scrollTop;
     const clamped = top < this.#at && top >= box.scrollHeight - box.clientHeight - 1;
     if (Math.abs(top - this.#at) > 1 && !clamped) {

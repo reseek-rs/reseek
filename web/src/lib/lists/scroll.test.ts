@@ -78,3 +78,13 @@ it("goes on when the browser holds the offset within content that shrank", () =>
   expect(back.holds(box)).toBe(true);
   expect(back.mark).toBe(mark);
 });
+
+it("ends on a scroll it did not make before its first put", () => {
+  const box = { scrollTop: 0, scrollHeight: 5000, clientHeight: 300 } as HTMLElement;
+  const back = new Return(mark);
+  expect(back.holds(box)).toBe(true);
+  // the user scrolls before the lines the box goes back among have come
+  box.scrollTop = 400;
+  expect(back.holds(box)).toBe(false);
+  expect(back.mark).toBeNull();
+});
