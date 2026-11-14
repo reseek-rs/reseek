@@ -53,6 +53,10 @@ struct Shared {
   userinfo: Mutex<Value>,
   /// userinfo answers as a signed JWT rather than JSON
   signed_userinfo: Mutex<bool>,
+  /// userinfo answers every request with this status and no body
+  userinfo_failing: Mutex<Option<StatusCode>>,
+  /// where discovery says the userinfo endpoint is, when not here
+  userinfo_endpoint: Mutex<Option<String>>,
   /// the token endpoint holds its answers until released
   tokens_held: Mutex<bool>,
   /// the token endpoint answers every request with this status and no body
@@ -83,6 +87,8 @@ impl Issuer {
       codes: Mutex::new(HashMap::new()),
       userinfo: Mutex::new(json!({})),
       signed_userinfo: Mutex::new(false),
+      userinfo_failing: Mutex::new(None),
+      userinfo_endpoint: Mutex::new(None),
       tokens_held: Mutex::new(false),
       tokens_failing: Mutex::new(None),
       token_endpoint: Mutex::new(None),
@@ -148,6 +154,16 @@ impl Issuer {
     *self.shared.tokens_failing.lock().unwrap() = Some(status);
   }
 
+  /// Answers userinfo requests with `status` and no body from now on.
+  pub fn fail_userinfo(&self, status: StatusCode) {
+    *self.shared.userinfo_failing.lock().unwrap() = Some(status);
+  }
+
+  /// Names `url` as the userinfo endpoint in discovery documents read from now on.
+  pub fn move_userinfo_endpoint(&self, url: &str) {
+    *self.shared.userinfo_endpoint.lock().unwrap() = Some(url.to_string());
+  }
+
   /// Names `url` as the token endpoint in discovery documents read from now on.
   pub fn move_token_endpoint(&self, url: &str) {
     *self.shared.token_endpoint.lock().unwrap() = Some(url.to_string());
@@ -200,11 +216,12 @@ impl Shared {
 async fn discovery(State(shared): State<Arc<Shared>>) -> Json<Value> {
   let url = &shared.url;
   let token = shared.token_endpoint.lock().unwrap().clone();
+  let userinfo = shared.userinfo_endpoint.lock().unwrap().clone();
   Json(json!({
     "issuer": url,
     "authorization_endpoint": format!("{url}/authorize"),
     "token_endpoint": token.unwrap_or_else(|| format!("{url}/token")),
-    "userinfo_endpoint": format!("{url}/userinfo"),
+    "userinfo_endpoint": userinfo.unwrap_or_else(|| format!("{url}/userinfo")),
     "jwks_uri": format!("{url}/jwks"),
     "end_session_endpoint": format!("{url}/logout"),
     "response_types_supported": ["code"],
@@ -274,6 +291,9 @@ async fn token(
 async fn userinfo(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Response {
   if headers.get("authorization").and_then(|v| v.to_str().ok()) != Some("Bearer access") {
     return StatusCode::UNAUTHORIZED.into_response();
+  }
+  if let Some(status) = *shared.userinfo_failing.lock().unwrap() {
+    return status.into_response();
   }
   let mut claims = shared.userinfo.lock().unwrap().clone();
   if !*shared.signed_userinfo.lock().unwrap() {

@@ -12,7 +12,7 @@ use openidconnect::core::{CoreAuthenticationFlow, CoreGenderClaim, CoreJwsSignin
 use openidconnect::{
   AuthorizationCode, ClaimsVerificationError, CsrfToken, IdTokenClaims, Nonce, OAuth2TokenResponse,
   PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, RequestTokenError, Scope,
-  SignatureVerificationError, TokenResponse,
+  SignatureVerificationError, TokenResponse, UserInfoError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -121,8 +121,8 @@ pub struct Claims {
 pub enum NotSignedIn {
   /// the provider refused the code, or what it sent did not check out
   Refused(String),
-  /// the token endpoint could not be reached or failed, or the provider's signing keys could
-  /// not be read to check the ID token
+  /// the token or userinfo endpoint could not be reached or failed, or the provider's signing
+  /// keys could not be read to check the ID token
   Unavailable(String),
 }
 
@@ -186,10 +186,20 @@ pub async fn exchange(
   let claim = &provider.options.role_mapping.claim;
   if claim_strings(&claims, claim).is_empty() && metadata.userinfo_endpoint().is_some() {
     let answer = match client.user_info(response.access_token().clone(), Some(subject.clone())) {
-      Ok(request) => request
+      Ok(request) => match request
         .request_async::<ExtraClaims, _, CoreGenderClaim>(provider.http())
         .await
-        .map_err(|e| error_chain(&e)),
+      {
+        Ok(info) => Ok(info),
+        // the provider failing rather than answering, as the token endpoint can
+        Err(e @ UserInfoError::Request(_)) => {
+          return Err(NotSignedIn::Unavailable(format!(
+            "the userinfo endpoint could not be reached: {}",
+            error_chain(&e)
+          )));
+        }
+        Err(e) => Err(error_chain(&e)),
+      },
       Err(e) => Err(error_chain(&e)),
     };
     match answer.and_then(|info| serde_json::to_value(&info).map_err(|e| e.to_string())) {
