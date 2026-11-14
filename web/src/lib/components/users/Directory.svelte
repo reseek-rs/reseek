@@ -539,24 +539,22 @@
                 {/snippet}
               </Tooltip>
             {/if}
-            <Menu.Root>
-              <Menu.Trigger>
-                {#snippet child({ props })}
-                  <Button
-                    {...props}
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label={`More for ${u.username}`}>
-                    <EllipsisIcon />
-                  </Button>
-                {/snippet}
-              </Menu.Trigger>
+            <Menu.LazyRoot>
+              {#snippet trigger({ props })}
+                <Button
+                  {...props}
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`More for ${u.username}`}>
+                  <EllipsisIcon />
+                </Button>
+              {/snippet}
               <Menu.Content align="end">
                 <UserMenuItems name={u.username} only={["profile", "search"]} />
                 <Menu.Item onSelect={() => void copyText(u.username)}
                   ><CopyIcon />Copy username</Menu.Item>
               </Menu.Content>
-            </Menu.Root>
+            </Menu.LazyRoot>
           </span>
         </div>
       {/each}
