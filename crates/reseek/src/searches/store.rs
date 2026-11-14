@@ -134,15 +134,6 @@ pub fn insert(conn: &Connection, search: &Search) -> rusqlite::Result<bool> {
   Ok(inserted == 1)
 }
 
-/// Writes `token`, which the client drew as it took the search `id`.
-pub fn set_token(conn: &Connection, id: Uuid, token: u32) -> rusqlite::Result<()> {
-  conn.execute(
-    "UPDATE searches SET token = ?2 WHERE id = ?1",
-    params![id.to_string(), token],
-  )?;
-  Ok(())
-}
-
 /// Writes the state, end and counts of `search`; false when it is gone.
 pub fn update(conn: &Connection, search: &Search) -> rusqlite::Result<bool> {
   let updated = conn.execute(

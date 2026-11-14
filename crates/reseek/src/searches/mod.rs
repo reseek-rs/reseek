@@ -348,11 +348,12 @@ impl SearchService for Searches {
     let client = self.network.client().clone();
     let id = request.id.unwrap_or_else(Uuid::new_v4);
     let scope = self.reached(&request.scope)?;
+    // reserved clear of the client's connection tickets, so the search can start with it
+    let reserved = client.reserve_search_token();
     let record = Search {
       id,
       search_text: normalized(&request.search_text),
-      // the client draws the token as it takes the search, clear of its connection tickets
-      token: 0,
+      token: reserved.token(),
       scope: scope.clone(),
       state: SearchState::Requested,
       started_at: Utc::now(),
@@ -380,12 +381,12 @@ impl SearchService for Searches {
     let (accepted, acceptance) = oneshot::channel();
     let running = Arc::new(Running::new(record.clone(), accepted));
     self.running().insert(id, running.clone());
-    let (reported, started) = (running.clone(), running.clone());
+    let reported = running.clone();
     let state_changed: SearchStateChanged =
-      Arc::new(move |_, snapshot| reported.state_changed(snapshot.state, snapshot.token));
+      Arc::new(move |_, snapshot| reported.state_changed(snapshot.state));
     let options = options(&request, search_timeout, state_changed);
     let scope = client_scope(&scope);
-    let text = record.search_text.clone();
+    let (text, token) = (record.search_text.clone(), record.token);
     let this = self.this();
     let span = info_span!("search", %id);
     self.tasks.spawn(
@@ -395,28 +396,25 @@ impl SearchService for Searches {
         let search = client.search_with(
           &text,
           scope,
-          None,
+          Some(token),
           options,
           move |response| taker.response_taken(response, &live, &users),
           &running.cancel,
         );
         this.follow(running.clone(), search).await;
         this.running().remove(&id);
+        // the search took the token out of the reservation as it started, if it did
+        drop(reserved);
       }
       .instrument(span),
     );
 
     match acceptance.await {
       Ok(Ok(())) => {
-        let record = started.record();
-        let token = record.token;
-        if let Err(e) = self
-          .db
-          .write(move |conn| store::set_token(conn, id, token))
-          .await
-        {
-          warn!(error = %e, "search token not written");
-        }
+        let record = self
+          .running()
+          .get(&id)
+          .map_or(record, |running| running.record());
         self.live.publish(LiveFrame::SearchUpdate(record.clone()));
         Ok(record)
       }
@@ -590,30 +588,61 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn a_search_keeps_the_token_the_client_sends_it_under() {
+  async fn a_search_keeps_the_token_the_client_sends_it_under_from_its_start() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
     use crate::testing::soulseek::{self, Server};
     use soulseek_proto::ServerRequest;
 
     let app = soulseek::app(TRUSTED).await;
     let mut server = Server::silent().await;
     server.login(&app).await;
-    let start = json!({ "searchText": "pink floyd", "searchTimeout": 60_000 });
-    let started = app
-      .send(request("POST", "/api/v0/searches", Some(start)))
-      .await;
+    let mut sent = async || {
+      server
+        .received(|request| match request {
+          ServerRequest::FileSearch(search) => Some(search.token),
+          _ => None,
+        })
+        .await
+    };
+    let start = |id: Uuid| {
+      let body = json!({ "id": id, "searchText": "pink floyd", "searchTimeout": 60_000 });
+      request("POST", "/api/v0/searches", Some(body))
+    };
+    let stored = async |id: Uuid| {
+      app
+        .send(request("GET", &format!("/api/v0/searches/{id}"), None))
+        .await
+        .json()["token"]
+        .clone()
+    };
+
+    let answered = Uuid::new_v4();
+    let started = app.send(start(answered)).await;
     assert_eq!(started.status, 200);
-    let sent = server
-      .received(|request| match request {
-        ServerRequest::FileSearch(search) => Some(search.token),
-        _ => None,
-      })
-      .await;
-    assert_eq!(started.json()["token"], sent);
-    let id = started.json()["id"].as_str().unwrap().to_owned();
-    let stored = app
-      .send(request("GET", &format!("/api/v0/searches/{id}"), None))
-      .await;
-    assert_eq!(stored.json()["token"], sent);
+    let token = sent().await;
+    assert_eq!(started.json()["token"], token);
+    assert_eq!(stored(answered).await, token);
+
+    // a request dropped once the search is handed to the client, before the client took it
+    let dropped = Uuid::new_v4();
+    let mut post = Box::pin(app.send(start(dropped)));
+    let handed = tokio::time::timeout(Duration::from_secs(10), async {
+      loop {
+        let ended = poll_fn(|cx| Poll::Ready(post.as_mut().poll(cx).is_ready())).await;
+        assert!(!ended, "the request ended before it could be dropped");
+        if app.state.searches.running().contains_key(&dropped) {
+          return;
+        }
+        tokio::task::yield_now().await;
+      }
+    })
+    .await;
+    assert!(handed.is_ok(), "the search was never handed to the client");
+    drop(post);
+    let token = sent().await;
+    assert_eq!(stored(dropped).await, token);
   }
 
   #[tokio::test]

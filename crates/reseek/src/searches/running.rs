@@ -135,13 +135,11 @@ impl Running {
     lock(&self.progress).responses.clone()
   }
 
-  /// The client moved the search, which it sends under `token`, to `next`. The first report
-  /// says the client took it and drew the token; the end is not taken here, but written with
-  /// the responses once the client returns.
-  pub fn state_changed(&self, next: ClientState, token: u32) {
+  /// The client moved the search to `next`. The first report says the client took it; the
+  /// end is not taken here, but written with the responses once the client returns.
+  pub fn state_changed(&self, next: ClientState) {
     let mut progress = lock(&self.progress);
     if let Some(accepted) = progress.accepted.take() {
-      progress.record.token = token;
       // the request waiting for this may have given up already
       let _ = accepted.send(Ok(()));
     }
@@ -406,12 +404,12 @@ mod tests {
       .unwrap();
     let (accepted, acceptance) = oneshot::channel();
     let running = Arc::new(Running::new(record, accepted));
-    running.state_changed(ClientState::InProgress, 7);
+    running.state_changed(ClientState::InProgress);
     acceptance.await.unwrap().unwrap();
     lock(&running.progress).moved = false;
 
     let ended = ClientState::Completed(soulseek_client::SearchOutcome::TimedOut);
-    running.state_changed(ended, 7);
+    running.state_changed(ended);
     {
       let progress = lock(&running.progress);
       assert_eq!(progress.record.state, SearchState::InProgress);
@@ -453,7 +451,7 @@ mod tests {
       .unwrap();
     let (accepted, _acceptance) = oneshot::channel();
     let running = Arc::new(Running::new(record, accepted));
-    running.state_changed(ClientState::InProgress, 7);
+    running.state_changed(ClientState::InProgress);
     searches.running().insert(id, running.clone());
     let cancel = running.cancel.clone();
     let following = searches.clone();
@@ -486,7 +484,7 @@ mod tests {
       .unwrap();
     let (accepted, _acceptance) = oneshot::channel();
     let running = Arc::new(Running::new(record, accepted));
-    running.state_changed(ClientState::InProgress, 7);
+    running.state_changed(ClientState::InProgress);
     searches.running().insert(id, running.clone());
     let taken = peer::SearchResponse {
       username: "alice".into(),
@@ -567,7 +565,7 @@ mod tests {
       .unwrap();
     let (accepted, _acceptance) = oneshot::channel();
     let running = Arc::new(Running::new(record, accepted));
-    running.state_changed(ClientState::InProgress, 7);
+    running.state_changed(ClientState::InProgress);
     searches.running().insert(id, running.clone());
     running
   }
