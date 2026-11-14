@@ -45,7 +45,7 @@
   // the blocks in force: ours, and the configuration's, which only the configuration lifts
   const blocked = new Loader(() => call(() => api.GET("/api/v0/users/blocked")));
   const freeze = new Freeze();
-  keepCurrent(
+  const reload = keepCurrent(
     () => void blocked.load(),
     () => "users",
     freeze
@@ -54,12 +54,12 @@
   $effect(() =>
     live.on("users.updated", (u) => {
       const was = blocked.data?.users.some((b) => b.username === u.username);
-      if (was || u.block) void blocked.load();
+      if (was || u.block) reload();
     })
   );
 
   // the configuration's blocks come and go with the options
-  $effect(() => live.on("application.options", () => void blocked.load()));
+  $effect(() => live.on("application.options", reload));
 
   const time = (iso: string | null | undefined, none: number) => (iso ? Date.parse(iso) : none);
   const grid = new Grid<Schemas["Block"]>({

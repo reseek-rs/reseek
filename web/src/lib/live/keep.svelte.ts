@@ -13,7 +13,8 @@ export const RECONCILE_MS = 60_000;
  * have been missed, when a stream that resumed starts following the topic, and on the polling
  * timer while the stream is down. A stream that resumed after a lost one brings what it missed. A
  * reload due while `freeze` holds, the screen's list's own or every list's, waits until it ends.
- * Call it while the component is being set up
+ * Call it while the component is being set up. It returns that reload, which waits for the
+ * freeze the same way, for a screen that reloads on frames of its own
  */
 export const keepCurrent = (
   reload: () => void,
@@ -62,4 +63,5 @@ export const keepCurrent = (
       if (followed && topics.includes(followed)) run();
     })
   );
+  return run;
 };

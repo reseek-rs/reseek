@@ -1,8 +1,11 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { live } from "#lib/live/live.svelte.js";
 import { session } from "#lib/session.svelte.js";
+import { userSummary } from "#lib/testing/fixtures.js";
 import { flush } from "#lib/testing/flush.js";
+import { connected } from "#lib/testing/live.js";
 import { fakeNetwork } from "#lib/testing/network.js";
 
 import BlockedList from "./BlockedList.svelte";
@@ -51,6 +54,46 @@ describe("importing blocks", () => {
     button("Import").click();
     await flush();
     expect(document.body.textContent).not.toContain("not a block list");
+    unmount(component);
+  });
+});
+
+describe("the blocked list", () => {
+  afterEach(() => {
+    live.stop();
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+  });
+
+  it("reads a block that changed only once nothing holds the list", async () => {
+    const bob = {
+      username: "bob",
+      addresses: [],
+      reason: "",
+      scopes: ["browse"],
+      source: "api",
+      createdAt: "2026-10-26T10:00:00Z"
+    };
+    const net = connected((url) =>
+      url.pathname.endsWith("/users/blocked") ? { users: [bob], rules: null } : undefined
+    );
+    const component = mount(BlockedList, { target: document.body });
+    await flush();
+    const reads = () => net.requests.filter((r) => r.url.pathname.endsWith("/blocked")).length;
+    const before = reads();
+
+    // the pointer pressed in the list holds it, as for a selection
+    const rows = document.querySelector("[role=rowgroup]")!;
+    rows.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    net.frame("users.updated", {
+      ...userSummary("alice"),
+      block: { reason: "", scopes: [] }
+    } as never);
+    await flush();
+    expect(reads()).toBe(before);
+    window.dispatchEvent(new PointerEvent("pointerup"));
+    await flush();
+    expect(reads()).toBe(before + 1);
     unmount(component);
   });
 });
