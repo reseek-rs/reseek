@@ -45,7 +45,7 @@ const HARD_LIMITED: &str = "Download failed to enqueue remotely after hard time 
 /// a free upload slot offers the file as it takes the request, and one that waits to look at
 /// its queue again does so within ten seconds, so an offer is not waited for past that and a
 /// margin.
-pub(super) const SETTLED_AFTER: Duration = Duration::from_secs(15);
+pub(super) const SETTLED_AFTER: Duration = Duration::from_secs(12);
 
 /// Progress not written, which a failing database would repeat four times a second.
 static PROGRESS_UNWRITTEN: LogLimiter = LogLimiter::new();
