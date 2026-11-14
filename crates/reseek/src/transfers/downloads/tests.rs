@@ -1377,8 +1377,13 @@ async fn a_purge_stops_and_removes_every_transfer_of_the_user_and_leaves_the_oth
     gone.is_ok(),
     "a transfer of alice is still listed or running"
   );
+  // canceled, not merely taken out of the listings
   for id in [running.id, paused.id, queued_upload.id] {
-    assert!(read(&app, id).await.is_completed(), "{id} was ended");
+    assert_eq!(
+      read(&app, id).await.state,
+      State::Completed(TransferOutcome::Cancelled),
+      "{id}"
+    );
   }
   assert_eq!(listed("bob").await.unwrap(), 1, "bob's download stays");
 }
