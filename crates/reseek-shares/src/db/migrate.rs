@@ -1,5 +1,7 @@
 //! Migrations: numbered SQL files under `migrations/<database>/`, built into the program, each
-//! applied once in its own transaction and recorded with a checksum in `schema_migrations`.
+//! applied once in its own transaction and recorded with a checksum in `schema_migrations`. The
+//! checksum covers the statements and leaves comments and layout out, so a comment can be
+//! corrected in a migration that has already run.
 
 use std::path::Path;
 use std::time::Instant;
@@ -50,9 +52,83 @@ impl Migration {
   }
 
   fn checksum(&self) -> String {
-    let digest = Sha256::digest(self.sql.as_bytes());
-    digest.iter().map(|b| format!("{b:02x}")).collect()
+    sha256(&statements(self.sql))
   }
+
+  /// Whether `recorded` is a checksum of the whole file, comments included, as older versions
+  /// recorded it: of this text, or of an earlier text listed in [`WHOLE_FILE_BEFORE`].
+  fn recorded_whole(&self, database: &str, recorded: &str) -> bool {
+    sha256(self.sql) == recorded
+      || WHOLE_FILE_BEFORE
+        .iter()
+        .any(|(file, sum)| *file == format!("{database}/{}", self.file) && *sum == recorded)
+  }
+}
+
+/// Checksums of whole migration files as older versions recorded them, for the files whose
+/// comments have been corrected since: the file under `migrations/` and the checksum of its
+/// earlier text.
+const WHOLE_FILE_BEFORE: &[(&str, &str)] = &[];
+
+fn sha256(text: &str) -> String {
+  let digest = Sha256::digest(text.as_bytes());
+  digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `sql` as SQLite reads it: comments left out and each run of whitespace and comments outside
+/// quotes made one space, so only a change to the statements changes it.
+fn statements(sql: &str) -> String {
+  let mut out = String::with_capacity(sql.len());
+  let mut chars = sql.chars().peekable();
+  // a space is written only before the next token, so none leads or trails
+  let mut gap = false;
+  while let Some(c) = chars.next() {
+    let comment = match (c, chars.peek()) {
+      ('-', Some('-')) => {
+        chars.find(|&c| c == '\n');
+        true
+      }
+      ('/', Some('*')) => {
+        chars.next();
+        let mut star = false;
+        // an unclosed comment runs to the end, as in SQLite
+        for c in chars.by_ref() {
+          if star && c == '/' {
+            break;
+          }
+          star = c == '*';
+        }
+        true
+      }
+      _ => false,
+    };
+    if comment || c.is_ascii_whitespace() {
+      gap = true;
+      continue;
+    }
+    if gap && !out.is_empty() {
+      out.push(' ');
+    }
+    gap = false;
+    out.push(c);
+    // a quoted string or name is kept as written; a doubled closing quote inside it is a quote
+    let close = match c {
+      '\'' | '"' | '`' => c,
+      '[' => ']',
+      _ => continue,
+    };
+    while let Some(c) = chars.next() {
+      out.push(c);
+      if c == close {
+        if close != ']' && chars.peek() == Some(&close) {
+          out.extend(chars.next());
+          continue;
+        }
+        break;
+      }
+    }
+  }
+  out
 }
 
 /// A database's [`Schema`], its migration files read from `migrations/<name>/` at build time:
@@ -124,6 +200,7 @@ pub(super) fn run(
       })?
       .collect::<rusqlite::Result<Vec<_>>>()?
   };
+  let mut whole = Vec::new();
   for (version, name, checksum) in &applied {
     let Some(known) = schema.migrations.iter().find(|m| m.version() == *version) else {
       return Err(DbError::Newer {
@@ -131,7 +208,10 @@ pub(super) fn run(
         version: *version,
       });
     };
-    if known.checksum() != *checksum {
+    if known.checksum() == *checksum {
+      continue;
+    }
+    if !known.recorded_whole(schema.name, checksum) {
       return Err(DbError::Checksum {
         path: path.to_path_buf(),
         database: schema.name,
@@ -139,6 +219,22 @@ pub(super) fn run(
         name: name.clone(),
       });
     }
+    whole.push(known);
+  }
+  if !whole.is_empty() {
+    let tx = conn.transaction()?;
+    for migration in &whole {
+      tx.execute(
+        "UPDATE schema_migrations SET checksum = ?1 WHERE version = ?2",
+        params![migration.checksum(), migration.version()],
+      )?;
+    }
+    tx.commit()?;
+    info!(
+      database = schema.name,
+      count = whole.len(),
+      "migration checksums recorded again without comments"
+    );
   }
   let current = applied.last().map_or(0, |(version, ..)| *version);
   let pending: Vec<&Migration> = schema
@@ -456,6 +552,102 @@ pub(super) mod tests {
     };
     assert_eq!(levels(&made), ["DEBUG"; 3], "{made}");
     assert_eq!(levels(&upgraded), ["INFO"; 3], "{upgraded}");
+  }
+
+  #[test]
+  fn statements_leave_comments_and_layout_out_and_keep_quotes() {
+    let commented = "-- makes the table\nCREATE TABLE a (\n  x TEXT, /* the name */\n  y \
+                     INTEGER -- the size\n);\n";
+    let reworded = "-- makes the table a,\n-- over two lines\nCREATE  TABLE a (x TEXT,\ty \
+                    INTEGER);";
+    assert_eq!(
+      statements(commented),
+      "CREATE TABLE a ( x TEXT, y INTEGER );"
+    );
+    assert_eq!(statements(reworded), "CREATE TABLE a (x TEXT, y INTEGER);");
+    let quoted = "INSERT INTO \"a  -- b\" VALUES ('it''s  /* not */ -- one', [c  d], `e``  f`)";
+    assert_eq!(statements(quoted), quoted, "quoted text is kept as written");
+    assert_eq!(statements("SELECT 1 /* open to the end"), "SELECT 1");
+    assert_ne!(
+      statements("SELECT 'a  b'"),
+      statements("SELECT 'a b'"),
+      "spaces inside a string are part of it"
+    );
+  }
+
+  #[test]
+  fn a_comment_corrected_after_its_migration_ran_changes_nothing() {
+    static WRITTEN: Schema = Schema {
+      private: false,
+      name: "auth",
+      migrations: &[Migration {
+        file: "0001_initial",
+        sql: "-- the rows are moved first\nCREATE TABLE a (x INTEGER);\n",
+      }],
+    };
+    static CORRECTED: Schema = Schema {
+      private: false,
+      name: "auth",
+      migrations: &[Migration {
+        file: "0001_initial",
+        sql: "-- the table starts empty,\n-- nothing is moved\nCREATE TABLE a (x INTEGER);\n",
+      }],
+    };
+    let mut conn = Connection::open_in_memory().unwrap();
+    let path = Path::new("auth.db");
+    run(&WRITTEN, &mut conn, path, None).unwrap();
+    assert_eq!(run(&CORRECTED, &mut conn, path, None).unwrap(), 0);
+  }
+
+  #[test]
+  fn a_database_recorded_with_whole_file_checksums_is_recorded_again_once() {
+    static ONE: Schema = Schema {
+      private: false,
+      name: "auth",
+      migrations: &[Migration {
+        file: "0001_initial",
+        sql: "-- the first table\nCREATE TABLE a (x INTEGER);\n",
+      }],
+    };
+    let path = Path::new("auth.db");
+    let recorded = |conn: &Connection| -> String {
+      conn
+        .query_row("SELECT checksum FROM schema_migrations", [], |row| {
+          row.get(0)
+        })
+        .unwrap()
+    };
+    let mut conn = Connection::open_in_memory().unwrap();
+    run(&ONE, &mut conn, path, None).unwrap();
+    conn
+      .execute(
+        "UPDATE schema_migrations SET checksum = ?1",
+        [sha256(ONE.migrations[0].sql)],
+      )
+      .unwrap();
+    let (applied, logs) = crate::testing::logged(|| run(&ONE, &mut conn, path, None).unwrap());
+    assert_eq!(applied, 0);
+    assert_eq!(recorded(&conn), ONE.migrations[0].checksum());
+    assert!(
+      logs.contains("INFO") && logs.contains("recorded again without comments"),
+      "{logs}"
+    );
+    let (_, logs) = crate::testing::logged(|| run(&ONE, &mut conn, path, None).unwrap());
+    assert!(!logs.contains("recorded again"), "only once: {logs}");
+
+    conn
+      .execute(
+        "UPDATE schema_migrations SET checksum = ?1",
+        [sha256("CREATE TABLE a (x TEXT);\n")],
+      )
+      .unwrap();
+    assert!(
+      matches!(
+        run(&ONE, &mut conn, path, None),
+        Err(DbError::Checksum { version: 1, .. })
+      ),
+      "the whole-file checksum of other statements is still refused"
+    );
   }
 
   #[tokio::test]
