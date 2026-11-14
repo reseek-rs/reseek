@@ -222,12 +222,18 @@ fuzz-seed:
     mkdir -p fuzz/corpus/wav_stream
     cp crates/reseek/src/files/fixtures/tone.m4a fuzz/corpus/wav_stream/
 
+# the fuzz crate is a workspace of its own, so its lockfile starts as a copy of the main one: the
+# targets build against the versions the daemon ships with, and cargo adds only the fuzz crates
+[private]
+fuzz-lock:
+    cp Cargo.lock fuzz/Cargo.lock
+
 # run one fuzz target, indefinitely unless SECONDS is given
-fuzz TARGET SECONDS="": fuzz-seed
+fuzz TARGET SECONDS="": fuzz-seed fuzz-lock
     cargo fuzz run {{ TARGET }} {{ if SECONDS == "" { "" } else { "-- -max_total_time=" + SECONDS } }}
 
 # split HOURS evenly across every fuzz target
-fuzz-all HOURS: fuzz-seed
+fuzz-all HOURS: fuzz-seed fuzz-lock
     #!/usr/bin/env bash
     set -euo pipefail
     targets=$(cargo fuzz list)

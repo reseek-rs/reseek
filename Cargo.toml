@@ -15,7 +15,8 @@ members = [
   "crates/reseek-tls",
   "crates/reseek-ui-assets",
 ]
-# cargo-fuzz needs nightly and its own lockfile, so the fuzz crate is a separate workspace
+# cargo-fuzz needs nightly, so the fuzz crate is a separate workspace; `just fuzz` gives it a
+# copy of this lockfile
 exclude = ["fuzz"]
 
 [workspace.package]
