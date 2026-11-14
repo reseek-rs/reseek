@@ -147,6 +147,9 @@
       .map((line) => line.trim())
       .filter(Boolean);
 
+  /** A line under a row of the table, lined up with the row's first cell */
+  const UNDER_ROW = "px-5 pb-1.5";
+
   /** A cell's control: plain text in its row, a tint under the pointer and a border in focus */
   const INLINE =
     "h-control-sm rounded-none border-transparent bg-transparent px-2 shadow-none hover:border-transparent hover:bg-hover focus-visible:bg-surface";
@@ -316,10 +319,11 @@
             {/if}
           </tr>
           {#if trouble(row)}
-            <tr><td colspan={columns.length + 2}>{@render complaint(row)}</td></tr>
+            <tr
+              ><td colspan={columns.length + 2} class={UNDER_ROW}>{@render complaint(row)}</td></tr>
           {/if}
           {#if noteOf(row)}
-            <tr><td colspan={columns.length + 2} class="px-5 pb-1.5">{@render note(row)}</td></tr>
+            <tr><td colspan={columns.length + 2} class={UNDER_ROW}>{@render note(row)}</td></tr>
           {/if}
         {/each}
       </tbody>
