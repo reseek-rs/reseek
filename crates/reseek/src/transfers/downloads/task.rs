@@ -292,13 +292,8 @@ impl Downloads {
       match attempted {
         Attempted::Succeeded(writing) => return Ended::Succeeded(record, incomplete, writing),
         Attempted::Abandoned => return Ended::Abandoned,
-        // waiting here again; the wait for the user is written at the top of the loop
-        Attempted::UserOffline => {
-          record
-            .enter(State::WAITING)
-            .expect("a download being tried may wait here again");
-          self.save(&record, true).await;
-        }
+        // the wait for the user is written at the top of the loop
+        Attempted::UserOffline => {}
         Attempted::Failed(failure) => {
           warn!(
             attempt,

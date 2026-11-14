@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { sentText } from "./send.svelte";
 
 /** `text` as the line sets a name apart from the sentence around it */
-const named = (text: string) => `⁨${text}⁩`;
+const named = (text: string) => `\u2068${text}\u2069`;
 
 const ONE = "@@a\\Music\\Album\\01 One.flac";
 const TWO = "@@a\\Music\\Album\\02 Two.flac";

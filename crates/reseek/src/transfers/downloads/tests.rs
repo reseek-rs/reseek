@@ -1361,6 +1361,21 @@ impl Peer {
     Some(soulseek_proto::PeerMessage::decode(&frame).unwrap())
   }
 
+  /// Whether the daemon sends nothing for `within`, and whether it closed the connection
+  /// meanwhile; not quiet when a message comes.
+  async fn quiet_for(&mut self, within: std::time::Duration) -> (bool, bool) {
+    use tokio::io::AsyncReadExt;
+    let mut chunk = [0; 4096];
+    match tokio::time::timeout(within, self.stream.read(&mut chunk)).await {
+      Err(_) => (true, false),
+      Ok(Ok(0)) => (true, true),
+      Ok(read) => {
+        self.buffer.extend_from_slice(&chunk[..read.unwrap()]);
+        (false, false)
+      }
+    }
+  }
+
   /// The next peer message the daemon sends, other than a question of its place in the queue.
   async fn next(&mut self) -> soulseek_proto::PeerMessage {
     loop {
@@ -1646,6 +1661,47 @@ async fn idle_users_get_no_more_requests_than_there_are_slots() {
   sides[2].asked_for("@@u3\\1.flac").await;
   let next = sides[3].next_within(idle).await;
   assert!(next.is_none(), "one asked per free slot: {next:?}");
+}
+
+/// With one download slot, a file whose peer neither offers it nor says its place holds the
+/// slot for the settle window from its question, and no longer: the next file is asked then.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_silent_peer_holds_the_asking_slot_for_the_window_only() {
+  use super::attempt::SETTLED_AFTER;
+
+  let config = format!("[transfers.download]\nslots = 1\n{TRUSTED}");
+  let app = crate::testing::soulseek::app(&config).await;
+  let peers = Peers::start(&app, &["alice", "bob"]).await;
+  let (alices, bobs) = ("@@a\\1.flac", "@@b\\1.flac");
+  enqueued(&app, "alice", alices).await;
+  let mut alice = peers.connected("alice").await;
+  alice.asked_for(alices).await;
+  let asked = tokio::time::Instant::now();
+  enqueued(&app, "bob", bobs).await;
+  let mut bob = peers.connected("bob").await;
+  let margin = std::time::Duration::from_secs(2);
+  // the connection the enqueue made closes once idle as long as the daemon lets peer
+  // connections be, and the daemon then asks on a new one
+  let (quiet, _) = bob.quiet_for(SETTLED_AFTER - margin).await;
+  assert!(quiet, "asked within the window");
+  let left =
+    (asked + SETTLED_AFTER + margin).saturating_duration_since(tokio::time::Instant::now());
+  let request = match bob.quiet_for(left).await {
+    (false, _) => bob.next_within(left).await,
+    (true, true) => peers.connected("bob").await.next_within(left).await,
+    (true, false) => None,
+  };
+  match request {
+    Some(soulseek_proto::PeerMessage::QueueDownload(request)) => {
+      assert_eq!(request.filename.as_str(), bobs);
+    }
+    other => panic!("not asked once the window passed: {other:?}"),
+  }
+  let after = asked.elapsed();
+  assert!(
+    after <= SETTLED_AFTER + margin,
+    "asked {after:?} after the first, past the window"
+  );
 }
 
 /// A user the server says does not exist ends their downloads, failed with a reason that says

@@ -41,10 +41,11 @@ const OVERFLOWED_SIZE: u64 = i32::MAX as u64;
 const HARD_LIMITED: &str = "Download failed to enqueue remotely after hard time limit of 180 secs";
 
 /// How long a file the peer took into its queue holds the slot it asked in when the peer
-/// neither offers it nor says its place: Nicotine+ offers a file to a peer it has a free slot
-/// for as it takes the request, and looks at its queue again every 10 s, so an offer is not
-/// waited for past that and a margin.
-const SETTLED_AFTER: Duration = Duration::from_secs(15);
+/// neither offers it nor says its place, from the question to the end of the wait. A peer with
+/// a free upload slot offers the file as it takes the request, and one that waits to look at
+/// its queue again does so within ten seconds, so an offer is not waited for past that and a
+/// margin.
+pub(super) const SETTLED_AFTER: Duration = Duration::from_secs(15);
 
 /// Progress not written, which a failing database would repeat four times a second.
 static PROGRESS_UNWRITTEN: LogLimiter = LogLimiter::new();
@@ -381,8 +382,13 @@ impl Downloads {
       result
     } else {
       loop {
+        let asking = gate.as_ref().is_some_and(|g| g.pending.is_some());
+        if !asking {
+          // the ask is over; a question still out would take the file's next place answer
+          settling = None;
+        }
         let queued = matches!(record.state, State::QueuedRemotely { .. });
-        if queued && settling.is_none() && gate.as_ref().is_some_and(|g| g.pending.is_some()) {
+        if queued && asking && settling.is_none() {
           settling = Some(self.settling(record, &stop));
         }
         tokio::select! {
@@ -518,15 +524,17 @@ impl Downloads {
     let client = self.network.client().clone();
     let (username, filename) = (record.username.clone(), record.filename.clone());
     let asked = stop.child_token();
+    let settled = Instant::now() + SETTLED_AFTER;
     Box::pin(async move {
       // the question stops with the try or the window, whichever ends first
       let _stops = asked.clone().drop_guard();
       let place = client.get_download_place_in_queue(&username, filename, &asked);
-      match tokio::time::timeout(SETTLED_AFTER, place).await {
+      match tokio::time::timeout_at(settled, place).await {
         Ok(Ok(place)) => Some(place),
+        // a question that failed early still waits out the window, in which an offer may come
         Ok(Err(e)) => {
           debug!(error = %e, "place in the peer's queue not answered");
-          tokio::time::sleep(SETTLED_AFTER).await;
+          tokio::time::sleep_until(settled).await;
           None
         }
         Err(_) => None,
