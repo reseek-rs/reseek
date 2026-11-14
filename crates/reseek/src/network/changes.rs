@@ -89,16 +89,24 @@ async fn apply(
       }
     }
   }
-  let relogin = new_credentials(network.client(), applied, &values);
+  let credentials = credentials(network.client(), applied, &values);
+  let relogin = credentials == Credentials::New;
   // the reconnect-class keys changed since the session began; while disconnected the next
   // connect takes them without a flag, as logging in again does
+  let mut waiting = current.pending_reconnect.clone();
+  if credentials == Credentials::InSession {
+    if let Err(e) = app.config.reconnected_keys(&CREDENTIALS, current).await {
+      warn!(error = %e, "the credentials in effect were not marked as reconnected");
+    }
+    waiting.retain(|key| !CREDENTIALS.contains(&key.as_str()));
+  }
   let connected = network.client().state().is_connected();
-  if !relogin && ((connected && !current.pending_reconnect.is_empty()) || reconnect_required) {
+  if !relogin && ((connected && !waiting.is_empty()) || reconnect_required) {
     let already = app.state.current().pending_reconnect;
     app.state.update(|state| state.pending_reconnect = true);
     if !already {
       info!(
-        keys = current.pending_reconnect.join(", "),
+        keys = waiting.join(", "),
         reconnect_required,
         "One or more updated Soulseek options requires the client to be disconnected, then \
          reconnected to the network to take effect."
@@ -133,15 +141,31 @@ async fn apply(
   Some(values)
 }
 
-/// Whether the username or password changed to ones that can log in, and the session is not
-/// logged in with them already, as it is once the server changed our password.
-fn new_credentials(client: &Client, previous: &Options, current: &Options) -> bool {
+/// The options that hold the credentials.
+const CREDENTIALS: [&str; 2] = ["soulseek.username", "soulseek.password"];
+
+/// What a change of the options does to the credentials the session logs in with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Credentials {
+  /// the same as before, or ones that cannot log in
+  Kept,
+  /// new ones that can log in and that the session is not logged in with
+  New,
+  /// new ones the session is logged in with already, as once the server changed our password
+  InSession,
+}
+
+/// What the change from `previous` to `current` does to the credentials `client` logs in with.
+fn credentials(client: &Client, previous: &Options, current: &Options) -> Credentials {
   let (was, now) = (&previous.soulseek, &current.soulseek);
   if was.username == now.username && was.password == now.password {
-    return false;
+    return Credentials::Kept;
   }
-  super::credentials(now)
-    .is_some_and(|(username, password)| !client.logged_in_as(username, password))
+  match super::credentials(now) {
+    None => Credentials::Kept,
+    Some((username, password)) if client.logged_in_as(username, password) => Credentials::InSession,
+    Some(_) => Credentials::New,
+  }
 }
 
 /// Whether the server's address, our credentials or the connection options differ.
@@ -412,5 +436,49 @@ mod tests {
     // from then on a lost connection is reconnected as usual
     server.drop_session(&app).await;
     assert_eq!(server.received(login).await, "other");
+  }
+
+  #[tokio::test]
+  async fn a_password_the_server_changed_waits_for_no_reconnect() {
+    use soulseek_proto::ServerResponse;
+    use soulseek_proto::server::NewPassword;
+
+    let server = Server::start(|request| match request {
+      ServerRequest::NewPassword(asked) => vec![ServerResponse::NewPassword(NewPassword {
+        new_password: asked.new_password.clone(),
+      })],
+      _ => Vec::new(),
+    })
+    .await;
+    let app = crate::testing::soulseek::app(&format!(
+      "remote_configuration = true\n[web.authentication]\n\
+       trusted_networks = [\"127.0.0.0/8\"]\n\
+       [soulseek]\naddress = \"127.0.0.1\"\nport = {}\nusername = \"me\"\npassword = \"secret\"\n",
+      server.port
+    ))
+    .await;
+    let network = &app.state.network;
+    let until = async |what: &str, done: &dyn Fn() -> bool| {
+      let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+      while !done() {
+        assert!(tokio::time::Instant::now() < deadline, "never {what}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+      }
+    };
+    until("logged in", &|| network.client().state().is_logged_in()).await;
+    let change = json!({ "password": "n3w-password" });
+    let answer = app
+      .send(request("PUT", "/api/v0/application/password", Some(change)))
+      .await;
+    assert_eq!(answer.status, 204, "{:?}", answer.body);
+    // the flag is settled in the poll that records the change as applied
+    until("applied", &|| {
+      network.applied().values.soulseek.password.as_deref() == Some("n3w-password")
+    })
+    .await;
+    assert!(network.client().state().is_logged_in());
+    assert!(!app.state.state.current().pending_reconnect);
+    let (_, view) = app.call("GET", "/api/v0/options/view", None).await;
+    assert_eq!(view["pendingReconnect"], json!([]));
   }
 }
