@@ -91,7 +91,8 @@
       void tick().then(() => node.focus());
     }
   };
-  // the tab stop the trigger gives a static element, which bits-ui leaves off a disabled one
+  // a static element with a tooltip is a tab stop, dormant or awake, unless dense or clipped
+  // leave it to the element or there is no text to show
   const stop = $derived(dense || clipped || text === undefined ? {} : { tabindex: 0 });
 </script>
 
@@ -102,19 +103,19 @@
     payload={{ text: text ?? "", side, keys }}
     disabled={text === undefined || (clipped && !cut)}>
     {#snippet child({ props })}
-      <!-- type is for bits-ui's own button, and disabled only means there's nothing to show -->
+      <!-- type is for bits-ui's own button, disabled only means there's nothing to show, and the
+           tab stop is the one a dormant element has -->
       {@const {
         "type": _type,
         "disabled": _disabled,
         "data-disabled": _dataDisabled,
-        "tabindex": tabindex,
+        "tabindex": _tabindex,
         ...own
       } = props}
-      <!-- the trigger makes its element a tab stop, which dense and clipped leave to the element -->
       {@render render({
         props: {
           ...own,
-          ...(dense || clipped ? {} : { tabindex }),
+          ...stop,
           ...(clipped ? measuring : {}),
           ...(woken ? taking : {})
         }
