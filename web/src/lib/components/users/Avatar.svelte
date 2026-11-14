@@ -9,8 +9,6 @@
 </script>
 
 <script lang="ts">
-  import { Avatar } from "bits-ui";
-
   import { root } from "#lib/api/client.js";
   import { SERVER } from "#lib/chat/notices.js";
   import { userHref } from "#lib/nav.js";
@@ -44,35 +42,40 @@
 
   // the hue of the name's color, so a face and a name match
   const hue = $derived(nameHue(name));
+  const url = $derived(src || (pictureUrl ? `${root()}${pictureUrl}` : null));
+  /** the picture that has loaded, and the one that failed to */
+  let loaded = $state<string | null>(null);
+  let failed = $state<string | null>(null);
+  const shown = $derived(url !== null && loaded === url);
 </script>
 
-<!-- the initial shows until the picture has loaded, and stays when it fails to -->
+<!-- the initial shows until the picture has loaded, and stays when it fails to. A plain image and
+     a fallback, as a long list mounts one per row -->
 {#snippet face()}
-  <Avatar.Root>
-    {#snippet child({ props })}
+  <span
+    class={cn(
+      "flex shrink-0 overflow-hidden rounded-full text-sm font-medium text-accent-fg",
+      className
+    )}>
+    {#if url && failed !== url}
+      <img
+        src={url}
+        {alt}
+        class={["size-full object-cover", !shown && "hidden"]}
+        onload={() => (loaded = url)}
+        onerror={() => (failed = url)} />
+    {/if}
+    {#if !shown}
       <span
-        {...props}
-        class={cn(
-          "flex shrink-0 overflow-hidden rounded-full text-sm font-medium text-accent-fg",
-          className
-        )}>
-        {#if src || pictureUrl}
-          <Avatar.Image
-            src={src || `${root()}${pictureUrl}`}
-            {alt}
-            class="size-full object-cover" />
-        {/if}
-        <Avatar.Fallback
-          class="flex size-full items-center justify-center"
-          style={`background-color: oklch(0.6 0.12 ${hue})`}
-          role={alt ? "img" : undefined}
-          aria-label={alt || undefined}
-          aria-hidden={alt ? undefined : "true"}>
-          {initial(name)}
-        </Avatar.Fallback>
+        class="flex size-full items-center justify-center"
+        style={`background-color: oklch(0.6 0.12 ${hue})`}
+        role={alt ? "img" : undefined}
+        aria-label={alt || undefined}
+        aria-hidden={alt ? undefined : "true"}>
+        {initial(name)}
       </span>
-    {/snippet}
-  </Avatar.Root>
+    {/if}
+  </span>
 {/snippet}
 
 <!-- the link is for the pointer only: the name beside the face, or the row it is in, is the
