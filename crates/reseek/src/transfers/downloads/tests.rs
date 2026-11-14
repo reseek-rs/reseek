@@ -1243,7 +1243,8 @@ impl Peers {
         })],
         ServerRequest::WatchUser(asked) => vec![ServerResponse::WatchUser(WatchUserResponse {
           username: asked.username.clone(),
-          user: Some(WatchedUser {
+          // a name with no listener is no user at all
+          user: ports.contains_key(&asked.username).then(|| WatchedUser {
             status: presence(&asked.username),
             stats: UserStats::default(),
             country_code: None,
@@ -1371,6 +1372,22 @@ impl Peer {
         return message;
       }
     }
+  }
+
+  /// Reads the daemon's question of the place of `filename`, and answers `place`.
+  async fn place_asked(&mut self, filename: &str, place: u32) {
+    use soulseek_proto::peer::PlaceInQueueResponse;
+    match self.next_within(std::time::Duration::from_secs(10)).await {
+      Some(soulseek_proto::PeerMessage::PlaceInQueueRequest(asked)) => {
+        assert_eq!(asked.filename.as_str(), filename);
+      }
+      other => panic!("not a question of the place of {filename}: {other:?}"),
+    }
+    let answer = soulseek_proto::PeerMessage::PlaceInQueueResponse(PlaceInQueueResponse {
+      filename: filename.into(),
+      place,
+    });
+    self.send(answer).await;
   }
 
   /// Reads the daemon's request for `filename`.
@@ -1518,11 +1535,11 @@ async fn a_login_has_the_downloads_waiting_for_an_offline_user_try_them_again() 
   let downloads = &app.state.downloads;
   let mut away = downloads.away.follow("bob");
   downloads.away.heard("bob", true);
-  assert!(*away.borrow_and_update());
+  assert_eq!(*away.borrow_and_update(), super::away::Heard::Offline);
   server.login(&app).await;
   let back = tokio::time::timeout(
     std::time::Duration::from_secs(5),
-    away.wait_for(|offline| !offline),
+    away.wait_for(|heard| *heard == super::away::Heard::Nothing),
   )
   .await;
   assert!(back.is_ok(), "the login left bob offline");
@@ -1582,6 +1599,179 @@ async fn a_file_cut_off_by_its_user_logging_off_waits_for_them_without_counting(
   assert_eq!(waiting.attempts, 1, "the try cut off does not count");
 }
 
+/// With two download slots and five idle users, each offering a file as it is asked for: two
+/// are asked and move, and the other three wait here, not asked, until a slot is free. A file
+/// asked for holds its slot until it is offered, not merely once its request is written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_users_get_no_more_requests_than_there_are_slots() {
+  use soulseek_proto::peer::TransferResponse;
+
+  let config = format!("[transfers.download]\nslots = 2\n{TRUSTED}");
+  let app = crate::testing::soulseek::app(&config).await;
+  let names = ["u1", "u2", "u3", "u4", "u5"];
+  let peers = Peers::start(&app, &names).await;
+  let mut ids = Vec::new();
+  let mut sides = Vec::new();
+  for name in names {
+    ids.push(enqueued(&app, name, &format!("@@{name}\\1.flac")).await);
+    sides.push(peers.connected(name).await);
+  }
+  let idle = std::time::Duration::from_secs(1);
+  let mut asked = Vec::new();
+  for (n, side) in sides.iter_mut().enumerate() {
+    if let Some(soulseek_proto::PeerMessage::QueueDownload(_)) = side.next_within(idle).await {
+      asked.push(n);
+    }
+  }
+  assert_eq!(asked, [0, 1], "two asked in the two slots");
+  for n in [0, 1] {
+    let file = format!("@@{}\\1.flac", names[n]);
+    let token = n as u32 + 1;
+    assert!(matches!(
+      sides[n].offer(&file, token).await,
+      TransferResponse::Allowed { .. }
+    ));
+    read_until(&app, ids[n], |r| r.state == State::Initializing).await;
+  }
+  for side in &mut sides[2..] {
+    let early = side.next_within(idle).await;
+    assert!(early.is_none(), "asked while two move: {early:?}");
+  }
+  app
+    .state
+    .downloads
+    .cancel(names[0], ids[0], false)
+    .await
+    .unwrap();
+  sides[2].asked_for("@@u3\\1.flac").await;
+  let next = sides[3].next_within(idle).await;
+  assert!(next.is_none(), "one asked per free slot: {next:?}");
+}
+
+/// A user the server says does not exist ends their downloads, failed with a reason that says
+/// so, and is said once, not every time their status would be asked.
+#[tokio::test]
+async fn the_downloads_of_a_user_who_does_not_exist_end_failed() {
+  let config =
+    format!("[transfers.download.retry]\ndelay = \"1s\"\nmax_delay = \"30s\"\n{TRUSTED}");
+  let app = crate::testing::soulseek::app(&config).await;
+  let (logs, _capturing) = crate::testing::captured_logs();
+  let _peers = Peers::start(&app, &["alice"]).await;
+  let mut ids = Vec::new();
+  for track in ["1", "2"] {
+    let mut held = Record::download("ghost", &format!("@@g\\{track}.flac"), 10);
+    held.paused = true;
+    insert(&app, &held).await;
+    ids.push(held.id);
+  }
+  let resume = json!({ "ids": ids, "action": "resume" });
+  app
+    .call("POST", "/api/v0/transfers/downloads/bulk", Some(resume))
+    .await;
+  for id in &ids {
+    let ended = read_until(&app, *id, Record::is_completed).await;
+    assert_eq!(ended.state, State::Completed(TransferOutcome::Errored));
+    assert_eq!(ended.exception.as_deref(), Some("The user doesn't exist"));
+  }
+  tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+  let said: Vec<_> = logs
+    .snapshot()
+    .into_iter()
+    .filter(|line| line.message.contains("ghost") && line.message.contains("not"))
+    .filter(|line| line.message.contains("exist") || line.message.contains("watched"))
+    .collect();
+  assert_eq!(said.len(), 1, "{said:?}");
+  assert_eq!(said[0].level, api_types::logs::LogLevel::Information);
+}
+
+/// A file sent unasked holds a slot while it moves, as any download does: with one slot,
+/// nothing else is asked for meanwhile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_sent_unasked_takes_a_slot_while_it_moves() {
+  use soulseek_proto::init::PeerInit;
+  use soulseek_proto::peer::{TransferRequest, TransferResponse};
+  use soulseek_proto::{InitMessage, PeerConnectionType};
+  use tokio::io::AsyncWriteExt;
+
+  let config = format!(
+    "[transfers.download]\nslots = 1\n[transfers.download.received]\nfrom = [\"default\"]\n{TRUSTED}"
+  );
+  let app = crate::testing::soulseek::app(&config).await;
+  let peers = Peers::start(&app, &["alice", "bob"]).await;
+  // alice reaches us and offers a file we did not ask for
+  let port = app.state.config.current().values.soulseek.listen_port;
+  let mut alice = Peer {
+    stream: tokio::net::TcpStream::connect(("127.0.0.1", port))
+      .await
+      .unwrap(),
+    buffer: Vec::new(),
+  };
+  let init = InitMessage::PeerInit(PeerInit {
+    username: "alice".into(),
+    connection_type: PeerConnectionType::Peer,
+    token: 0,
+  });
+  alice.stream.write_all(&init.encode()).await.unwrap();
+  let gift = "@@a\\gift.flac";
+  alice
+    .send(soulseek_proto::PeerMessage::TransferRequest(
+      TransferRequest {
+        direction: soulseek_proto::TransferDirection::Upload,
+        token: 9,
+        filename: gift.into(),
+        file_size: Some(10),
+      },
+    ))
+    .await;
+  assert!(matches!(
+    alice.next().await,
+    soulseek_proto::PeerMessage::TransferResponse(TransferResponse::Allowed { token: 9, .. })
+  ));
+  let _moving = sending(&app, "alice", 9, 4).await;
+
+  let bobs = "@@b\\1.flac";
+  enqueued(&app, "bob", bobs).await;
+  let mut bob = peers.connected("bob").await;
+  let early = bob.next_within(std::time::Duration::from_secs(1)).await;
+  assert!(early.is_none(), "asked while the gift moves: {early:?}");
+}
+
+/// Downloads of one offline user waiting for them share one status ask per period.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_downloads_waiting_for_one_user_ask_their_status_once_a_period() {
+  let config =
+    format!("[transfers.download.retry]\ndelay = \"2s\"\nmax_delay = \"30s\"\n{TRUSTED}");
+  let app = crate::testing::soulseek::app(&config).await;
+  let mut peers = Peers::start(&app, &["bob"]).await;
+  reseek_shares::lock(&peers.online).remove("bob");
+  let mut ids = Vec::new();
+  for track in ["1", "2", "3", "4"] {
+    let mut held = Record::download("bob", &format!("@@b\\{track}.flac"), 10);
+    held.paused = true;
+    insert(&app, &held).await;
+    ids.push(held.id);
+  }
+  let resume = json!({ "ids": ids, "action": "resume" });
+  app
+    .call("POST", "/api/v0/transfers/downloads/bulk", Some(resume))
+    .await;
+  for id in &ids {
+    read_until(&app, *id, Record::waits_for_user).await;
+  }
+  // each waits its first period, under a second of jitter apart
+  let mut asked = 0;
+  let until = tokio::time::Instant::now() + std::time::Duration::from_millis(3500);
+  loop {
+    let left = until.saturating_duration_since(tokio::time::Instant::now());
+    let status = |request: &soulseek_proto::ServerRequest| matches!(request, soulseek_proto::ServerRequest::GetStatus(asked) if asked.username == "bob");
+    if left.is_zero() || !peers.server.receives(left, status).await {
+      break;
+    }
+    asked += 1;
+  }
+  assert!(asked <= 2, "{asked} status asks for one user");
+}
+
 /// With one download slot: files waiting in their users' queues hold none, so alice's and bob's
 /// are both asked; an offer is accepted though the slot is taken, so both move; and a file
 /// enqueued meanwhile is not asked until neither moves.
@@ -1600,6 +1790,8 @@ async fn an_offer_is_taken_past_the_slots_and_nothing_new_is_asked_until_one_is_
   let first = enqueued(&app, "alice", alices).await;
   let mut alice = peers.connected("alice").await;
   alice.asked_for(alices).await;
+  // alice has it queued, so its ask is over and the slot free to ask in
+  alice.place_asked(alices, 3).await;
   let second = enqueued(&app, "bob", bobs).await;
   let mut bob = peers.connected("bob").await;
   bob.asked_for(bobs).await;

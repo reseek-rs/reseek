@@ -115,9 +115,9 @@ pub struct Limit {
 #[serde(default)]
 pub struct Download {
   /// Number of downloads moving bytes at once. While that many move, no new file is asked for;
-  /// below it, one waiting file is asked for per free slot, in queue order. A file waiting in a
-  /// user's queue takes none, and its offer is always accepted, so more may move for a while. No
-  /// limit when not set.
+  /// below it, one waiting file is asked for per free slot, in queue order, and holds it until
+  /// its user offers it or has it queued. A file waiting in a user's queue takes none, and its
+  /// offer is always accepted, so more may move for a while. No limit when not set.
   #[cascade(env = "RESEEK_DOWNLOAD_SLOTS", cli = "--download-slots")]
   pub slots: Option<u32>,
   /// Total download speed limit in KiB/s. No limit when not set.

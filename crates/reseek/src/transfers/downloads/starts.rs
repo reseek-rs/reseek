@@ -10,8 +10,8 @@
 //! offer is always accepted, so a peer never loses a file's place in its queue, and the count
 //! can go over the limit for a while. While it is at or over, nothing new is asked of a peer:
 //! the downloads wait here in order. Below it, one is asked per free slot, each counted with the
-//! moving ones until its peer has queued it, offered it or the try ended; a file waiting in a
-//! peer's queue holds nothing.
+//! moving ones until its peer offered it, said its place in its queue, let a short while pass
+//! without either, or the try ended; a file waiting in a peer's queue holds nothing.
 //!
 //! A user's downloads are asked of them in the order they were granted: the client takes a
 //! download's place among its user's downloads when it is first polled, so each waits for the
@@ -74,7 +74,7 @@ pub(super) struct Grant {
 }
 
 /// A granted download asking its peer, counted with the moving downloads against the slots
-/// until its peer has queued it, offered it or the try ended.
+/// until its peer offered it or is known to have it queued, or the try ended.
 pub(super) struct Pending {
   starts: Starts,
 }

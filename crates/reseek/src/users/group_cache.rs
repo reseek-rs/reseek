@@ -580,6 +580,15 @@ impl Directory {
     }
   }
 
+  /// Watches `username` as [`Directory::watch`] does, and says how it went, for a caller that
+  /// handles a failure itself.
+  pub async fn try_watch(&self, client: &Client, username: &str) -> Result<(), ClientError> {
+    if self.is_watched(username) {
+      return Ok(());
+    }
+    self.watch_once(client, username, false).await
+  }
+
   /// Watches `username` as [`Directory::watch`] does, asking the server again even when it
   /// watches them already, and says how it went.
   pub async fn watch_again(&self, client: &Client, username: &str) -> Result<(), ClientError> {

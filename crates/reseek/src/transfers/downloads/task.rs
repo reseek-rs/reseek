@@ -22,6 +22,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use uuid::Uuid;
 
 use super::attempt::{Attempted, Failure};
+use super::away::Heard;
 use super::destination::incomplete_path;
 use super::starts::{Ask, Grant, Pending, Turn};
 use super::{Downloads, InFlight};
@@ -32,16 +33,29 @@ use crate::transfers::state::State;
 use crate::transfers::store::Saved;
 use crate::transfers::{Record, removal, store};
 
+/// Why a download whose user the server says does not exist ended.
+const USER_MISSING: &str = "The user doesn't exist";
+
+/// How a wait for a user ended.
+enum Waited {
+  /// they are no longer known to be offline
+  Back,
+  /// the server says they do not exist
+  Missing,
+  /// the download was canceled meanwhile
+  Canceled,
+}
+
 /// How long a download may hold its turn among the files of its request before its peer has
 /// it queued.
 const HARD_LIMIT: Duration = Duration::from_secs(180);
 
-/// What a try that asks its peer holds until the peer has it queued, or offered it, or the
-/// try ends: the free slot it asks in, and for the first try its turn among the files of its
-/// request, which it may hold for [`HARD_LIMIT`] at most.
+/// What a try that asks its peer holds: the free slot it asks in, until the peer offers the
+/// file or is known to have it queued, and for the first try its turn among the files of its
+/// request, until the peer has it queued, for [`HARD_LIMIT`] at most.
 pub(super) struct Gate {
-  _pending: Pending,
-  _turn: Option<Turn>,
+  pub pending: Option<Pending>,
+  pub turn: Option<Turn>,
   /// when the download is stopped if it still holds its request's turn
   pub deadline: Option<Instant>,
 }
@@ -51,8 +65,8 @@ impl Gate {
   fn of(grant: Grant) -> (Self, Ask) {
     let deadline = grant.turn.is_some().then(|| Instant::now() + HARD_LIMIT);
     let gate = Self {
-      _pending: grant.pending,
-      _turn: grant.turn,
+      pending: Some(grant.pending),
+      turn: grant.turn,
       deadline,
     };
     (gate, grant.ask)
@@ -237,13 +251,20 @@ impl Downloads {
         self.save(&record, false).await;
       }
       // a user known to be offline is not asked; an offer they made unasked is taken
-      if !offered && *away.borrow_and_update() {
+      let mut heard = *away.borrow_and_update();
+      if !offered && heard == Heard::Offline {
         // the first grant is given up, so its slot and turn go to others while the user is
         // away, and the hard limit does not run meanwhile
         first = None;
-        if !self.wait_for_user(&mut record, &mut away, cancel).await {
-          return self.canceled(id, Some(incomplete)).await;
-        }
+        heard = match self.wait_for_user(&mut record, &mut away, cancel).await {
+          Waited::Back => Heard::Nothing,
+          Waited::Missing => Heard::Missing,
+          Waited::Canceled => return self.canceled(id, Some(incomplete)).await,
+        };
+      }
+      if heard == Heard::Missing {
+        let missing = Failure::terminal(USER_MISSING.to_string());
+        return Ended::failed(Some(record), missing, Some(incomplete));
       }
       let grant = match first.take() {
         Some(grant) => Some(grant),
@@ -271,8 +292,13 @@ impl Downloads {
       match attempted {
         Attempted::Succeeded(writing) => return Ended::Succeeded(record, incomplete, writing),
         Attempted::Abandoned => return Ended::Abandoned,
-        // the wait for the user is written at the top of the loop
-        Attempted::UserOffline => {}
+        // waiting here again; the wait for the user is written at the top of the loop
+        Attempted::UserOffline => {
+          record
+            .enter(State::WAITING)
+            .expect("a download being tried may wait here again");
+          self.save(&record, true).await;
+        }
         Attempted::Failed(failure) => {
           warn!(
             attempt,
@@ -311,26 +337,27 @@ impl Downloads {
   }
 
   /// Writes the download `record` as waiting for its user, who is offline, and waits until
-  /// `away` no longer says they are, then writes it as waiting for its turn; false when `cancel`
-  /// came first. A status the server pushes ends the wait, and so does one asked for as often as
-  /// the download would retry, since a watch lost, refused or never answered pushes nothing.
+  /// `away` no longer says they are, then writes it as waiting for its turn. A status the
+  /// server pushes ends the wait, and so does one asked for as often as the download would
+  /// retry, since a watch lost, refused or never answered pushes nothing.
   async fn wait_for_user(
     &self,
     record: &mut Record,
-    away: &mut watch::Receiver<bool>,
+    away: &mut watch::Receiver<Heard>,
     cancel: &CancellationToken,
-  ) -> bool {
+  ) -> Waited {
     if !record.waits_for_user() {
+      let entered = record.state != State::WAITING;
       record
         .enter(State::WAITING)
         .expect("a download not completed may wait here");
       record.exception = Some(USER_OFFLINE.to_string());
-      self.save(record, true).await;
+      self.save(record, entered).await;
     }
     self.watch_user(&record.username);
     debug!("download waits for its user to come back online");
     let mut checks = 1;
-    loop {
+    let heard = loop {
       checks += 1;
       let retry = self
         .config
@@ -341,41 +368,74 @@ impl Downloads {
         .retry
         .clone();
       let every = retry_wait(checks, retry.delay, retry.max_delay);
-      let back = tokio::select! {
-        // the user's entry is kept while this follows it, so the wait ends with them back
-        back = away.wait_for(|offline| !offline) => back.is_ok(),
-        () = cancel.cancelled() => return false,
-        () = tokio::time::sleep(every) => false,
+      let checked = async {
+        tokio::time::sleep(every).await;
+        // the answer is kept for every download of theirs, which it ends the wait of
+        self.check_user(&record.username, every).await;
       };
-      if back {
-        break;
+      tokio::select! {
+        // the user's entry is kept while this follows it, so the wait ends with word of them
+        heard = away.wait_for(|heard| *heard != Heard::Offline) => {
+          if let Ok(heard) = heard {
+            break *heard;
+          }
+        }
+        () = cancel.cancelled() => return Waited::Canceled,
+        () = checked => {}
       }
-      // one ask per user and wait, whichever of their downloads makes it; its answer, kept,
-      // ends the wait of every download of theirs
-      if self.away.ask_due(&record.username, every) {
-        self.watch_user(&record.username);
-        self.status_offline(&record.username).await;
-      }
+    };
+    if heard == Heard::Missing {
+      return Waited::Missing;
     }
     debug!("the user of a waiting download is back; trying it again");
     record
       .enter(State::WAITING)
       .expect("a download waiting for its user may wait here");
     self.save(record, false).await;
-    true
+    Waited::Back
+  }
+
+  /// Whether `username` is offline: asked of the server unless one of their downloads asked
+  /// within `fresh`, whose answer stands then, and watched again; none when it cannot be told.
+  /// Their downloads asking at once ask once.
+  pub(super) async fn check_user(&self, username: &str, fresh: Duration) -> Option<bool> {
+    let mut asked = self.away.ask_turn(username).await?;
+    if asked.is_some_and(|at| at.elapsed() < fresh) {
+      return Some(self.away.now(username) == Heard::Offline);
+    }
+    *asked = Some(Instant::now());
+    self.watch_user(username);
+    self.status_offline(username).await
   }
 
   /// Asks the server to tell us of `username`'s status, so their downloads hear when they go
-  /// offline or come back; once a session, on a task of its own, so no try waits for it.
-  fn watch_user(&self, username: &str) {
+  /// offline or come back; once a session, on a task of its own, so no try waits for it. A
+  /// user the server says does not exist ends their downloads, said once.
+  pub(super) fn watch_user(&self, username: &str) {
     let client = self.network.client();
     if !client.state().is_logged_in() || self.users.is_watched(username) {
       return;
     }
-    let (users, client, username) = (self.users.clone(), client.clone(), username.to_string());
-    self
-      .tasks
-      .spawn(async move { users.watch(&client, &username).await }.in_current_span());
+    let this = self.this();
+    let (client, username) = (client.clone(), username.to_string());
+    self.tasks.spawn(
+      async move {
+        match this.users.try_watch(&client, &username).await {
+          Ok(()) => {}
+          Err(soulseek_client::ClientError::UserNotFound(_)) => {
+            if this.away.missing(&username) {
+              info!(
+                username,
+                "a user downloads wait on does not exist; they end"
+              );
+            }
+          }
+          // asked again at the next check
+          Err(e) => debug!(username, error = %e, "user of downloads not watched"),
+        }
+      }
+      .in_current_span(),
+    );
   }
 
   /// The end of a download canceled while it was not trying: left for the stop when the

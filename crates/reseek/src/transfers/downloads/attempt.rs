@@ -21,6 +21,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
 
+use super::away::Heard;
 use super::destination::incomplete_path;
 use super::starts::{Ask, Slot};
 use super::task::Gate;
@@ -38,6 +39,12 @@ const OVERFLOWED_SIZE: u64 = i32::MAX as u64;
 
 /// Why a download that held its turn too long failed.
 const HARD_LIMITED: &str = "Download failed to enqueue remotely after hard time limit of 180 secs";
+
+/// How long a file the peer took into its queue holds the slot it asked in when the peer
+/// neither offers it nor says its place: Nicotine+ offers a file to a peer it has a free slot
+/// for as it takes the request, and looks at its queue again every 10 s, so an offer is not
+/// waited for past that and a margin.
+const SETTLED_AFTER: Duration = Duration::from_secs(15);
 
 /// Progress not written, which a failing database would repeat four times a second.
 static PROGRESS_UNWRITTEN: LogLimiter = LogLimiter::new();
@@ -263,7 +270,7 @@ impl Downloads {
     offered: bool,
     pushed: bool,
     ask: Option<Ask>,
-    away: &mut watch::Receiver<bool>,
+    away: &mut watch::Receiver<Heard>,
   ) -> Attempted {
     let options = self.config.current().values.clone();
     let download = &options.transfers.download;
@@ -366,18 +373,34 @@ impl Downloads {
     let mut ended: Option<Snapshot> = None;
     // the slot it holds once its offer is accepted, to the end of the try
     let mut moving: Option<Slot> = None;
+    // the question of its place, which ends its ask once the peer has it queued
+    let mut settling: Option<std::pin::Pin<Box<dyn Future<Output = Option<u32>> + Send>>> = None;
     // only word that comes during the try stops it
     away.borrow_and_update();
     let result = if let Poll::Ready(result) = first {
       result
     } else {
       loop {
+        let queued = matches!(record.state, State::QueuedRemotely { .. });
+        if queued && settling.is_none() && gate.as_ref().is_some_and(|g| g.pending.is_some()) {
+          settling = Some(self.settling(record, &stop));
+        }
         tokio::select! {
           biased;
           Some(snapshot) = states.recv() => {
             self.state_changed(record, snapshot, gate, &mut moving, &mut ended).await;
           }
           result = &mut running => break result,
+          place = async { settling.as_mut().expect("polled only while set").await },
+            if settling.is_some() && gate.as_ref().is_some_and(|g| g.pending.is_some()) =>
+          {
+            if let Some(gate) = gate {
+              gate.pending = None;
+            }
+            if let Some(place) = place {
+              self.place_answered(record, place).await;
+            }
+          }
           // a user who goes offline before their file moves is waited for; one who offered a
           // file unasked is online
           Ok(()) = away.changed(), if !went_offline && !offered => {
@@ -385,13 +408,13 @@ impl Downloads {
               record.state,
               State::QueuedLocally { .. } | State::Requested | State::QueuedRemotely { .. }
             );
-            if *away.borrow_and_update() && asking {
+            if *away.borrow_and_update() != Heard::Nothing && asking {
               debug!(state = %record.state, "the user went offline; the download stops asking");
               went_offline = true;
               stop.cancel();
             }
           }
-          () = &mut deadline, if gate.as_ref().is_some_and(|g| g.deadline.is_some()) => {
+          () = &mut deadline, if gate.as_ref().is_some_and(|g| g.turn.is_some()) => {
             let history = self.history(record.id).await;
             warn!(
               state = %record.state,
@@ -466,11 +489,15 @@ impl Downloads {
         };
         // a try canceled meanwhile ends as the cancel asked
         let offline = (went_offline && !cancel.is_cancelled())
-          || (failed.retryable && (found_offline || *away.borrow()));
+          || (failed.retryable && (found_offline || *away.borrow() != Heard::Nothing));
         // a file moving when its user logs off fails before word of it comes, so the server
         // is asked
         let offline = offline
-          || (failed.retryable && self.status_offline(&record.username).await == Some(true));
+          || (failed.retryable
+            && self
+              .check_user(&record.username, download.retry.delay)
+              .await
+              == Some(true));
         if offline {
           Attempted::UserOffline
         } else {
@@ -480,9 +507,48 @@ impl Downloads {
     }
   }
 
+  /// The settling of the ask of `record`, which its peer has taken into its queue: its place
+  /// in that queue, asked of the peer, or none once [`SETTLED_AFTER`] passed without an
+  /// answer. Stopped with `stop`.
+  fn settling(
+    &self,
+    record: &Record,
+    stop: &CancellationToken,
+  ) -> std::pin::Pin<Box<dyn Future<Output = Option<u32>> + Send>> {
+    let client = self.network.client().clone();
+    let (username, filename) = (record.username.clone(), record.filename.clone());
+    let asked = stop.child_token();
+    Box::pin(async move {
+      // the question stops with the try or the window, whichever ends first
+      let _stops = asked.clone().drop_guard();
+      let place = client.get_download_place_in_queue(&username, filename, &asked);
+      match tokio::time::timeout(SETTLED_AFTER, place).await {
+        Ok(Ok(place)) => Some(place),
+        Ok(Err(e)) => {
+          debug!(error = %e, "place in the peer's queue not answered");
+          tokio::time::sleep(SETTLED_AFTER).await;
+          None
+        }
+        Err(_) => None,
+      }
+    })
+  }
+
+  /// Keeps `place`, the place in its peer's queue the peer answered for `record`.
+  async fn place_answered(&self, record: &mut Record, place: u32) {
+    if !matches!(record.state, State::QueuedRemotely { .. }) {
+      return;
+    }
+    record.state = State::QueuedRemotely {
+      place_in_queue: Some(place),
+    };
+    debug!(place, "place in the peer's queue");
+    self.save(record, false).await;
+  }
+
   /// Takes a state the client reported into `record` and writes it; a final state is kept in
   /// `ended` for the task to write with the outcome. A state past the peer's queue ends the
-  /// download's ask in `gate`, and an accepted offer takes a slot into `moving`.
+  /// download's turn in `gate`, and an accepted offer its ask and takes a slot into `moving`.
   async fn state_changed(
     &self,
     record: &mut Record,
@@ -496,15 +562,21 @@ impl Downloads {
       state,
       TransferStates::QueuedLocally | TransferStates::Requested
     );
-    if !asking {
-      gate.take();
-    }
     let accepted = matches!(
       state,
       TransferStates::Initializing | TransferStates::InProgress
     );
     if accepted && moving.is_none() {
       *moving = Some(self.starts.moving());
+    }
+    // after the slot is taken, so the ask it ends frees no slot for another
+    if let Some(gate) = gate {
+      if !asking {
+        gate.turn = None;
+      }
+      if accepted || state.is_completed() {
+        gate.pending = None;
+      }
     }
     if state.is_completed() {
       *ended = Some(snapshot);

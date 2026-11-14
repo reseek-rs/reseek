@@ -29,10 +29,17 @@ use support::{
   daemon_listening, download_when, enqueue, events, free_port, logged_in, signed_in, until,
 };
 
-/// Reads the daemon's request for `filename`.
+/// Reads the daemon's request for `filename`, past the questions of a place in queue it asks
+/// after each request.
 async fn queued(side: &mut PeerSide, filename: &str) {
+  let request = loop {
+    match side.read_peer().await {
+      PeerMessage::PlaceInQueueRequest(_) => {}
+      other => break other,
+    }
+  };
   assert_eq!(
-    side.read_peer().await,
+    request,
     PeerMessage::QueueDownload(QueueDownload {
       filename: filename.into(),
     })
@@ -236,6 +243,25 @@ async fn refusals_failures_and_sizes_end_each_in_their_outcome() {
     t.state == TransferStates::QueuedRemotely
   })
   .await;
+  let place = |place| {
+    PeerMessage::PlaceInQueueResponse(PlaceInQueueResponse {
+      filename: queue.into(),
+      place,
+    })
+    .encode()
+  };
+  // the daemon asks once the file is queued, to know it waits here
+  assert_eq!(
+    side.read_peer().await,
+    PeerMessage::PlaceInQueueRequest(PlaceInQueueRequest {
+      filename: queue.into()
+    })
+  );
+  side.send(&place(5)).await;
+  download_when(&api, sending.name(), id, "placed", |t| {
+    t.place_in_queue == Some(5)
+  })
+  .await;
   let peer = sending.name().to_string();
   let api_asks = {
     let api = api.clone();
@@ -247,13 +273,6 @@ async fn refusals_failures_and_sizes_end_each_in_their_outcome() {
       filename: queue.into()
     })
   );
-  let place = |place| {
-    PeerMessage::PlaceInQueueResponse(PlaceInQueueResponse {
-      filename: queue.into(),
-      place,
-    })
-    .encode()
-  };
   side.send(&place(3)).await;
   assert_eq!(api_asks.await.unwrap().unwrap(), 3);
   assert_eq!(
