@@ -46,6 +46,7 @@ describe("the transfers table", () => {
     session.principal = null;
     if (component) unmount(component);
     if (hostPane) unmount(hostPane);
+    component = hostPane = null;
     inspectorPrefs.open = false;
     live.stop();
     downloads.clear();
@@ -55,12 +56,16 @@ describe("the transfers table", () => {
     document.body.innerHTML = "";
   });
 
-  const start = async (props: ComponentProps<typeof TransfersPage> = { direction: "download" }) => {
+  /** mounts the page, and the inspector's pane unless `pane` is false */
+  const start = async (
+    props: ComponentProps<typeof TransfersPage> = { direction: "download" },
+    pane = true
+  ) => {
     const net = connected((url) =>
       url.pathname.endsWith("/api/v0/transfers/downloads") ? grouped(listing) : undefined
     );
     component = mount(TransfersPage, { target: document.body, props });
-    hostPane = mount(InspectorPane, { target: document.body });
+    if (pane) hostPane = mount(InspectorPane, { target: document.body });
     await flushFaked();
     await flushFaked();
     return net;
@@ -184,33 +189,35 @@ describe("the transfers table", () => {
     // holding the offset within shorter content, so boxes get content taller than any offset here
     Object.defineProperty(Element.prototype, "scrollHeight", { configurable: true, value: 1e5 });
     const name = (n: number) => `x\\${n + 100}.flac`;
-    listing = Array.from({ length: 40 }, (_, n) => transfer({ filename: name(n * 2) }));
-    await start();
+    // the page without the inspector's pane, which this leaves alone, and a few rows past the top
+    listing = Array.from({ length: 12 }, (_, n) => transfer({ filename: name(n * 2) }));
+    const again = async () => {
+      unmount(component!);
+      component = null;
+      await start(undefined, false);
+    };
+    await start(undefined, false);
     // a scroll the table did not make itself, which ends any return to where an earlier test
     // left it
-    grid().scrollTop = 36 * 20 + 10;
+    grid().scrollTop = 36 * 6 + 10;
     grid().dispatchEvent(new Event("scroll"));
     await flushFaked();
     const left = grid().scrollTop;
-    unmount(component!);
-    unmount(hostPane!);
 
-    // five rows that sort before the one at the top came while the screen was away
+    // three rows that sort before the one at the top came while the screen was away
     listing = [
-      ...Array.from({ length: 5 }, (_, n) => transfer({ filename: name(n * 2 + 1) })),
+      ...Array.from({ length: 3 }, (_, n) => transfer({ filename: name(n * 2 + 1) })),
       ...listing
     ];
-    await start();
-    expect(grid().scrollTop - left).toBe(5 * 36);
+    await again();
+    expect(grid().scrollTop - left).toBe(3 * 36);
 
     // left at the top, it opens at the top again, over the rows that came meanwhile
     grid().scrollTop = 0;
     grid().dispatchEvent(new Event("scroll"));
     await flushFaked();
-    unmount(component!);
-    unmount(hostPane!);
     listing = [transfer({ filename: name(-1) }), ...listing];
-    await start();
+    await again();
     expect(grid().scrollTop).toBe(0);
   });
 
