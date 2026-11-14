@@ -2,6 +2,8 @@
 //! names in it. Anything that does not read is answered 400 in the body every error has, naming
 //! the field that is wrong, before the handler runs.
 
+use std::collections::BTreeSet;
+
 use axum::body::Bytes;
 use axum::extract::rejection::BytesRejection;
 use axum::extract::{FromRequest, FromRequestParts, OptionalFromRequest, RawPathParams, Request};
@@ -10,7 +12,10 @@ use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use serde_json::error::Category;
+use serde_path_to_error::Segment;
+use utoipa::ToSchema;
 
 use super::error::ApiError;
 
@@ -18,7 +23,7 @@ use super::error::ApiError;
 /// `Option<Json<T>>` takes an empty body or `null` as none.
 pub struct Json<T>(pub T);
 
-impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for Json<T> {
+impl<S: Send + Sync, T: DeserializeOwned + ToSchema> FromRequest<S> for Json<T> {
   type Rejection = ApiError;
 
   async fn from_request(request: Request, state: &S) -> Result<Self, ApiError> {
@@ -27,7 +32,7 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for Json<T> {
   }
 }
 
-impl<S: Send + Sync, T: DeserializeOwned> OptionalFromRequest<S> for Json<T> {
+impl<S: Send + Sync, T: DeserializeOwned + ToSchema> OptionalFromRequest<S> for Json<T> {
   type Rejection = ApiError;
 
   async fn from_request(request: Request, state: &S) -> Result<Option<Self>, ApiError> {
@@ -35,7 +40,7 @@ impl<S: Send + Sync, T: DeserializeOwned> OptionalFromRequest<S> for Json<T> {
     if bytes.iter().all(u8::is_ascii_whitespace) {
       return Ok(None);
     }
-    read_json::<Option<T>>(&bytes).map(|value| value.map(Json))
+    read_documented::<Option<T>, T>(&bytes).map(|value| value.map(Json))
   }
 }
 
@@ -88,18 +93,27 @@ fn is_json(content_type: &str) -> bool {
 
 /// `bytes` read as the JSON of `T`, refused with what was wrong; anything after the JSON is
 /// refused too.
-pub(in crate::api) fn read_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ApiError> {
+pub(in crate::api) fn read_json<T: DeserializeOwned + ToSchema>(
+  bytes: &[u8],
+) -> Result<T, ApiError> {
+  read_documented::<T, T>(bytes)
+}
+
+/// [`read_json`] for a `T` whose fields are those `D` documents.
+fn read_documented<T: DeserializeOwned, D: ToSchema>(bytes: &[u8]) -> Result<T, ApiError> {
   let reader = &mut serde_json::Deserializer::from_slice(bytes);
-  let value = serde_path_to_error::deserialize(&mut *reader)
-    .map_err(|e| refused_body(&e.path().to_string(), e.inner()))?;
-  reader.end().map_err(|e| refused_body(".", &e))?;
+  let value = serde_path_to_error::deserialize(&mut *reader).map_err(|e| {
+    let logged = logged_path(e.path(), &field_names::<D>());
+    refused_body(&e.path().to_string(), &logged, e.inner())
+  })?;
+  reader.end().map_err(|e| refused_body(".", ".", &e))?;
   Ok(value)
 }
 
-/// The refusal of a body whose fault is at `at`. The log names the fault's kind, not serde's
-/// text, which can quote a password, and names `at` only for a value that does not fit: a body
-/// that is not JSON can fail inside a key the client made up.
-fn refused_body(at: &str, error: &serde_json::Error) -> ApiError {
+/// The refusal of a body whose fault is at `at`, which the log shows as `logged`. The log names
+/// the fault's kind, not serde's text, which can quote a password, and names the place only for
+/// a value that does not fit: a body that is not JSON can fail inside a key the client made up.
+fn refused_body(at: &str, logged: &str, error: &serde_json::Error) -> ApiError {
   let wrong = match error.classify() {
     Category::Syntax => "is not JSON",
     Category::Data => "does not fit what the route takes",
@@ -107,11 +121,73 @@ fn refused_body(at: &str, error: &serde_json::Error) -> ApiError {
     Category::Io => "was not read",
   };
   let subject = match error.classify() {
-    Category::Data if at != "." => at,
+    Category::Data if logged != "." => logged,
     _ => "the body",
   };
   ApiError::invalid("Invalid request body", described(at, error))
     .logged_with(format!("{subject} {wrong}"))
+}
+
+/// `path` with each key that is not one of `fields` written as `<key>`: a map's key, or one the
+/// route refuses, is text the client chose.
+fn logged_path(path: &serde_path_to_error::Path, fields: &BTreeSet<String>) -> String {
+  let mut logged = String::new();
+  for segment in path {
+    let name = match segment {
+      Segment::Seq { index } => {
+        logged.push_str(&format!("[{index}]"));
+        continue;
+      }
+      Segment::Map { key: name } | Segment::Enum { variant: name } if fields.contains(name) => {
+        name.as_str()
+      }
+      Segment::Map { .. } | Segment::Enum { .. } => "<key>",
+      Segment::Unknown => "?",
+    };
+    if !logged.is_empty() {
+      logged.push('.');
+    }
+    logged.push_str(name);
+  }
+  if logged.is_empty() {
+    ".".to_string()
+  } else {
+    logged
+  }
+}
+
+/// The names of the fields `T`'s documented schema has, its own and those of the types in it.
+fn field_names<T: ToSchema>() -> BTreeSet<String> {
+  let mut schemas = vec![(T::name().into_owned(), T::schema())];
+  T::schemas(&mut schemas);
+  let mut names = BTreeSet::new();
+  for (_, schema) in &schemas {
+    // one that does not serialize names no fields, so its keys are not shown
+    if let Ok(schema) = serde_json::to_value(schema) {
+      properties(&schema, &mut names);
+    }
+  }
+  names
+}
+
+/// Adds the property names of `schema`, and of the schemas inside it, to `names`.
+fn properties(schema: &Value, names: &mut BTreeSet<String>) {
+  let Value::Object(schema) = schema else {
+    return;
+  };
+  for (keyword, value) in schema {
+    match (keyword.as_str(), value) {
+      ("properties", Value::Object(fields)) => {
+        names.extend(fields.keys().cloned());
+        fields.values().for_each(|field| properties(field, names));
+      }
+      ("items" | "additionalProperties" | "not", inner) => properties(inner, names),
+      ("allOf" | "oneOf" | "anyOf" | "prefixItems", Value::Array(arms)) => {
+        arms.iter().for_each(|arm| properties(arm, names));
+      }
+      _ => {}
+    }
+  }
 }
 
 /// A query read as `T`. A parameter may be repeated for a list, and one with an empty value,
@@ -306,6 +382,27 @@ mod tests {
     let text = logged(error);
     assert!(text.contains("password does not fit"), "{text}");
     assert!(!text.contains("4815162342"), "{text}");
+  }
+
+  #[test]
+  fn a_refused_body_logs_no_key_the_client_made_up() {
+    // a key the route refuses by name
+    let error =
+      read_json::<api_types::options::OptionsPatch>(br#"{"set": {}, "hunter2": 1}"#).unwrap_err();
+    let text = logged(error);
+    assert!(text.contains("<key> does not fit"), "{text}");
+    assert!(!text.contains("hunter2"), "{text}");
+
+    /// a body with a map whose values have a type
+    #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+    #[allow(dead_code)]
+    struct Limits {
+      per_user: std::collections::BTreeMap<String, u32>,
+    }
+    let error = read_json::<Limits>(br#"{"per_user": {"hunter2": "x"}}"#).unwrap_err();
+    let text = logged(error);
+    assert!(text.contains("per_user.<key> does not fit"), "{text}");
+    assert!(!text.contains("hunter2"), "{text}");
   }
 
   #[test]
