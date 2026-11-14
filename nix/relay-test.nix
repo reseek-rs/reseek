@@ -121,42 +121,62 @@ pkgs.testers.runNixOSTest {
       networking.firewall.allowedTCPPorts = [ soulfindPort ];
     };
 
-    controller = {
-      imports = [
-        self.nixosModules.default
-        "${pkgs.path}/nixos/tests/common/acme/client"
-      ];
-      services.reseek = lib.recursiveUpdate (daemon users.controller) {
-        environmentFile = envFile "controller.env" {
-          RESEEK_SLSK_PASSWORD = secrets.controllerSoulseek;
-          RESEEK_PASSWORD = secrets.controllerAdmin;
-          RESEEK_API_KEY = secrets.controllerKey;
-        };
-        extraConfigFiles = [
-          ((pkgs.formats.toml { }).generate "relay-secrets.toml" {
-            web.authentication.api_keys.agents = {
-              key = secrets.agentKey;
-              role = "readwrite";
-            };
-            relay.agents.nas = {
-              instance_name = "nas";
-              secret = secrets.agentSecret;
-            };
-          })
+    controller =
+      { config, ... }:
+      {
+        imports = [
+          self.nixosModules.default
+          "${pkgs.path}/nixos/tests/common/acme/client"
         ];
-        settings.relay = {
-          enabled = true;
-          mode = "controller";
+        services.reseek = lib.recursiveUpdate (daemon users.controller) {
+          environmentFile = envFile "controller.env" {
+            RESEEK_SLSK_PASSWORD = secrets.controllerSoulseek;
+            RESEEK_PASSWORD = secrets.controllerAdmin;
+            RESEEK_API_KEY = secrets.controllerKey;
+          };
+          extraConfigFiles = [
+            ((pkgs.formats.toml { }).generate "relay-secrets.toml" {
+              web.authentication.api_keys.agents = {
+                key = secrets.agentKey;
+                role = "readwrite";
+              };
+              relay.agents.nas = {
+                instance_name = "nas";
+                secret = secrets.agentSecret;
+              };
+            })
+          ];
+          settings.relay = {
+            enabled = true;
+            mode = "controller";
+          };
+          reverseProxy = { inherit host; };
         };
-        reverseProxy = { inherit host; };
+        # http for the ACME challenge, https for the agent
+        networking.firewall.allowedTCPPorts = [
+          80
+          443
+        ];
+        networking.hosts."127.0.0.1" = [ host ];
+        # the first order waits for pebble, whose machine may boot later: lego 5.6 keeps the account
+        # of an order that could not reach the server, and every later order fails to look it up
+        systemd.services.acme-server-up =
+          let
+            order = "acme-order-renew-${host}.service";
+          in
+          {
+            requiredBy = [ order ];
+            before = [ order ];
+            wants = [ "network-online.target" ];
+            after = [ "network-online.target" ];
+            serviceConfig = {
+              Type = "oneshot";
+              RemainAfterExit = true;
+            };
+            path = [ pkgs.curl ];
+            script = "until curl -sSf ${config.security.acme.defaults.server} > /dev/null; do sleep 1; done";
+          };
       };
-      # http for the ACME challenge, https for the agent
-      networking.firewall.allowedTCPPorts = [
-        80
-        443
-      ];
-      networking.hosts."127.0.0.1" = [ host ];
-    };
 
     agent =
       { config, nodes, ... }:
