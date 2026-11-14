@@ -30,6 +30,7 @@ use crate::config::enums::RetryPartial;
 use crate::files::mode::to_unix_file_mode;
 use crate::files::{WriteGuard, create_file};
 use crate::network::options::request_style;
+use crate::network::peer_count;
 use crate::safety::Os;
 use crate::transfers::state::{self, State};
 use crate::transfers::{PROGRESS_EVERY, Record, STATES, store};
@@ -575,15 +576,17 @@ impl Downloads {
     })
   }
 
-  /// Keeps `place`, the place in its peer's queue the peer answered for `record`.
+  /// Keeps `place`, the place in its peer's queue the peer answered for `record`, unknown when
+  /// the peer sent -1.
   async fn place_answered(&self, record: &mut Record, place: u32) {
     if !matches!(record.state, State::QueuedRemotely { .. }) {
       return;
     }
+    let place = peer_count(place);
     record.state = State::QueuedRemotely {
-      place_in_queue: Some(place),
+      place_in_queue: place,
     };
-    debug!(place, "place in the peer's queue");
+    debug!(?place, "place in the peer's queue");
     self.save(record, false).await;
   }
 

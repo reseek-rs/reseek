@@ -2750,7 +2750,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Asks the peer for a queued download's place in its queue. */
+        /**
+         * Asks the peer for a queued download's place in its queue: null when the peer answers -1, as
+         *     some clients do for a place they don't know.
+         */
         get: operations["place_in_queue"];
         put?: never;
         post?: never;
@@ -7566,9 +7569,10 @@ export interface components {
             lockedFiles: components["schemas"]["File"][];
             /**
              * Format: int32
-             * @description how many uploads the peer has queued, as it reports it
+             * @description how many uploads the peer has queued, as it reports it; null when it sent -1, as some
+             *     clients do for a length they don't know
              */
-            queueLength: number;
+            queueLength?: number | null;
             /**
              * Format: int32
              * @description the search's token, as the peer echoed it
@@ -19110,7 +19114,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": number;
+                    "application/json": number | null;
                 };
             };
             400: {

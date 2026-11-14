@@ -7,7 +7,8 @@ import { flush } from "#lib/testing/flush.js";
 import { connected } from "#lib/testing/live.js";
 import { fakeNetwork } from "#lib/testing/network.js";
 
-import { fileKey, Transfers } from "./transfers.svelte";
+import { queuePosition } from "./actions";
+import { downloads, fileKey, Transfers } from "./transfers.svelte";
 import { unseen } from "./unseen.svelte";
 
 describe("the transfers store", () => {
@@ -30,6 +31,16 @@ describe("the transfers store", () => {
     await downloads.placeInQueue(t);
     expect(downloads.queueErrors.has(t.id)).toBe(false);
     expect(downloads.list.get(t.id)?.placeInQueue).toBe(4);
+  });
+
+  it("says when the peer doesn't know a download's place in its queue", async () => {
+    fakeNetwork(() => null);
+    const t = transfer({ placeInQueue: 3 });
+    downloads.list.upsert(t);
+    await queuePosition(t);
+    expect(downloads.list.get(t.id)?.placeInQueue).toBeNull();
+    expect(toasts.map((toast) => toast.text)).toEqual(["Queue position unknown"]);
+    downloads.clear();
   });
 
   it("keeps a transfer's end that a frame brought while a reload was reading", async () => {

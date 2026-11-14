@@ -239,7 +239,7 @@ impl TransferService for Downloads {
     .ok_or_else(|| super::not_found(username, id))
   }
 
-  async fn place_in_queue(&self, username: &str, id: Uuid) -> Result<u32, ApiError> {
+  async fn place_in_queue(&self, username: &str, id: Uuid) -> Result<Option<u32>, ApiError> {
     Downloads::place_in_queue(self, username, id).await
   }
 

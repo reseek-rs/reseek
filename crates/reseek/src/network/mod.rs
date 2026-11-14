@@ -36,6 +36,12 @@ use crate::state::StateOwner;
 use crate::telemetry::Telemetry;
 use crate::users::Directory;
 pub use changes::follow_changes;
+
+/// A count a peer reports of its own queue: a place in it or its length. Some clients send -1
+/// for one they don't know, which reads unsigned as past `i32::MAX`; that is None.
+pub fn peer_count(value: u32) -> Option<u32> {
+  i32::try_from(value).is_ok().then_some(value)
+}
 pub use events::{follow_shared_counts, observe_client, observe_transfers};
 use mapping::{NatPmp, PortMapper, Upnp};
 use reachability::Reachability;

@@ -615,7 +615,7 @@ mod tests {
       token: 7,
       has_free_upload_slot: true,
       upload_speed: 0,
-      queue_length: 0,
+      queue_length: Some(0),
       file_count: files as u32,
       files: (0..files).map(|_| file(false)).collect(),
       locked_file_count: locked as u32,

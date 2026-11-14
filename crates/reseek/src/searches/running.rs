@@ -23,6 +23,7 @@ use tracing::{debug, error, trace, warn};
 
 use super::{Searches, store, suspect};
 use crate::live::{Live, Topic};
+use crate::network::peer_count;
 use crate::users::Directory;
 
 /// How often the counts of a running search are written and pushed at most.
@@ -98,7 +99,7 @@ fn response(response: peer::SearchResponse, country: Option<String>) -> SearchRe
     token: response.token,
     has_free_upload_slot: response.has_free_upload_slot,
     upload_speed: response.upload_speed,
-    queue_length: response.queue_length,
+    queue_length: peer_count(response.queue_length),
     file_count: u32::try_from(files.len()).unwrap_or(u32::MAX),
     files,
     locked_file_count: u32::try_from(locked_files.len()).unwrap_or(u32::MAX),
@@ -504,6 +505,19 @@ mod tests {
     running.ended.send_replace(Some(limit));
     assert_eq!(searches.cancel(id).await.unwrap(), Canceled::Already);
     assert!(!running.cancel.is_cancelled());
+  }
+
+  #[test]
+  fn a_queue_length_of_minus_one_is_unknown() {
+    let length = |queue_length| {
+      let taken = peer::SearchResponse {
+        queue_length,
+        ..taken("alice")
+      };
+      response(taken, None).queue_length
+    };
+    assert_eq!(length(3), Some(3));
+    assert_eq!(length(u32::MAX), None);
   }
 
   /// A response from `username` with no files.

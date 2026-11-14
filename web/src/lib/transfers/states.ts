@@ -1,5 +1,4 @@
 import type { Schemas } from "#lib/api/client.js";
-import { SIGNED_MOST } from "#lib/files/attributes.js";
 import { formatCount } from "#lib/format.js";
 import { fold } from "#lib/text.js";
 
@@ -157,9 +156,8 @@ const withReason = (word: string, why: string | null) => {
   return `${word}: ${cut(why.replace(said, ""))}`;
 };
 
-/** A queued download's place, null when the peer gave none: 0, or a -1 read unsigned */
-export const placeOf = (t: Transfer): number | null =>
-  t.placeInQueue && t.placeInQueue <= SIGNED_MOST ? t.placeInQueue : null;
+/** A queued download's place, null when the peer gave none or a 0 */
+export const placeOf = (t: Transfer): number | null => t.placeInQueue || null;
 
 /** How a transfer's state reads in its chip, its color, and the full text for its tooltip */
 export const stateChip = (t: Transfer): { text: string; tone: Tone; title: string | null } => {

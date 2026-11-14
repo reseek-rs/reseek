@@ -288,10 +288,10 @@ async fn refusals_failures_and_sizes_end_each_in_their_outcome() {
     })
   );
   side.send(&place(3)).await;
-  assert_eq!(api_asks.await.unwrap().unwrap(), 3);
+  assert_eq!(api_asks.await.unwrap().unwrap(), Some(3));
   assert_eq!(
     api.place_in_queue(sending.name(), id).await.unwrap(),
-    3,
+    Some(3),
     "asked again at once, the last answer is given"
   );
   assert!(
@@ -301,6 +301,34 @@ async fn refusals_failures_and_sizes_end_each_in_their_outcome() {
   side.send(&place(2)).await;
   download_when(&api, sending.name(), id, "moved up", |t| {
     t.place_in_queue == Some(2)
+  })
+  .await;
+  // a -1 read unsigned is a place the peer doesn't know, asked or said unasked
+  let peer = sending.name().to_string();
+  let api_asks = {
+    let api = api.clone();
+    tokio::spawn(async move { api.place_in_queue(&peer, id).await })
+  };
+  assert_eq!(
+    side.read_peer().await,
+    PeerMessage::PlaceInQueueRequest(PlaceInQueueRequest {
+      filename: queue.into()
+    })
+  );
+  side.send(&place(u32::MAX)).await;
+  assert_eq!(api_asks.await.unwrap().unwrap(), None);
+  download_when(&api, sending.name(), id, "unknown", |t| {
+    t.place_in_queue.is_none()
+  })
+  .await;
+  side.send(&place(4)).await;
+  download_when(&api, sending.name(), id, "said", |t| {
+    t.place_in_queue == Some(4)
+  })
+  .await;
+  side.send(&place(u32::MAX)).await;
+  download_when(&api, sending.name(), id, "said unknown", |t| {
+    t.place_in_queue.is_none()
   })
   .await;
 }

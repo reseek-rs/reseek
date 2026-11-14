@@ -47,7 +47,7 @@ impl TransferService for Transfers {
     TransferService::download(&*self.downloads, username, id, include_history).await
   }
 
-  async fn place_in_queue(&self, username: &str, id: Uuid) -> Result<u32, ApiError> {
+  async fn place_in_queue(&self, username: &str, id: Uuid) -> Result<Option<u32>, ApiError> {
     TransferService::place_in_queue(&*self.downloads, username, id).await
   }
 

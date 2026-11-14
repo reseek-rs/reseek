@@ -95,8 +95,8 @@ impl Client {
   }
 
   /// `GET /transfers/downloads/{username}/{id}/position`: a queued download's place in the
-  /// peer's queue.
-  pub async fn place_in_queue(&self, username: &str, id: Uuid) -> Result<u32> {
+  /// peer's queue, None when the peer doesn't know it.
+  pub async fn place_in_queue(&self, username: &str, id: Uuid) -> Result<Option<u32>> {
     let route = transfer(TransferDirection::Download, username, id).then("position");
     json(self.get(route)).await
   }

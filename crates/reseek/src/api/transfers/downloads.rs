@@ -168,7 +168,8 @@ async fn download(
     .map(Json)
 }
 
-/// Asks the peer for a queued download's place in its queue.
+/// Asks the peer for a queued download's place in its queue: null when the peer answers -1, as
+/// some clients do for a place they don't know.
 #[utoipa::path(
   get, path = "/transfers/downloads/{username}/{id}/position", tag = "transfers",
   params(
@@ -176,7 +177,7 @@ async fn download(
     ("id" = Uuid, Path, description = "the download's id")
   ),
   responses(
-    (status = 200, body = u32, content_type = "application/json"),
+    (status = 200, body = Option<u32>, content_type = "application/json"),
     (status = 400, body = api_types::ErrorBody), (status = 401, body = api_types::ErrorBody),
     (status = 404, body = api_types::ErrorBody), (status = 409, body = api_types::ErrorBody), (status = 502, body = api_types::ErrorBody),
     (status = 503, body = api_types::ErrorBody), (status = 504, body = api_types::ErrorBody)
@@ -187,7 +188,7 @@ async fn place_in_queue(
   _caller: Authorized<AnyRole>,
   NamedUser(username): NamedUser,
   Id(id): Id<Uuid>,
-) -> Result<Json<u32>, ApiError> {
+) -> Result<Json<Option<u32>>, ApiError> {
   app
     .services
     .transfers

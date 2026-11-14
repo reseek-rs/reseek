@@ -63,12 +63,13 @@ export const copyPath = (path: string) => void copyText(path);
 export const queueFailure = (error: string) => `Could not get the queue position: ${error}`;
 
 /**
- * Asks a queued download's place of the peer, toasting why when the peer can't say; the row's
- * button keeps the reason as its tooltip
+ * Asks a queued download's place of the peer, toasting why when the peer can't say and when it
+ * answers that it doesn't know; the row's button keeps a failure as its tooltip
  */
 export const queuePosition = async (t: Transfer) => {
   const outcome = await downloads.placeInQueue(t);
   if (!outcome.ok) toast(queueFailure(outcome.error), "error");
+  else if (outcome.data === null) toast("Queue position unknown");
 };
 
 export const bumpUpload = async (t: Transfer) => {

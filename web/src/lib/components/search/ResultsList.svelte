@@ -27,13 +27,12 @@
     enqueueSelection,
     followDownloads
   } from "#lib/files/downloads.js";
-  import { badgeCount, formatBytes, formatSpeed, getFileName, plural } from "#lib/format.js";
+  import { formatBytes, formatSpeed, getFileName, plural } from "#lib/format.js";
   import { inspector } from "#lib/inspector/inspector.svelte.js";
   import { type Freeze, heldOrder } from "#lib/lists/interaction.svelte.js";
   import { Grid } from "#lib/lists/table.svelte.js";
-  import { offerFields, type Picked } from "#lib/search/facts.js";
+  import { offerFields, type Picked, queueText } from "#lib/search/facts.js";
   import {
-    QUEUE_MOST,
     RESULT_COLUMNS,
     type ResultColumn,
     resultList,
@@ -247,7 +246,7 @@
     {/if}
     {#if shows.has("queue")}
       <span role="gridcell" class="truncate px-2 text-right tabular-nums"
-        >{badgeCount(row.queue, QUEUE_MOST)}</span>
+        >{queueText(row.queue)}</span>
     {/if}
     {#if shows.has("free")}
       <span role="gridcell" class={["px-2", row.free ? "text-success-soft-fg" : "text-fg-muted"]}>

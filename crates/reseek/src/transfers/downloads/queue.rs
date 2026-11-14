@@ -17,6 +17,7 @@ use uuid::Uuid;
 use super::Downloads;
 use crate::api::error::ApiError;
 use crate::db::DbError;
+use crate::network::peer_count;
 use crate::transfers::categories::{Condition, IN_PROGRESS, QUEUED, UNFINISHED};
 use crate::transfers::state::column;
 use crate::transfers::store;
@@ -24,19 +25,20 @@ use crate::transfers::store;
 /// How long a place a peer gave is answered again without asking it.
 const ASK_EVERY: Duration = Duration::from_secs(10);
 
-/// A place in queue a peer sent on its own, waiting to be written.
+/// A place in queue a peer sent on its own, waiting to be written; None when it sent -1.
 pub(super) struct SentPlace {
   username: String,
   filename: String,
-  place: u32,
+  place: Option<u32>,
 }
 
 impl Downloads {
   /// The place of the download `id` of `username` in the peer's queue, asked of the peer and
-  /// kept on the record. A download not queued by its peer is a conflict and a peer that does
-  /// not answer in time a 504; within `ASK_EVERY` of the last answer that answer is given
+  /// kept on the record; None when the peer answered -1, as some clients do for a place they
+  /// don't know. A download not queued by its peer is a conflict and a peer that does not
+  /// answer in time a 504; within `ASK_EVERY` of the last known answer that answer is given
   /// again.
-  pub async fn place_in_queue(&self, username: &str, id: Uuid) -> Result<u32, ApiError> {
+  pub async fn place_in_queue(&self, username: &str, id: Uuid) -> Result<Option<u32>, ApiError> {
     if self.users.is_blocked(username, None, BlockScope::Downloads) {
       return Err(super::not_found(username, id));
     }
@@ -49,7 +51,7 @@ impl Downloads {
       .is_some_and(|at| at.elapsed() < ASK_EVERY);
     if let (true, Some(place)) = (recent, record.place_in_queue()) {
       debug!(%id, place, "place in queue answered from the last answer");
-      return Ok(place);
+      return Ok(Some(place));
     }
     let timeout = self
       .config
@@ -63,7 +65,7 @@ impl Downloads {
     let client = self.network.client();
     let asked = client.get_download_place_in_queue(username, record.filename.clone(), &cancel);
     let place = match tokio::time::timeout(timeout, asked).await {
-      Ok(Ok(place)) => place,
+      Ok(Ok(place)) => peer_count(place),
       Ok(Err(e)) => return Err(asked_failed(username, e)),
       Err(_) => {
         cancel.cancel();
@@ -77,7 +79,7 @@ impl Downloads {
     }
     self.heard_from(username);
     self.place(record.id, place).await;
-    info!(%id, username, place, "place in the peer's queue");
+    info!(%id, username, ?place, "place in the peer's queue");
     Ok(place)
   }
 
@@ -88,7 +90,7 @@ impl Downloads {
     let sent = SentPlace {
       username,
       filename,
-      place,
+      place: peer_count(place),
     };
     if self.places.send(sent).await.is_err() {
       debug!("place in queue not recorded; the download engine stopped");
@@ -117,7 +119,7 @@ impl Downloads {
 
   /// Keeps `place` on the running download of `filename` from `username` while the peer has it
   /// queued.
-  async fn place_received(&self, username: &str, filename: &str, place: u32) {
+  async fn place_received(&self, username: &str, filename: &str, place: Option<u32>) {
     self.heard_from(username);
     let name = username.to_string();
     let file = filename.to_string();
@@ -145,14 +147,17 @@ impl Downloads {
       },
       Ok(None) => debug!(
         username,
-        filename, place, "place in queue for no queued download"
+        filename,
+        ?place,
+        "place in queue for no queued download"
       ),
       Err(e) => debug!(username, filename, error = %e, "place in queue not recorded"),
     }
   }
 
-  /// Writes `place` on the download `id` while it is queued by its peer, and pushes it.
-  async fn place(&self, id: Uuid, place: u32) {
+  /// Writes `place` on the download `id` while it is queued by its peer, and pushes it; None
+  /// writes it as unknown.
+  async fn place(&self, id: Uuid, place: Option<u32>) {
     let remotely = column(TransferStates::QueuedRemotely);
     let written = self
       .db

@@ -12822,7 +12822,7 @@
         "tags": [
           "transfers"
         ],
-        "summary": "Asks the peer for a queued download's place in its queue.",
+        "summary": "Asks the peer for a queued download's place in its queue: null when the peer answers -1, as\nsome clients do for a place they don't know.",
         "operationId": "place_in_queue",
         "parameters": [
           {
@@ -12859,7 +12859,10 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "integer",
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
                   "format": "int32",
                   "minimum": 0
                 }
@@ -25035,7 +25038,6 @@
           "token",
           "hasFreeUploadSlot",
           "uploadSpeed",
-          "queueLength",
           "fileCount",
           "files",
           "lockedFileCount",
@@ -25081,9 +25083,12 @@
             "description": "the matching files the peer shares only with some users"
           },
           "queueLength": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int32",
-            "description": "how many uploads the peer has queued, as it reports it",
+            "description": "how many uploads the peer has queued, as it reports it; null when it sent -1, as some\nclients do for a length they don't know",
             "minimum": 0
           },
           "token": {

@@ -16,7 +16,8 @@ export type ResultRow = {
   username: string;
   country: string | null;
   speed: number;
-  queue: number;
+  /** how many uploads the user has queued, null when they don't say */
+  queue: number | null;
   free: boolean;
   file: ResultFile;
   /** the folder the file is in, "" for a bare file name, which some peers send */
@@ -31,7 +32,7 @@ export const resultRows = (results: Result[]): ResultRow[] =>
       username: response.username,
       country: response.country ?? null,
       speed: response.uploadSpeed,
-      queue: response.queueLength,
+      queue: response.queueLength ?? null,
       free: response.hasFreeUploadSlot,
       file,
       folder: getDirectoryName(file.filename)
@@ -87,7 +88,8 @@ export const RESULT_COLUMNS: (GridColumn<ResultRow> & {
     label: "Queue",
     width: columnWidth(badgeCount(Infinity, QUEUE_MOST)),
     end: true,
-    value: (r) => r.queue
+    // a queue the user doesn't say sorts as the longest
+    value: (r) => r.queue ?? Number.MAX_SAFE_INTEGER
   },
   { id: "free", label: "Free slot", width: "4.5rem", value: (r) => (r.free ? 1 : 0) },
   {

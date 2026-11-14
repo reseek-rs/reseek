@@ -93,15 +93,19 @@ export const pipeline = (results: Result[], options: ResultOptions): Result[] =>
     if (filtered.fileCount + filtered.lockedFileCount === 0) continue;
     if (options.hideNoFreeSlots && !filtered.hasFreeUploadSlot) continue;
     if (options.offline?.(response.username)) continue;
-    if (options.maxQueue !== null && options.maxQueue !== undefined) {
-      if (filtered.queueLength > options.maxQueue) continue;
+    // a queue the user doesn't say is not too long, as a figure a filter can't read passes it
+    const queue = filtered.queueLength;
+    if (options.maxQueue !== null && options.maxQueue !== undefined && queue != null) {
+      if (queue > options.maxQueue) continue;
     }
     shown.push({ key, response: filtered });
   }
   if (options.sort === "uploadSpeed") {
     shown.sort((a, b) => b.response.uploadSpeed - a.response.uploadSpeed);
   } else if (options.sort === "queueLength") {
-    shown.sort((a, b) => a.response.queueLength - b.response.queueLength);
+    // a queue the user doesn't say sorts as the longest
+    const length = (r: Result) => r.response.queueLength ?? Number.MAX_SAFE_INTEGER;
+    shown.sort((a, b) => length(a) - length(b));
   }
   return shown;
 };

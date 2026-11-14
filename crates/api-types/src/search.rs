@@ -263,8 +263,9 @@ pub struct SearchResponse {
   pub has_free_upload_slot: bool,
   /// the peer's average upload speed in bytes per second, as it reports it
   pub upload_speed: u32,
-  /// how many uploads the peer has queued, as it reports it
-  pub queue_length: u32,
+  /// how many uploads the peer has queued, as it reports it; null when it sent -1, as some
+  /// clients do for a length they don't know
+  pub queue_length: Option<u32>,
   /// how many files are in `files`
   pub file_count: u32,
   /// the matching files we may download
