@@ -36,8 +36,13 @@ const SUBJECT_PREFIX: &str = "local:";
 impl Account {
   /// The subject its sessions act as.
   pub fn subject(&self) -> String {
-    format!("{SUBJECT_PREFIX}{}", self.username)
+    subject_of(&self.username)
   }
+}
+
+/// The subject of the local account `username`.
+pub fn subject_of(username: &str) -> String {
+  format!("{SUBJECT_PREFIX}{username}")
 }
 
 /// The username of a local account's `subject`.

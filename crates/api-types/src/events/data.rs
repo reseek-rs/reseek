@@ -211,6 +211,8 @@ pub enum SessionRevokeReason {
   Expired,
   /// the configuration gives its user no role now
   Configuration,
+  /// the password of its local account changed, and it is not the session that changed it
+  Password,
 }
 
 /// The data of `SessionRevoked`.

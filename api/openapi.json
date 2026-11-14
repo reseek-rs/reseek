@@ -25459,7 +25459,8 @@
           "backchannel",
           "proxy",
           "expired",
-          "configuration"
+          "configuration",
+          "password"
         ]
       },
       "SessionRevoked": {

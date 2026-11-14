@@ -17,6 +17,7 @@ use soulseek_client::LogLimiter;
 use tracing::{Instrument, debug, info, warn};
 
 use super::cookies::{self, Scope};
+use super::passwords::Setter;
 use super::sessions::{self, NewSession, Origin, StoredSession};
 use super::{Client, TOKEN_PREFIX, client, keys, networks, proxy, tokens};
 use crate::api::error::ApiError;
@@ -495,6 +496,33 @@ pub async fn end_sessions_without_role(app: &AppState) -> Result<(), ApiError> {
     .map(|session| session.id)
     .collect();
   end_sessions(app, ids, None, SessionRevokeReason::Configuration).await
+}
+
+/// Ends the active sessions of the local accounts `subjects`, whose passwords changed, but the
+/// one of `kept` that set it, if any.
+pub async fn end_sessions_for_new_passwords(
+  app: &AppState,
+  subjects: &[String],
+  kept: &[Setter],
+) -> Result<(), ApiError> {
+  let idle = idle(app);
+  let mut ids = Vec::new();
+  for subject in subjects {
+    let active = sessions::active(&app.auth.db, Some(subject.clone()), idle)
+      .await
+      .map_err(ApiError::internal)?;
+    ids.extend(
+      active
+        .into_iter()
+        .map(|session| session.id)
+        .filter(|id| !kept.iter().any(|setter| &setter.session == id)),
+    );
+  }
+  let by = match kept {
+    [setter] => Some(setter.subject.clone()),
+    _ => None,
+  };
+  end_sessions(app, ids, by, SessionRevokeReason::Password).await
 }
 
 /// Revokes the sessions `ids`, raising `SessionRevoked` for each one that was still going and

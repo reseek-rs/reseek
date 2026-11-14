@@ -14,10 +14,11 @@ use api_types::options::{
   ConfigFile, ConfigView, FilePatch, FileQuery, FileReplace, FileValidate, FileWritten,
   OptionError, OptionsChanged, OptionsDocument, OptionsPatch, RevisionQuery, Validation,
 };
+use axum::Extension;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use cascade::{Lasts, Loaded};
+use cascade::{Change, Lasts, Loaded};
 use chrono::Utc;
 use serde_json::Value;
 use tracing::{info, warn};
@@ -26,8 +27,9 @@ use utoipa_axum::routes;
 
 use super::error::ApiError;
 use crate::app::AppState;
+use crate::auth::passwords::Setter;
 use crate::auth::sessions::lifetime;
-use crate::auth::{Administrator, AnyRole, Authorized, require_interactive};
+use crate::auth::{Administrator, AnyRole, Authorized, RequestSession, require_interactive};
 use crate::config::{Options, redact, view};
 use crate::db::shifted;
 
@@ -130,6 +132,7 @@ async fn get_debug(
 async fn patch_options(
   State(app): State<AppState>,
   admin: Authorized<Administrator>,
+  session: Option<Extension<RequestSession>>,
   Json(patch): Json<OptionsPatch>,
 ) -> Result<Response, ApiError> {
   let current = app.config.current();
@@ -155,6 +158,7 @@ async fn patch_options(
     None => Lasts::UntilRemoved,
   };
   let set = with_urls(&current, patch.set)?;
+  let setting = app.auth.setters.begin(setter(session)).await;
   let change = app
     .config
     .set_overrides(
@@ -172,6 +176,7 @@ async fn patch_options(
       }
       other => ApiError::from(other),
     })?;
+  setting.made(revision_of(change.as_deref()));
   info!(
     by = admin.principal.subject,
     keys = keys.join(", "),
@@ -194,6 +199,7 @@ async fn patch_options(
 async fn delete_override(
   State(app): State<AppState>,
   admin: Authorized<Administrator>,
+  session: Option<Extension<RequestSession>>,
   Path(key): Path<String>,
   Query(query): Query<RevisionQuery>,
 ) -> Result<Json<OptionsChanged>, ApiError> {
@@ -205,7 +211,9 @@ async fn delete_override(
     require_interactive(&admin.principal)?;
   }
   let read = query.revision.as_deref();
+  let setting = app.auth.setters.begin(setter(session)).await;
   let change = app.config.remove_override(&key, read).await?;
+  setting.made(revision_of(change.as_deref()));
   info!(
     by = admin.principal.subject,
     key, "runtime override removed"
@@ -299,6 +307,7 @@ async fn get_file_location(
 async fn patch_file(
   State(app): State<AppState>,
   admin: Authorized<Administrator>,
+  session: Option<Extension<RequestSession>>,
   Json(patch): Json<FilePatch>,
 ) -> Result<Json<FileWritten>, ApiError> {
   let current = app.config.current();
@@ -309,6 +318,7 @@ async fn patch_file(
   require_interactive(&admin.principal)?;
   let name = file(&current, patch.file.as_deref())?.name.clone();
   let set = with_urls(&current, patch.set)?;
+  let setting = app.auth.setters.begin(setter(session)).await;
   let written = app
     .config
     .patch_file(
@@ -319,6 +329,7 @@ async fn patch_file(
       patch.unset,
     )
     .await?;
+  setting.made(revision_of(written.change.as_deref()));
   info!(
     by = admin.principal.subject,
     file = name,
@@ -345,6 +356,7 @@ async fn patch_file(
 async fn put_file(
   State(app): State<AppState>,
   admin: Authorized<Administrator>,
+  session: Option<Extension<RequestSession>>,
   Json(replace): Json<FileReplace>,
 ) -> Result<Json<FileWritten>, ApiError> {
   let current = app.config.current();
@@ -354,10 +366,12 @@ async fn put_file(
   )?;
   require_interactive(&admin.principal)?;
   let name = file(&current, replace.file.as_deref())?.name.clone();
+  let setting = app.auth.setters.begin(setter(session)).await;
   let written = app
     .config
     .replace_file(&name, replace.revision.as_deref(), replace.text)
     .await?;
+  setting.made(revision_of(written.change.as_deref()));
   info!(
     by = admin.principal.subject,
     file = name,
@@ -421,6 +435,20 @@ fn with_urls(
     ApiError::from(e).logged()
   })?;
   Ok(set)
+}
+
+/// The browser session a change is made from, which a new password it sets for its own account
+/// does not end.
+fn setter(session: Option<Extension<RequestSession>>) -> Option<Setter> {
+  session.map(|Extension(RequestSession(session))| Setter {
+    session: session.id,
+    subject: session.subject,
+  })
+}
+
+/// The revision a change gave the configuration, `None` when it changed nothing.
+fn revision_of(change: Option<&Change<Options>>) -> Option<&str> {
+  change.map(|change| change.current.revision.as_str())
 }
 
 fn is_authentication(key: &str) -> bool {

@@ -7759,7 +7759,7 @@ export interface components {
          * @description Why a session ended.
          * @enum {string}
          */
-        SessionRevokeReason: "logout" | "admin" | "backchannel" | "proxy" | "expired" | "configuration";
+        SessionRevokeReason: "logout" | "admin" | "backchannel" | "proxy" | "expired" | "configuration" | "password";
         /** @description The data of `SessionRevoked`. */
         SessionRevoked: {
             /**

@@ -1,7 +1,7 @@
 //! The background work every request relies on. The application state and the event stream
 //! follow the configuration and the log, the log filter follows its options, the OpenID Connect
-//! providers are discovered, and the sessions of users a configuration that stands gives no role
-//! are ended. The scheduler runs the rest: ending the sessions that expired and deleting old
+//! providers are discovered, the sessions of users a configuration that stands gives no role
+//! are ended, and so are those of a local account given a new password. The scheduler runs the rest: ending the sessions that expired and deleting old
 //! ended sessions and tokens.
 
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use cascade::Watcher;
 use tokio_util::sync::CancellationToken;
 
 use super::AppState;
-use crate::auth::{sessions, tokens};
+use crate::auth::{passwords, sessions, tokens};
 use crate::config::{Options, view};
 use crate::live::Topic;
 use crate::logging::Logging;
@@ -34,6 +34,7 @@ const SETTLE: std::time::Duration = std::time::Duration::from_secs(10);
 pub(super) fn spawn(app: &AppState) {
   tokio::spawn(follow_configuration(app.clone()).instrument(info_span!("state")));
   tokio::spawn(end_roleless_sessions(app.clone()).instrument(info_span!("sessions")));
+  tokio::spawn(end_sessions_for_new_passwords(app.clone()).instrument(info_span!("sessions")));
   tokio::spawn(forward_logs(app.clone()).instrument(info_span!("log_stream")));
   tokio::spawn(crate::auth::oidc::discover_at_start(app.clone()));
 }
@@ -97,6 +98,53 @@ async fn end_roleless_sessions(app: AppState) {
           warn!(error = ?e, "the sessions of users with no role now were not ended");
         }
       }
+    }
+  }
+}
+
+/// Ends the sessions of the local accounts each configuration change gives a new password, but
+/// the session that made the change.
+async fn end_sessions_for_new_passwords(app: AppState) {
+  let mut changes = app.config.changes();
+  let mut known = app.config.current();
+  loop {
+    let change = tokio::select! {
+      () = app.shutdown.cancelled() => return,
+      change = changes.recv() => change,
+    };
+    let (previous, current, kept) = match change {
+      Ok(change) => {
+        let kept = app.auth.setters.made_by(&change.current.revision).await;
+        (
+          change.previous.clone(),
+          change.current.clone(),
+          kept.into_iter().collect(),
+        )
+      }
+      Err(RecvError::Lagged(missed)) => {
+        warn!(
+          missed,
+          "configuration changes missed; looking for new passwords since"
+        );
+        let kept = app.auth.setters.take_all().await;
+        (known, app.config.current(), kept)
+      }
+      Err(RecvError::Closed) => return,
+    };
+    let subjects = passwords::changed(
+      &previous.values.web.authentication,
+      &current.values.web.authentication,
+    );
+    known = current;
+    if subjects.is_empty() {
+      continue;
+    }
+    info!(
+      subjects = subjects.join(", "),
+      "local account passwords changed; their other sessions end"
+    );
+    if let Err(e) = crate::auth::end_sessions_for_new_passwords(&app, &subjects, &kept).await {
+      warn!(error = ?e, "the sessions of accounts with a new password were not ended");
     }
   }
 }
@@ -369,6 +417,50 @@ mod tests {
     pass(SETTLE).await;
     until_ended(&app, &proxied).await;
     assert_eq!(status(&app, &local).await, 401, "it takes a new sign-in");
+  }
+
+  #[tokio::test]
+  async fn a_new_password_ends_the_accounts_other_sessions() {
+    let config = |password: &str, viewer: &str| {
+      format!(
+        "remote_configuration = true\n[web.authentication]\npassword = \"{password}\"\n\
+         [web.authentication.local.users.viewer]\npassword = \"{viewer}\"\n"
+      )
+    };
+    let app = app(&config("reseek", "look"), &[]).await;
+    let admin = async || {
+      let login = json!({ "username": "reseek", "password": "reseek" });
+      let answer = app
+        .send_from(OUTSIDE, request("POST", "/api/v0/session", Some(login)))
+        .await;
+      set_cookie(&answer.headers, "reseek_session").unwrap()
+    };
+    let setter = admin().await;
+    let other = admin().await;
+    let viewer = signed_in(&app).await;
+
+    let change = json!({ "set": { "web.authentication.password": "n3w" } });
+    let change = with(
+      request("PATCH", "/api/v0/options", Some(change)),
+      "cookie",
+      &setter,
+    );
+    let changed = app
+      .send_from(OUTSIDE, with(change, "origin", "http://localhost"))
+      .await;
+    assert_eq!(changed.status, 200, "{:?}", changed.body);
+    until_ended(&app, &other).await;
+    assert_eq!(
+      status(&app, &setter).await,
+      200,
+      "the session that set it goes on"
+    );
+    assert_eq!(status(&app, &viewer).await, 200, "another account's too");
+
+    // a file has no session to keep
+    reload(&app, &config("reseek", "seen")).await;
+    until_ended(&app, &viewer).await;
+    assert_eq!(status(&app, &setter).await, 200);
   }
 
   #[tokio::test(start_paused = true)]

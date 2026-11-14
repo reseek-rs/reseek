@@ -21,6 +21,7 @@ pub mod limits;
 pub mod local;
 pub mod networks;
 pub mod oidc;
+pub mod passwords;
 pub mod proxy;
 pub mod roles;
 pub mod secret;
@@ -43,8 +44,9 @@ use crate::app::AppState;
 use crate::db::{Database, DbError, Location};
 use crate::http::Peer;
 pub use chain::{
-  Check, Identified, Presented, end_sessions, end_sessions_without_role, identify, idle,
-  owner_role, page_session, session_cookie, start_session,
+  Check, Identified, Presented, end_sessions, end_sessions_for_new_passwords,
+  end_sessions_without_role, identify, idle, owner_role, page_session, session_cookie,
+  start_session,
 };
 pub use client::Client;
 use limits::Limits;
@@ -68,6 +70,8 @@ pub struct Auth {
   pub accounts: Accounts,
   /// the OpenID Connect providers in use
   pub oidc: oidc::Providers,
+  /// the configuration changes browser sessions made
+  pub setters: passwords::Setters,
 }
 
 impl Auth {
@@ -81,6 +85,7 @@ impl Auth {
       limits: Limits::default(),
       accounts: Accounts::default(),
       oidc: oidc::Providers::default(),
+      setters: passwords::Setters::default(),
     })
   }
 }

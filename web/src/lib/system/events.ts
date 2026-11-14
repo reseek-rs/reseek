@@ -40,7 +40,8 @@ const SESSION_ENDS: Record<Schemas["SessionRevokeReason"], string> = {
   backchannel: "ended by the identity provider",
   proxy: "ended by the reverse proxy",
   expired: "expired",
-  configuration: "ended, no role in the configuration"
+  configuration: "ended, no role in the configuration",
+  password: "ended, the password changed"
 };
 
 const JOB_ENDINGS: Record<Schemas["JobEnding"], string> = {
