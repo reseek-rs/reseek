@@ -367,6 +367,75 @@ async fn a_file_sent_to_a_user_unasked_is_refused_unless_it_is_shared() {
   );
 }
 
+/// Writes an upload of `SHARED` to alice queued here, with its task running; returns its id.
+async fn sending_shared(app: &TestApp) -> Uuid {
+  let mut sending = Record::upload("alice", SHARED, 3);
+  sending.state = State::QueuedLocally {
+    next_attempt_at: None,
+  };
+  let id = sending.id;
+  app
+    .state
+    .transfers
+    .write(move |conn| store::insert(conn, &sending))
+    .await
+    .unwrap();
+  lock(&app.state.uploads.in_flight).insert(
+    id,
+    InFlight {
+      cancel: CancellationToken::new(),
+      remove: false,
+      reason: None,
+      ended: false,
+    },
+  );
+  id
+}
+
+/// Sends `files` to alice through the API and returns the answer.
+async fn send_to_alice(app: &TestApp, files: &[&str]) -> Value {
+  let (status, answer) = app
+    .call(
+      "POST",
+      "/api/v0/transfers/uploads/alice",
+      Some(json!({ "files": files })),
+    )
+    .await;
+  assert_eq!(status, 200, "{answer}");
+  answer
+}
+
+/// A file already queued or being sent to the user is answered apart from those the send
+/// queued, and its upload stands for it: no second record is written.
+#[tokio::test]
+async fn sending_a_file_already_being_sent_to_the_user_says_so_apart_from_the_new_ones() {
+  let (_files, app) = shared_app("").await;
+  let id = sending_shared(&app).await;
+  let second = "Music\\Album\\02.mp3";
+  let answer = send_to_alice(&app, &[SHARED, second]).await;
+  assert_eq!(answer["queued"], json!([second]));
+  assert_eq!(answer["alreadySending"], json!([SHARED]));
+  assert_eq!(answer["failed"], json!([]));
+  let ids: Vec<Uuid> = uploads_of_shared(&app).await.iter().map(|r| r.id).collect();
+  assert_eq!(ids, [id], "the upload under way stands for the file");
+}
+
+/// The limits count the file being sent already, so they would turn it away were it decided
+/// as a new one.
+#[tokio::test]
+async fn a_file_already_being_sent_is_not_turned_away_by_the_limits_it_fills() {
+  let (_files, app) = shared_app("[transfers.upload.limits]\nqueued = { files = 1 }\n").await;
+  sending_shared(&app).await;
+  let second = "Music\\Album\\02.mp3";
+  let answer = send_to_alice(&app, &[SHARED, second]).await;
+  assert_eq!(answer["queued"], json!([]));
+  assert_eq!(answer["alreadySending"], json!([SHARED]));
+  assert_eq!(
+    answer["failed"],
+    json!([{ "filename": second, "message": "Too many files" }])
+  );
+}
+
 /// The uploads of `SHARED` to alice, removed ones included, oldest first.
 async fn uploads_of_shared(app: &TestApp) -> Vec<Record> {
   app

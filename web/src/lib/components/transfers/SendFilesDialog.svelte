@@ -35,8 +35,9 @@
     busy = false;
     if (!outcome.ok) return void (error = outcome.error);
     sending.open = false;
-    const { queued, failed } = outcome.data;
-    toast(sentText(to, queued, failed), queued.length ? "info" : "error");
+    const { queued, alreadySending } = outcome.data;
+    const sent = queued.length > 0 || alreadySending.length > 0;
+    toast(sentText(to, outcome.data), sent ? "info" : "error");
   };
 </script>
 

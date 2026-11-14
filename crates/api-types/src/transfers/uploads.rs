@@ -81,6 +81,8 @@ pub struct SendFilesRequest {
 pub struct SendFilesResponse {
   /// the files queued to be offered to the user
   pub queued: Vec<String>,
+  /// the files already queued or being sent to the user, whose uploads are left as they are
+  pub already_sending: Vec<String>,
   /// the files not queued, and why
   pub failed: Vec<super::EnqueueFailure>,
 }

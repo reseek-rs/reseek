@@ -97,7 +97,7 @@ async fn user_uploads(
 /// Sends files we share to a user who did not ask for them: each is queued as an upload under
 /// the usual queue and limits, as one the user asked for would be, and offered to them when its
 /// turn comes; their client decides whether to take it. A file not shared with the user is
-/// refused.
+/// refused, and one queued or being sent to them already is answered apart and left as it is.
 #[utoipa::path(
   post, path = "/transfers/uploads/{username}", tag = "transfers",
   params(("username" = String, Path, description = "the user to send the files to"), UsernameQuery),
@@ -124,6 +124,7 @@ async fn send_files(
     by = caller.principal.subject,
     username,
     queued = sent.queued.len(),
+    already_sending = sent.already_sending.len(),
     failed = sent.failed.len(),
     "files sent to a user"
   );

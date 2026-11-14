@@ -2880,7 +2880,7 @@ export interface paths {
          * Sends files we share to a user who did not ask for them: each is queued as an upload under
          *     the usual queue and limits, as one the user asked for would be, and offered to them when its
          *     turn comes; their client decides whether to take it. A file not shared with the user is
-         *     refused.
+         *     refused, and one queued or being sent to them already is answered apart and left as it is.
          */
         post: operations["send_files"];
         delete?: never;
@@ -7627,6 +7627,8 @@ export interface components {
         };
         /** @description What sending files to a user did. */
         SendFilesResponse: {
+            /** @description the files already queued or being sent to the user, whose uploads are left as they are */
+            alreadySending: string[];
             /** @description the files not queued, and why */
             failed: components["schemas"]["EnqueueFailure"][];
             /** @description the files queued to be offered to the user */

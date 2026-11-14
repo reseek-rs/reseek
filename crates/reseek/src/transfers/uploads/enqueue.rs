@@ -4,7 +4,7 @@
 //! client side has ended does not stand for a new request, though its task may not have written
 //! how it ended yet: a peer told the upload failed asks again at once.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use api_types::live::LiveFrame;
 use api_types::transfers::TransferDirection;
@@ -13,6 +13,7 @@ use rusqlite::{Connection, params};
 use soulseek_client::ClientError;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
+use uuid::Uuid;
 
 use super::intake::Located;
 use super::{InFlight, Uploads};
@@ -35,6 +36,44 @@ enum Written {
   Inserted(Vec<Removed>),
 }
 
+/// What an enqueue did with the file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Enqueued {
+  /// a record was written and its upload queued
+  Queued,
+  /// an upload of the file to the user was queued or running already, and stands for it
+  Already,
+}
+
+/// The ids of the unfinished uploads of `filename` to `username` among `live`, the uploads
+/// whose client side has not ended.
+fn running(
+  conn: &Connection,
+  username: &str,
+  filename: &str,
+  live: &HashSet<String>,
+) -> rusqlite::Result<Vec<String>> {
+  Ok(
+    conn
+      .prepare_cached(&format!(
+        "SELECT Id FROM Transfers WHERE Username = ?1 AND Filename = ?2 AND Direction = ?3 \
+         AND {UNFINISHED}"
+      ))?
+      .query_map(
+        params![
+          username,
+          filename,
+          direction_text(TransferDirection::Upload)
+        ],
+        |row| row.get(0),
+      )?
+      .collect::<rusqlite::Result<Vec<String>>>()?
+      .into_iter()
+      .filter(|id| live.contains(id))
+      .collect(),
+  )
+}
+
 /// Writes `record` and takes the user's earlier records of the file out of the listings, in
 /// one transaction, unless an unfinished upload of the file to the user is among `live`, the
 /// uploads whose client side has not ended, or `tracked` says the client runs one.
@@ -45,23 +84,7 @@ fn write(
   live: &HashSet<String>,
 ) -> rusqlite::Result<Written> {
   let tx = conn.transaction()?;
-  let running: Vec<String> = tx
-    .prepare(&format!(
-      "SELECT Id FROM Transfers WHERE Username = ?1 AND Filename = ?2 AND Direction = ?3 \
-       AND {UNFINISHED}"
-    ))?
-    .query_map(
-      params![
-        record.username,
-        record.filename,
-        direction_text(TransferDirection::Upload)
-      ],
-      |row| row.get(0),
-    )?
-    .collect::<rusqlite::Result<Vec<String>>>()?
-    .into_iter()
-    .filter(|id| live.contains(id))
-    .collect();
+  let running = running(&tx, &record.username, &record.filename, live)?;
   if !running.is_empty() {
     return Ok(Written::Running(running));
   }
@@ -75,6 +98,32 @@ fn write(
 }
 
 impl Uploads {
+  /// The ids of the uploads whose client side has not ended, from `in_flight`, locked.
+  fn live(in_flight: &HashMap<Uuid, InFlight>) -> HashSet<String> {
+    in_flight
+      .iter()
+      .filter(|(_, entry)| !entry.ended)
+      .map(|(id, _)| id.to_string())
+      .collect()
+  }
+
+  /// Whether an upload of `filename` to `username` is queued or running already, which a
+  /// file sent to them again is answered with; read under the user's turn, as an enqueue is.
+  pub(super) async fn sending_already(
+    &self,
+    username: &str,
+    filename: &str,
+  ) -> Result<bool, ClientError> {
+    let live = Self::live(&lock(&self.in_flight));
+    let (name, file) = (username.to_string(), filename.to_string());
+    self
+      .db
+      .read(move |conn| running(conn, &name, &file, &live))
+      .await
+      .map(|running| !running.is_empty())
+      .map_err(|e| ClientError::client(format!("the uploads were not read: {e}"), None))
+  }
+
   /// Records the upload of `filename` to `username` from `located`, queues it and starts its
   /// task; an upload of the file to the user queued or running already stands for it. Runs
   /// under the user's turn, on the task of the request or send that holds it.
@@ -83,7 +132,7 @@ impl Uploads {
     username: &str,
     filename: &str,
     located: Located,
-  ) -> Result<(), ClientError> {
+  ) -> Result<Enqueued, ClientError> {
     let client = self.client()?;
     let record = Record::upload(username, filename, located.size);
     let id = record.id;
@@ -93,11 +142,7 @@ impl Uploads {
     let cancel = CancellationToken::new();
     let live: HashSet<String> = {
       let mut in_flight = lock(&self.in_flight);
-      let live = in_flight
-        .iter()
-        .filter(|(_, entry)| !entry.ended)
-        .map(|(id, _)| id.to_string())
-        .collect();
+      let live = Self::live(&in_flight);
       in_flight.insert(
         id,
         InFlight {
@@ -130,7 +175,7 @@ impl Uploads {
           ?ids,
           "upload already queued or in progress"
         );
-        return Ok(());
+        return Ok(Enqueued::Already);
       }
       Ok(Written::Duplicate) => {
         lock(&self.in_flight).remove(&id);
@@ -151,6 +196,6 @@ impl Uploads {
       .publish(LiveFrame::TransfersAdded(Box::new(record.transfer())));
     self.queue.enqueue(id, username, filename);
     self.spawn(record, located, cancel);
-    Ok(())
+    Ok(Enqueued::Queued)
   }
 }

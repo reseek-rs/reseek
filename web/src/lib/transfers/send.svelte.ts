@@ -1,4 +1,4 @@
-import { api, byUser } from "#lib/api/client.js";
+import { api, byUser, type Schemas } from "#lib/api/client.js";
 import { getFileName, plural } from "#lib/format.js";
 import { call } from "#lib/request.js";
 
@@ -22,14 +22,24 @@ export const sending = new Sending();
  */
 const isolated = (text: string) => `\u2068${text}\u2069`;
 
-/** What sending files came to, in one line */
-export const sentText = (username: string, queued: string[], failed: { message: string }[]) => {
+/** What sending files came to, in one line: the files queued, those already being sent apart */
+export const sentText = (username: string, sent: Schemas["SendFilesResponse"]) => {
+  const { queued, alreadySending: already, failed } = sent;
   const to = isolated(username);
-  const head = queued.length
+  const offered = queued.length
     ? queued.length === 1
       ? `${isolated(getFileName(queued[0]))} will be offered to ${to}`
       : `${plural(queued.length, "file", "files")} will be offered to ${to}`
-    : `Nothing was sent to ${to}`;
+    : null;
+  const sending = already.length
+    ? already.length === 1
+      ? `${isolated(getFileName(already[0]))} is already being sent`
+      : `${plural(already.length, "file", "files")} are already being sent`
+    : null;
+  const head =
+    offered && sending
+      ? `${offered}. ${sending}`
+      : (offered ?? (sending ? `${sending} to ${to}` : `Nothing was sent to ${to}`));
   return failed.length
     ? `${head}. ${plural(failed.length, "file", "files")} not sent: ${failed[0].message}`
     : head;

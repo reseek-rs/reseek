@@ -20,6 +20,7 @@ use soulseek_client::{ClientError, LogLimiter};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, SemaphorePermit};
 use tracing::{Instrument, debug, info, trace, warn};
 
+use super::enqueue::Enqueued;
 use super::{Uploads, limits};
 use crate::shares::{LOCAL_HOST, Resolved};
 use crate::telemetry::millis;
@@ -282,8 +283,9 @@ impl Uploads {
   }
 
   /// Queues `files` to be offered to `username`, who did not ask for them, each decided as a
-  /// request of theirs would be, with the shares they see as a buddy when they are one. These
-  /// are our own sends, so the figures of the requests peers send are left alone.
+  /// request of theirs would be, with the shares they see as a buddy when they are one; a file
+  /// queued or being sent to them already is answered as such and left as it is. These are our
+  /// own sends, so the figures of the requests peers send are left alone.
   pub async fn send(&self, username: &str, files: Vec<String>) -> SendFilesResponse {
     // sent on a task of its own that holds the user's turn to the end, so a caller that stops
     // waiting leaves no file half queued and no file of the list left out
@@ -299,6 +301,7 @@ impl Uploads {
       Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
       Err(e) => SendFilesResponse {
         queued: Vec::new(),
+        already_sending: Vec::new(),
         failed: asked
           .into_iter()
           .map(|filename| EnqueueFailure {
@@ -315,20 +318,19 @@ impl Uploads {
     let (sees, _) = self.users.search_sees(username, None).await;
     let mut sent = SendFilesResponse {
       queued: Vec::new(),
+      already_sending: Vec::new(),
       failed: Vec::new(),
     };
     let (_turn, _) = self.intake.turn(username).await;
     for filename in files {
-      let queued = match self.decide(username, &filename, &sees).await {
-        Ok(located) => self.enqueue(username, &filename, located).await,
-        Err(Refusal::Peer(reason)) => Err(ClientError::DownloadEnqueue(reason.to_string())),
-        Err(Refusal::Later) => Err(ClientError::DownloadUnavailable),
-        Err(Refusal::Failed(error)) => Err(error),
-      };
-      match queued {
-        Ok(()) => {
+      match self.send_one(username, &filename, &sees).await {
+        Ok(Enqueued::Queued) => {
           info!(username, filename, "file queued to be sent");
           sent.queued.push(filename);
+        }
+        Ok(Enqueued::Already) => {
+          info!(username, filename, "file sent again is already being sent");
+          sent.already_sending.push(filename);
         }
         Err(e) => {
           debug!(username, filename, error = %e, "file not sent");
@@ -343,6 +345,25 @@ impl Uploads {
       }
     }
     sent
+  }
+
+  /// Sends `filename` to `username`, who sees the shares of `sees`, under their turn. One being
+  /// sent already is not decided again: the limits count it, so they could turn it away.
+  async fn send_one(
+    &self,
+    username: &str,
+    filename: &str,
+    sees: &BTreeSet<String>,
+  ) -> Result<Enqueued, ClientError> {
+    if self.sending_already(username, filename).await? {
+      return Ok(Enqueued::Already);
+    }
+    match self.decide(username, filename, sees).await {
+      Ok(located) => self.enqueue(username, filename, located).await,
+      Err(Refusal::Peer(reason)) => Err(ClientError::DownloadEnqueue(reason.to_string())),
+      Err(Refusal::Later) => Err(ClientError::DownloadUnavailable),
+      Err(Refusal::Failed(error)) => Err(error),
+    }
   }
 
   /// Whether `username` may have `filename`: shared with them, on disk, and within the limits

@@ -13598,7 +13598,7 @@
         "tags": [
           "transfers"
         ],
-        "summary": "Sends files we share to a user who did not ask for them: each is queued as an upload under\nthe usual queue and limits, as one the user asked for would be, and offered to them when its\nturn comes; their client decides whether to take it. A file not shared with the user is\nrefused.",
+        "summary": "Sends files we share to a user who did not ask for them: each is queued as an upload under\nthe usual queue and limits, as one the user asked for would be, and offered to them when its\nturn comes; their client decides whether to take it. A file not shared with the user is\nrefused, and one queued or being sent to them already is answered apart and left as it is.",
         "operationId": "send_files",
         "parameters": [
           {
@@ -25203,9 +25203,17 @@
         "description": "What sending files to a user did.",
         "required": [
           "queued",
+          "alreadySending",
           "failed"
         ],
         "properties": {
+          "alreadySending": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "the files already queued or being sent to the user, whose uploads are left as they are"
+          },
           "failed": {
             "type": "array",
             "items": {
