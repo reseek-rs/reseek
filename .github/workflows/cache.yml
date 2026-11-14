@@ -20,16 +20,14 @@ jobs:
     # a few seconds
     timeout-minutes: 10
     steps:
-      - name: Keep each ref's newest nix and cargo cache, delete tags' caches
+      - name: Keep each ref's newest cargo cache, delete tags' caches
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        # the setup-nix action saves under `nix-<os>-`, rust-cache under `v0-rust-`
+        # rust-cache saves under `v0-rust-`
         run: |
           gh cache list --limit 1000 --json id,key,ref,createdAt --jq '
             (.[] | select(.ref | contains("refs/tags/")) | .id),
-            (map(select(.ref | contains("refs/tags/") | not)
-                 | select(.key | test("^(nix-|v0-rust-)"))
-                 | .family = (.key | split("-")[0:2] | join("-")))
-              | group_by([.ref, .family])[] | sort_by(.createdAt) | .[:-1][] | .id)' \
+            (map(select(.ref | contains("refs/tags/") | not) | select(.key | startswith("v0-rust-")))
+              | group_by(.ref)[] | sort_by(.createdAt) | .[:-1][] | .id)' \
             | xargs -r -n1 gh cache delete
