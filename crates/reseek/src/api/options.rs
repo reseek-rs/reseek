@@ -1073,4 +1073,48 @@ mod tests {
       .await;
     assert_eq!(auth.status, 403, "authentication options need a login");
   }
+
+  #[tokio::test]
+  async fn a_role_set_at_run_time_outlasts_a_file_read_while_it_is_written() {
+    use std::io::Write;
+    use std::time::Duration;
+    let viewer =
+      "[web.authentication.local.users.viewer]\npassword = \"look\"\nrole = \"readwrite\"\n";
+    let app = app(&format!("{TRUSTED}{viewer}"), &[]).await;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    app
+      .state
+      .config
+      .start(cascade::Watch::Events, cancel.clone())
+      .await;
+    let lowered = json!({ "set": { "web.authentication.local.users": {
+      "viewer": { "password": "*****", "role": "readonly" }
+    } } });
+    let answer = app
+      .send(request("PATCH", "/api/v0/options", Some(lowered)))
+      .await;
+    assert_eq!(answer.status, 200, "{:?}", answer.body);
+
+    // as a shell redirect from a slow program writes it: emptied, a pause, then the text
+    let mut states = app.state.config.subscribe();
+    let mut file = std::fs::File::create(app.dir.path().join("config.toml")).unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let whole = format!("rooms = [\"decrypted\"]\n{TRUSTED}{viewer}");
+    file.write_all(whole.as_bytes()).unwrap();
+    drop(file);
+    let read = states.wait_for(|loaded| loaded.values.rooms == ["decrypted"]);
+    let current = tokio::time::timeout(Duration::from_secs(10), read)
+      .await
+      .unwrap()
+      .unwrap()
+      .clone();
+    cancel.cancel();
+    let viewer = &current.values.web.authentication.local.users["viewer"];
+    assert_eq!(viewer.role, crate::config::enums::Role::ReadOnly);
+    assert!(
+      current
+        .overrides
+        .contains_key("web.authentication.local.users")
+    );
+  }
 }
