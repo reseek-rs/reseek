@@ -45,12 +45,7 @@ const LATEST: u32 = 250;
 
 /// How long a room the server refused after a login waits before each of the tries after the
 /// first; one refused every time is left for the user to join.
-#[cfg(not(test))]
 const REJOIN_AGAIN: [Duration; 2] = [Duration::from_secs(10), Duration::from_secs(30)];
-/// The tries a moment apart in tests: the joins go over a real socket, which a paused clock
-/// would skip past
-#[cfg(test)]
-const REJOIN_AGAIN: [Duration; 2] = [Duration::from_millis(100), Duration::from_millis(100)];
 
 /// The rooms we are in and the server's room list as it last sent it.
 #[derive(Default)]
@@ -328,47 +323,65 @@ impl Messaging {
           rooms.push(room);
         }
       }
-      let mut refused = this.rejoin_rooms(rooms, &session).await;
+      let refused = this.rejoin_rooms(rooms, &session).await;
       this.push_gap().await;
-      for wait in REJOIN_AGAIN {
-        if refused.is_empty() {
-          return;
-        }
-        debug!(
-          rooms = refused.len(),
-          after = %humantime::format_duration(wait),
-          "rooms not joined after the login; trying again after a wait"
-        );
-        tokio::select! {
-          () = session.cancelled() => {
-            return debug!("session ended; the rooms refused are joined at the next login");
-          }
-          () = tokio::time::sleep(wait) => {}
-        }
-        // a room left or joined meanwhile is not tried again
-        refused.retain(|(room, _)| {
-          let tracker = this.rooms.tracker();
-          tracker.get(room).is_some_and(|tracked| !tracked.joined)
-        });
-        let rooms = refused.into_iter().map(|(room, _)| room).collect();
-        refused = this.rejoin_rooms(rooms, &session).await;
-      }
-      let mut marked = false;
-      for (room, error) in refused {
-        if this.rooms.tracker().mark_refused(&room) {
-          warn!(
-            room,
-            tries = REJOIN_AGAIN.len() + 1,
-            %error,
-            "room not joined at any try after the login; left for the user to join"
-          );
-          marked = true;
-        }
-      }
-      if marked {
-        this.push_rooms().await;
-      }
+      let again = |rooms| this.rejoin_rooms(rooms, &session);
+      this
+        .try_again(refused, &session, again)
+        .await;
     });
+  }
+
+  /// The tries after a login's first for the rooms it left `refused`: after each of the waits,
+  /// the rooms still among ours and not joined are tried with `again`. Those refused at every try are
+  /// marked refused, left for the user to join. Stops when `session` ends, as the next login
+  /// tries them.
+  async fn try_again<F>(
+    &self,
+    mut refused: Vec<(String, ClientError)>,
+    session: &CancellationToken,
+    mut again: impl FnMut(Vec<String>) -> F,
+  ) where
+    F: Future<Output = Vec<(String, ClientError)>>,
+  {
+    for wait in REJOIN_AGAIN {
+      if refused.is_empty() {
+        return;
+      }
+      debug!(
+        rooms = refused.len(),
+        after = %humantime::format_duration(wait),
+        "rooms not joined after the login; trying again after a wait"
+      );
+      tokio::select! {
+        () = session.cancelled() => {
+          return debug!("session ended; the rooms refused are joined at the next login");
+        }
+        () = tokio::time::sleep(wait) => {}
+      }
+      // a room left or joined meanwhile is not tried again
+      refused.retain(|(room, _)| {
+        let tracker = self.rooms.tracker();
+        tracker.get(room).is_some_and(|tracked| !tracked.joined)
+      });
+      let rooms = refused.into_iter().map(|(room, _)| room).collect();
+      refused = again(rooms).await;
+    }
+    let mut marked = false;
+    for (room, error) in refused {
+      if self.rooms.tracker().mark_refused(&room) {
+        warn!(
+          room,
+          tries = REJOIN_AGAIN.len() + 1,
+          %error,
+          "room not joined at any try after the login; left for the user to join"
+        );
+        marked = true;
+      }
+    }
+    if marked {
+      self.push_rooms().await;
+    }
   }
 
   /// Joins `rooms` in turn after a login and returns those not joined, each with why and kept
@@ -688,8 +701,12 @@ mod tests {
     CannotJoinRoom, JoinRoomRequest, PrivateRoomData, RoomData, RoomInfo as Listed, RoomList,
   };
   use soulseek_proto::{ServerRequest, ServerResponse};
+  use tokio::time::Instant;
 
-  use super::history;
+  use soulseek_client::ClientError;
+  use tokio_util::sync::CancellationToken;
+
+  use super::{REJOIN_AGAIN, history};
   use crate::testing::soulseek::{self, Server, US, member};
   use crate::testing::{TRUSTED, TestApp, app};
 
@@ -792,45 +809,70 @@ mod tests {
     (app, server, refusing)
   }
 
-  #[tokio::test]
-  async fn the_tries_after_a_login_stop_when_its_session_ends() {
-    let (app, mut server, _refusing) = refused_after_a_reconnect().await;
-    server.received(joins("lobby")).await;
-    // the session ends before its next try, and a new one begins
-    server.drop_session(&app).await;
-    server.login(&app).await;
-    let mut tries = 0;
-    while server
-      .receives(std::time::Duration::from_millis(500), |request| {
-        joins("lobby")(request).is_some()
-      })
-      .await
-    {
-      tries += 1;
+  /// What the tries after a login's first do with `lobby`, refused at the first, when every try
+  /// refuses it and the session ends after `ends`, if ever: when each try came, by the clock.
+  async fn tried_again(ends: Option<Duration>) -> (TestApp, Vec<Duration>) {
+    let app = app(TRUSTED, &[]).await;
+    let messaging = app.state.messaging.clone();
+    let leaves = messaging.rooms.tracker().leaves("lobby");
+    messaging.rooms.tracker().keep("lobby", leaves);
+    let session = CancellationToken::new();
+    if let Some(ends) = ends {
+      let ending = session.clone();
+      tokio::spawn(async move {
+        tokio::time::sleep(ends).await;
+        ending.cancel();
+      });
     }
-    assert_eq!(tries, 3, "the new session's tries alone");
+    let started = Instant::now();
+    let mut tries = Vec::new();
+    let refused = |rooms: Vec<String>| -> Vec<(String, ClientError)> {
+      let refusal = |room| (room, ClientError::NoResponse("refused".into()));
+      rooms.into_iter().map(refusal).collect()
+    };
+    let again = |rooms| {
+      tries.push(started.elapsed());
+      std::future::ready(refused(rooms))
+    };
+    let first = refused(vec!["lobby".to_string()]);
+    messaging
+      .try_again(first, &session, again)
+      .await;
+    (app, tries)
+  }
+
+  // the clock stands still while anything runs, so the waits are the shipped ones
+  #[tokio::test(start_paused = true)]
+  async fn a_room_refused_after_a_login_is_tried_twice_more_then_left_to_join() {
+    let (app, tries) = tried_again(None).await;
+    let ten = REJOIN_AGAIN[0];
+    assert_eq!(tries, [ten, ten + REJOIN_AGAIN[1]]);
+    assert_eq!(standing(&app, "lobby").await, Some(true), "shown refused");
+    let (status, _) = app
+      .call("GET", "/api/v0/rooms/joined/lobby/messages", None)
+      .await;
+    assert_eq!(status, 200, "its history stays readable");
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn the_tries_after_a_login_stop_when_its_session_ends() {
+    let ends = REJOIN_AGAIN[0] + Duration::from_secs(5);
+    let (app, tries) = tried_again(Some(ends)).await;
+    assert_eq!(tries, [REJOIN_AGAIN[0]], "no try after the session ended");
+    assert_eq!(standing(&app, "lobby").await, Some(false), "not marked refused");
   }
 
   #[tokio::test]
-  async fn a_room_refused_after_a_reconnect_is_tried_twice_more_then_left_to_join() {
+  async fn a_room_refused_after_a_reconnect_stays_listed_until_the_user_joins_it() {
     let (app, mut server, refusing) = refused_after_a_reconnect().await;
-    // the try after the login, then two more
-    for _ in 0..3 {
-      server.received(joins("lobby")).await;
-    }
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-      while standing(&app, "lobby").await != Some(true) {
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    server.received(joins("lobby")).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+      while standing(&app, "lobby").await != Some(false) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
       }
     })
     .await
-    .expect("the room was never shown refused");
-    let tried_again = server
-      .receives(std::time::Duration::from_millis(500), |request| {
-        joins("lobby")(request).is_some()
-      })
-      .await;
-    assert!(!tried_again, "tried a fourth time");
+    .expect("the room refused was not kept");
     assert_eq!(app.state.state.current().rooms, Vec::<String>::new());
     let (status, _) = app
       .call("GET", "/api/v0/rooms/joined/lobby/messages", None)
