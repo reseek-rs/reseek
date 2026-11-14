@@ -184,6 +184,19 @@ describe("the users directory", () => {
       expect(rows[1].getAttribute("aria-rowindex")).toBe("52");
     });
 
+    it("lets a row woken on a page sleep again once the page is left", async () => {
+      await paged({ size: 25 });
+      const tipped = () => !!line("user0").querySelector("[data-tooltip-trigger]");
+      line("user0").dispatchEvent(new PointerEvent("pointerenter", { pointerType: "mouse" }));
+      await flushFaked();
+      expect(tipped()).toBe(true);
+      pressed("Page 2").click();
+      await flushFaked();
+      pressed("Page 1").click();
+      await flushFaked();
+      expect(tipped()).toBe(false);
+    });
+
     it("follows the address when a link moves it", async () => {
       const { asked, address } = await paged({ page: 3, size: 25 });
       expect(lines()).toBe(5);

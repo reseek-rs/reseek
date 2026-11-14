@@ -200,6 +200,14 @@
     return [...users.filter((u) => u.buddy), ...users.filter((u) => !u.buddy)];
   });
 
+  // a row that leaves the page sleeps again, so only the rows shown are ever awake
+  $effect(() => {
+    const on = new Set(shown.map((u) => u.username));
+    untrack(() => {
+      for (const name of awake) if (!on.has(name)) awake.delete(name);
+    });
+  });
+
   const list = new ListControl<UserSummary>({
     lines: () => shown,
     key: (u) => u.username,
