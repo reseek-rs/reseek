@@ -312,7 +312,8 @@ impl Downloads {
 
   /// Writes the download `record` as waiting for its user, who is offline, and waits until
   /// `away` no longer says they are, then writes it as waiting for its turn; false when `cancel`
-  /// came first.
+  /// came first. A status the server pushes ends the wait, and so does one asked for as often as
+  /// the download would retry, since a watch lost, refused or never answered pushes nothing.
   async fn wait_for_user(
     &self,
     record: &mut Record,
@@ -327,13 +328,36 @@ impl Downloads {
       self.save(record, true).await;
     }
     self.watch_user(&record.username);
-    info!("download waits for its user to come back online");
-    tokio::select! {
-      // the user's entry is kept while this follows it, so the wait ends with them back
-      _ = away.wait_for(|offline| !offline) => {}
-      () = cancel.cancelled() => return false,
+    debug!("download waits for its user to come back online");
+    let mut checks = 1;
+    loop {
+      checks += 1;
+      let retry = self
+        .config
+        .current()
+        .values
+        .transfers
+        .download
+        .retry
+        .clone();
+      let every = retry_wait(checks, retry.delay, retry.max_delay);
+      let back = tokio::select! {
+        // the user's entry is kept while this follows it, so the wait ends with them back
+        back = away.wait_for(|offline| !offline) => back.is_ok(),
+        () = cancel.cancelled() => return false,
+        () = tokio::time::sleep(every) => false,
+      };
+      if back {
+        break;
+      }
+      // one ask per user and wait, whichever of their downloads makes it; its answer, kept,
+      // ends the wait of every download of theirs
+      if self.away.ask_due(&record.username, every) {
+        self.watch_user(&record.username);
+        self.status_offline(&record.username).await;
+      }
     }
-    info!("the user of a waiting download is back; trying it again");
+    debug!("the user of a waiting download is back; trying it again");
     record
       .enter(State::WAITING)
       .expect("a download waiting for its user may wait here");

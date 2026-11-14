@@ -4,10 +4,11 @@
 //! their address confirms unless everyone may, the file is no larger than allowed and not one the
 //! download filters skip, the sender is sending fewer files than allowed (counted by the address
 //! they send from when their name is not checked), no download of the file from them is unfinished
-//! and none was canceled within [`CANCEL_REMEMBERED`], cleared from the list or not. A file taken is downloaded like any other, but always at
-//! the size it was offered with and never in place of a file. The files one sender sends close
-//! together are one job they started, whose downloads' first tries take the offers; a file whose
-//! job cannot be listed is refused, since the job is what marks its download as sent unasked.
+//! and none was canceled within [`CANCEL_REMEMBERED`], cleared from the list or not. A file
+//! taken is downloaded like any other, but always at the size it was offered with and never in
+//! place of a file. The files one sender sends close together are one job they started, whose
+//! downloads' first tries take the offers; a file whose job cannot be listed is refused, since
+//! the job is what marks its download as sent unasked.
 
 mod senders;
 

@@ -1309,6 +1309,32 @@ impl Peers {
   }
 }
 
+/// Connects to `app`'s daemon as `username` for the transfer `token`, reads where it asks to
+/// start, and sends the first `sent` bytes of a file of ten from there.
+async fn sending(app: &TestApp, username: &str, token: u32, sent: usize) -> tokio::net::TcpStream {
+  use soulseek_proto::init::{FileTransferInit, PeerInit};
+  use soulseek_proto::{InitMessage, PeerConnectionType};
+  use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+  let port = app.state.config.current().values.soulseek.listen_port;
+  let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+    .await
+    .unwrap();
+  let mut init = InitMessage::PeerInit(PeerInit {
+    username: username.into(),
+    connection_type: PeerConnectionType::Transfer,
+    token: 0,
+  })
+  .encode();
+  init.extend(FileTransferInit { token }.encode());
+  stream.write_all(&init).await.unwrap();
+  let mut offset = [0; 8];
+  stream.read_exact(&mut offset).await.unwrap();
+  assert_eq!(u64::from_le_bytes(offset), 0);
+  stream.write_all(&[7; 10][..sent]).await.unwrap();
+  stream
+}
+
 /// The test's side of a message connection the daemon made.
 struct Peer {
   stream: tokio::net::TcpStream,
@@ -1477,9 +1503,83 @@ async fn a_download_whose_try_finds_its_user_offline_waits_for_them() {
   assert!(still.waits_for_user(), "{:?}", still.state);
   assert_eq!(still.attempts, 1);
 
-  peers.presence("bob", true);
+  // bob comes back without the server saying so: the status the download asks for finds him
+  reseek_shares::lock(&peers.online).insert("bob".into());
   let mut bob = peers.connected("bob").await;
   bob.asked_for(file).await;
+}
+
+/// A login has the downloads waiting for a user who was offline try them again, since the
+/// session that said so is over.
+#[tokio::test]
+async fn a_login_has_the_downloads_waiting_for_an_offline_user_try_them_again() {
+  let app = crate::testing::soulseek::app(TRUSTED).await;
+  let server = crate::testing::soulseek::Server::silent().await;
+  let downloads = &app.state.downloads;
+  let mut away = downloads.away.follow("bob");
+  downloads.away.heard("bob", true);
+  assert!(*away.borrow_and_update());
+  server.login(&app).await;
+  let back = tokio::time::timeout(
+    std::time::Duration::from_secs(5),
+    away.wait_for(|offline| !offline),
+  )
+  .await;
+  assert!(back.is_ok(), "the login left bob offline");
+}
+
+/// A user who goes offline while their file moves does not stop it: it arrives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_moving_when_its_user_goes_offline_keeps_moving() {
+  use soulseek_proto::peer::TransferResponse;
+  use tokio::io::AsyncWriteExt;
+
+  let app = crate::testing::soulseek::app(TRUSTED).await;
+  let peers = Peers::start(&app, &["alice"]).await;
+  let file = "@@a\\Album\\1.flac";
+  let id = enqueued(&app, "alice", file).await;
+  let mut alice = peers.connected("alice").await;
+  alice.asked_for(file).await;
+  assert!(matches!(
+    alice.offer(file, 1).await,
+    TransferResponse::Allowed { token: 1, .. }
+  ));
+  let mut transfer = sending(&app, "alice", 1, 4).await;
+  read_until(&app, id, |r| r.state == State::InProgress).await;
+  peers.presence("alice", false);
+  tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+  let moving = read(&app, id).await;
+  assert_eq!(moving.state, State::InProgress, "stopped though it moves");
+  transfer.write_all(&[7; 6]).await.unwrap();
+  read_until(&app, id, |r| {
+    r.state == State::Completed(TransferOutcome::Succeeded)
+  })
+  .await;
+}
+
+/// A file whose transfer breaks because its user logged off, before the server says so, does
+/// not count the try: the server is asked, and the download waits for them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_cut_off_by_its_user_logging_off_waits_for_them_without_counting() {
+  use soulseek_proto::peer::TransferResponse;
+
+  let config = format!("[transfers.download.retry]\ndelay = \"1h\"\nmax_delay = \"1h\"\n{TRUSTED}");
+  let app = crate::testing::soulseek::app(&config).await;
+  let peers = Peers::start(&app, &["alice"]).await;
+  let file = "@@a\\Album\\1.flac";
+  let id = enqueued(&app, "alice", file).await;
+  let mut alice = peers.connected("alice").await;
+  alice.asked_for(file).await;
+  assert!(matches!(
+    alice.offer(file, 1).await,
+    TransferResponse::Allowed { token: 1, .. }
+  ));
+  let transfer = sending(&app, "alice", 1, 4).await;
+  read_until(&app, id, |r| r.state == State::InProgress).await;
+  reseek_shares::lock(&peers.online).remove("alice");
+  drop(transfer);
+  let waiting = read_until(&app, id, Record::waits_for_user).await;
+  assert_eq!(waiting.attempts, 1, "the try cut off does not count");
 }
 
 /// With one download slot: files waiting in their users' queues hold none, so alice's and bob's

@@ -227,9 +227,10 @@ impl Record {
     self.average_speed = snapshot.average_speed;
   }
 
-  /// Whether the download waits here for its user, who is offline, to come back.
+  /// Whether the download waits here for its user, who is offline, to come back; a paused one
+  /// waits for its resume.
   pub fn waits_for_user(&self) -> bool {
-    self.state == State::WAITING && self.exception.as_deref() == Some(USER_OFFLINE)
+    !self.paused && self.state == State::WAITING && self.exception.as_deref() == Some(USER_OFFLINE)
   }
 
   /// Whether the transfer has finished, whatever the outcome.

@@ -386,7 +386,7 @@ impl Downloads {
               State::QueuedLocally { .. } | State::Requested | State::QueuedRemotely { .. }
             );
             if *away.borrow_and_update() && asking {
-              info!(state = %record.state, "the user went offline; the download stops asking");
+              debug!(state = %record.state, "the user went offline; the download stops asking");
               went_offline = true;
               stop.cancel();
             }
@@ -467,6 +467,10 @@ impl Downloads {
         // a try canceled meanwhile ends as the cancel asked
         let offline = (went_offline && !cancel.is_cancelled())
           || (failed.retryable && (found_offline || *away.borrow()));
+        // a file moving when its user logs off fails before word of it comes, so the server
+        // is asked
+        let offline = offline
+          || (failed.retryable && self.status_offline(&record.username).await == Some(true));
         if offline {
           Attempted::UserOffline
         } else {
@@ -538,6 +542,26 @@ impl Downloads {
       );
     }
     self.save(record, previous != state).await;
+  }
+
+  /// Whether the server says `username` is offline now, kept for their downloads; none when it
+  /// cannot be asked or does not answer.
+  pub(super) async fn status_offline(&self, username: &str) -> Option<bool> {
+    let client = self.network.client();
+    if !client.state().is_logged_in() {
+      return None;
+    }
+    match self.users.status_of(client, username).await {
+      Ok(status) => {
+        let offline = status.presence == api_types::users::UserPresence::Offline;
+        self.away.heard(username, offline);
+        Some(offline)
+      }
+      Err(e) => {
+        debug!(username, error = %e, "status of a download's user not read");
+        None
+      }
+    }
   }
 
   /// The states the download `id` entered, oldest first with when, as one line for a log.
