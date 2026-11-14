@@ -207,6 +207,51 @@ impl Overrides {
   }
 }
 
+/// `items` without what the configuration refuses, by the keys of `refused`, with the keys
+/// given up: an override of a refused key goes whole, while one of a user-keyed map gives up
+/// each entry it changes that is refused as `map.name`, which goes back to the value it was set
+/// over, and goes once it changes nothing else.
+pub(crate) fn without_refused(
+  schema: &Schema,
+  items: &BTreeMap<Key, Override>,
+  refused: &BTreeSet<&str>,
+) -> (BTreeMap<Key, Override>, Vec<Key>) {
+  let mut kept = BTreeMap::new();
+  let mut dropped = Vec::new();
+  for (key, o) in items {
+    if refused.contains(key.as_str()) {
+      dropped.push(key.clone());
+      continue;
+    }
+    let mut o = o.clone();
+    if schema.field(key).is_some_and(|f| f.kind == Kind::Map)
+      && let Value::Object(entries) = &mut o.value
+    {
+      let entry = |side: &Value, name: &str| side.get(name).cloned().unwrap_or(Value::Null);
+      let given_up: Vec<String> = entries
+        .iter()
+        .filter(|(name, value)| {
+          refused.contains(format!("{key}.{name}").as_str())
+            && !same(value, &entry(&o.declared, name))
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+      for name in given_up {
+        match entry(&o.declared, &name) {
+          Value::Null => entries.remove(&name),
+          declared => entries.insert(name.clone(), declared),
+        };
+        dropped.push(format!("{key}.{name}"));
+      }
+      if same(&o.value, &o.declared) {
+        continue;
+      }
+    }
+    kept.insert(key.clone(), o);
+  }
+  (kept, dropped)
+}
+
 /// Why an override, or a key of a map entry it changes, gives way to the files.
 const MOVED: &str = "the value it was set over changed";
 

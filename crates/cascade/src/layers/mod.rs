@@ -19,7 +19,7 @@ use tracing::{info, warn};
 
 use crate::files::{self, Entry, LoadedFile};
 use crate::loaded::Loaded;
-use crate::overrides::{Override, Overrides};
+use crate::overrides::{Override, Overrides, without_refused};
 use crate::schema::Schema;
 use crate::source::Source;
 use crate::{Error, Invalid, Key, Root, paths, tree};
@@ -171,6 +171,8 @@ impl<T: Root> Layers<T> {
   }
 
   /// The application's checks, run on every load: a configuration they refuse does not load.
+  /// A problem in an entry of a user-keyed map is reported under the entry's key, `map.name`,
+  /// so that a runtime override of the map gives up only that entry when the files change.
   pub fn validate(
     mut self,
     validator: impl Fn(&T) -> Result<(), Vec<Invalid>> + Send + Sync + 'static,
@@ -294,18 +296,14 @@ impl<T: Root> Layers<T> {
         Ok(loaded) => return Ok(loaded),
         Err(failure) => failure,
       };
-      // an override saved by an older version can stop fitting its key
+      // an override saved by an older version can stop fitting its key, and an entry of a map
+      // set at run time can stop passing the checks once the files change
       let keys = error_keys(&failure.error);
-      let (bad, kept): (BTreeMap<Key, Override>, _) = self
-        .overrides
-        .items()
-        .clone()
-        .into_iter()
-        .partition(|(key, _)| keys.contains(key.as_str()));
-      if bad.is_empty() {
+      let (kept, dropped) = without_refused(&self.schema, self.overrides.items(), &keys);
+      if dropped.is_empty() {
         return Err(failure);
       }
-      for key in bad.keys() {
+      for key in dropped {
         warn!(key, error = %failure.error, "runtime override dropped, the configuration does not load with it");
       }
       self.overrides.keep_only(kept);
@@ -519,6 +517,85 @@ mod tests {
       .unwrap();
     assert_eq!(loaded.values.server.port, 2242);
     assert!(Overrides::load(&path).unwrap().items().is_empty());
+  }
+
+  #[test]
+  fn only_the_entries_of_a_map_override_the_configuration_refuses_are_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("overrides.toml");
+    let mut overrides = Overrides::load(&path).unwrap();
+    overrides
+      .replace(BTreeMap::from([(
+        "api_keys".to_string(),
+        Override {
+          value: json!({
+            "a": { "key": "a1", "role": "writer" },
+            "b": { "key": "b1", "role": "reader" },
+          }),
+          declared: json!({ "a": { "key": "a1", "role": "reader" } }),
+          set_by: "admin".into(),
+          set_at: Utc::now(),
+          expires_at: None,
+          until_restart: false,
+        },
+      )]))
+      .unwrap();
+    let layers = || {
+      example_layers(dir.path())
+        .overrides(Overrides::load(&path).unwrap())
+        .validate(|o: &Example| {
+          let invalid: Vec<Invalid> = o
+            .api_keys
+            .iter()
+            .filter(|(_, k)| k.role == o.instance_name)
+            .map(|(name, _)| Invalid::new(format!("api_keys.{name}"), "named as the instance"))
+            .collect();
+          if invalid.is_empty() {
+            Ok(())
+          } else {
+            Err(invalid)
+          }
+        })
+    };
+    let file = "[api_keys.a]\nkey = \"a1\"\nrole = \"reader\"\n";
+    let stored = || {
+      Overrides::load(&path).unwrap().items()["api_keys"]
+        .value
+        .clone()
+    };
+
+    // the files' own entry is refused, which the override does not change
+    write(
+      dir.path(),
+      "config.toml",
+      &format!("instance_name = \"keeper\"\n{file}[api_keys.c]\nkey = \"c1\"\nrole = \"keeper\"\n"),
+    );
+    assert!(matches!(layers().load(), Err(Error::Invalid(_))));
+    let kept = stored();
+    assert_eq!(
+      (&kept["a"]["role"], &kept["b"]["role"]),
+      (&json!("writer"), &json!("reader")),
+      "the override keeps its own entries"
+    );
+
+    write(
+      dir.path(),
+      "config.toml",
+      &format!("instance_name = \"writer\"\n{file}"),
+    );
+    let loaded = layers().load().unwrap();
+    let roles: Vec<(&str, &str)> = loaded
+      .values
+      .api_keys
+      .iter()
+      .map(|(name, k)| (name.as_str(), k.role.as_str()))
+      .collect();
+    assert_eq!(roles, [("a", "reader"), ("b", "reader")]);
+    assert_eq!(
+      stored(),
+      json!({ "a": { "key": "a1", "role": "reader" }, "b": { "key": "b1", "role": "reader" } }),
+      "the entry the configuration refuses goes back to the files', the others stay"
+    );
   }
 
   #[test]

@@ -185,7 +185,7 @@ impl<T: Root> State<T> {
           .diff_trees(&previous.tree, tree)
           .into_iter()
           .map(|key| {
-            let reason = if keys.contains(key.as_str()) {
+            let reason = if keys.iter().any(|k| is_under(k, &key)) {
               reason_for(&failure.error, &key)
             } else {
               message.clone()
@@ -225,13 +225,24 @@ pub(super) enum Read {
   Overrides,
 }
 
-/// What an error says about one of its keys.
+/// Whether `about`, a key an error is about, is `key` or an entry of it.
+fn is_under(about: &str, key: &str) -> bool {
+  about
+    .strip_prefix(key)
+    .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+}
+
+/// What an error says about one of its keys, a problem of one of its entries after the entry's
+/// name.
 fn reason_for(error: &Error, key: &str) -> String {
   match error {
     Error::Invalid(invalid) => invalid
       .iter()
-      .filter(|i| i.key == key)
-      .map(|i| i.message.as_str())
+      .filter(|i| is_under(&i.key, key))
+      .map(|i| match i.key[key.len()..].strip_prefix('.') {
+        Some(entry) => format!("{entry}: {}", i.message),
+        None => i.message.clone(),
+      })
       .collect::<Vec<_>>()
       .join("; "),
     other => other.to_string(),
@@ -312,6 +323,32 @@ mod tests {
     assert_eq!(current.values.server.port, 3000);
     assert_eq!(current.load_error, None);
     assert!(current.not_applied.is_empty());
+  }
+
+  #[tokio::test]
+  async fn a_refused_entry_is_reported_under_its_map() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let layers = example_layers(dir.path()).validate(|o: &Example| {
+      let invalid: Vec<Invalid> = o
+        .api_keys
+        .keys()
+        .filter(|name| name.as_str() == "bad")
+        .map(|name| Invalid::new(format!("api_keys.{name}"), "not a good name"))
+        .collect();
+      if invalid.is_empty() {
+        Ok(())
+      } else {
+        Err(invalid)
+      }
+    });
+    let watcher = Watcher::new(layers).unwrap();
+    fs::write(&path, "[api_keys.bad]\nkey = \"k\"\n").unwrap();
+    assert!(watcher.reload().await.is_err());
+    assert_eq!(
+      watcher.current().not_applied["api_keys"].reason,
+      "bad: not a good name"
+    );
   }
 
   #[tokio::test]
