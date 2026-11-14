@@ -22,7 +22,7 @@ use crate::loaded::{Loaded, NotApplied};
 use crate::overrides::Lasts;
 use crate::schema::keep_secrets;
 use crate::{Apply, Error, Key, Root, lock, tree};
-use events::{DEBOUNCE, FileEvents, quiet};
+use events::{FileEvents, SETTLE, Settle, quiet};
 use reload::{Read, pending};
 
 /// How long to wait before reading the files again after a reload failed, since an editor that
@@ -214,9 +214,10 @@ impl<T: Root> Watcher<T> {
   }
 
   /// Starts the task that reloads on file changes (as `watch` says) and ends runtime
-  /// overrides when they expire. It stops when `cancel` is canceled. Call it once. When the
-  /// files are watched, they are read again before this returns if they changed since they
-  /// were loaded, so an edit made before the watch began is not missed.
+  /// overrides when they expire. It stops when `cancel` is canceled. Call it once. A changed
+  /// file is read once it stands, so one a slow writer is still writing is not loaded half
+  /// written. When the files are watched, they are read again before this returns if they
+  /// changed since they were loaded, so an edit made before the watch began is not missed.
   pub async fn start(&self, watch: Watch, cancel: CancellationToken) {
     let span = info_span!("config_watcher");
     let events = Arc::new(Notify::new());
@@ -403,14 +404,11 @@ impl<T: Root> Watcher<T> {
       tokio::select! {
         () = cancel.cancelled() => break,
         () = events.notified() => {
-          if !quiet(&events, DEBOUNCE, &cancel).await {
+          if let Some(files) = &mut files
+            && !self.reload_settled(files, &events, &cancel, SETTLE).await
+          {
             break;
           }
-          if let Some(files) = &mut files {
-            files.watch_new_dirs();
-          }
-          // a failure is logged and kept in the current state where it happens
-          drop(self.reload_files(true).await);
         }
         () = expiry => {
           let reapplied = self.blocking(|state, shared| state.reapply(shared)).await;
@@ -421,6 +419,84 @@ impl<T: Root> Watcher<T> {
       }
     }
     debug!("configuration watcher stopped");
+  }
+
+  /// Reloads the files once what they hold stands: quiet for `settle.debounce`, then, where the
+  /// system says when a writer closes a file, with no writer left, and elsewhere with the same
+  /// bytes on two reads `settle.again` apart. A file that does not stand within `settle.limit`
+  /// is reported and not applied; its next change starts the wait over. False when canceled.
+  async fn reload_settled(
+    &self,
+    files: &mut FileEvents,
+    events: &Notify,
+    cancel: &CancellationToken,
+    settle: Settle,
+  ) -> bool {
+    let limit = tokio::time::Instant::now() + settle.limit;
+    loop {
+      match tokio::time::timeout_at(limit, quiet(events, settle.debounce, cancel)).await {
+        Ok(true) => {}
+        Ok(false) => return false,
+        Err(_) => break,
+      }
+      files.watch_new_dirs();
+      let open = match files.writing() {
+        Some(open) => open,
+        None => match self.moving(settle.again, cancel).await {
+          Some(moving) if moving.is_empty() => Vec::new(),
+          Some(moving) => {
+            debug!(
+              files = moving.join(", "),
+              "configuration file still changing"
+            );
+            continue;
+          }
+          None => return false,
+        },
+      };
+      if open.is_empty() {
+        // a failure is logged and kept in the current state where it happens
+        drop(self.reload_files(true).await);
+        return true;
+      }
+      debug!(files = ?open, "configuration file still open to a writer");
+      // the writer's close is an event
+      tokio::select! {
+        () = cancel.cancelled() => return false,
+        () = events.notified() => {}
+        () = tokio::time::sleep_until(limit) => break,
+      }
+    }
+    let open = files.writing().unwrap_or_default();
+    // an error only means the runtime is stopping
+    self
+      .blocking(move |state, shared| state.unsettled(shared, &open))
+      .await
+      .is_ok()
+  }
+
+  /// The names of the files whose bytes differ between two reads `again` apart, none when the
+  /// first finds them as the last reload read them. `None` when canceled.
+  async fn moving(&self, again: Duration, cancel: &CancellationToken) -> Option<Vec<String>> {
+    let Some(first) = self.blocking(|state, _| state.changed_files()).await.ok()? else {
+      return Some(Vec::new());
+    };
+    tokio::select! {
+      () = cancel.cancelled() => return None,
+      () = tokio::time::sleep(again) => {}
+    }
+    let Some(second) = self.blocking(|state, _| state.changed_files()).await.ok()? else {
+      return Some(Vec::new());
+    };
+    let mut names: Vec<String> = first
+      .iter()
+      .filter(|f| !second.contains(f))
+      .chain(second.iter().filter(|f| !first.contains(f)))
+      .map(|f| f.name.clone())
+      .collect();
+    names.sort();
+    names.dedup();
+    Some(names)
   }
 
   /// Reloads the files, once more after [`RETRY`] if that fails, then reports the failure.

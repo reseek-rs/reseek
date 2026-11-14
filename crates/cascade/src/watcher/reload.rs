@@ -2,6 +2,7 @@
 //! saying why when the load fails.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -10,6 +11,7 @@ use tracing::{debug, error, info};
 
 use super::{Attempt, ByApply, Change, Failed, Shared, State};
 use crate::describe::Apply;
+use crate::files::LoadedFile;
 use crate::layers::{Declared, Failure, error_keys};
 use crate::loaded::{Loaded, NotApplied};
 use crate::schema::Schema;
@@ -30,6 +32,33 @@ impl<T: Root> State<T> {
       Ok(change) => Attempt::Done(change),
       Err(failure) => Attempt::Failed(failure),
     }
+  }
+
+  /// The files as they are on disk now, `None` when they are as the last attempt read them, or
+  /// cannot be read, which loading them says.
+  pub(super) fn changed_files(&self) -> Option<Vec<LoadedFile>> {
+    let files = self.layers.files_now().ok()?;
+    (files != self.attempted).then_some(files)
+  }
+
+  /// Reports the files changed since the last attempt, and those of `open` a writer still has,
+  /// as not standing yet: the values in effect stay.
+  pub(super) fn unsettled(&mut self, shared: &Shared<T>, open: &[PathBuf]) {
+    // a listing that fails names the files as last read
+    let now = self
+      .layers
+      .files_now()
+      .unwrap_or_else(|_| self.attempted.clone());
+    let names: Vec<String> = now
+      .into_iter()
+      .filter(|f| !self.attempted.contains(f) || open.contains(&f.path))
+      .map(|f| f.name)
+      .collect();
+    // back as last read, so nothing waits to be applied
+    if names.is_empty() {
+      return;
+    }
+    self.report(shared, Error::Unsettled(names).into(), Read::Files);
   }
 
   /// Loads the files and makes them the configuration in effect.

@@ -270,6 +270,10 @@ impl From<cascade::Error> for ApiError {
     use cascade::Error as E;
     match error {
       E::Stale => Self::conflict("The configuration file changed on disk", None),
+      e @ E::Unsettled(_) => Self::conflict(
+        "The configuration file is being written",
+        Some(e.to_string()),
+      ),
       E::Outdated(current) => {
         Self::conflict("The options changed since they were read", Some(current))
       }
