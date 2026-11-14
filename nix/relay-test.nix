@@ -348,6 +348,8 @@ pkgs.testers.runNixOSTest {
         # so its port is not probed from its own machine
         server.wait_for_unit("soulfind.service")
         acme.wait_for_unit("pebble.service")
+        # a pebble that never answers fails here, not as a certificate that is never trusted
+        controller.wait_for_unit("acme-server-up.service", timeout=datetime.timedelta(seconds=120))
         controller.wait_for_unit("reseek.service")
         controller.wait_for_unit("nginx.service")
         # the authority pebble issues from is made when it starts, so it is fetched, not built in
