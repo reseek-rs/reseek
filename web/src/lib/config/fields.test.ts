@@ -157,6 +157,15 @@ describe("controls and drafts", () => {
     const found = errorsByKey("web.port: must be at least 1; web.ui: no", ["web.port", "web.ui"]);
     expect(Object.fromEntries(found)).toEqual({ "web.port": "must be at least 1", "web.ui": "no" });
     expect(errorsByKey("a: one; a: two", ["a"]).get("a")).toBe("one; two");
+    // a map's entries are named after their map's key
+    const entries = errorsByKey("users.bob: no password; users.a.b: no role; user: x", [
+      "user",
+      "users"
+    ]);
+    expect(Object.fromEntries(entries)).toEqual({
+      users: "bob: no password; a.b: no role",
+      user: "x"
+    });
     // a value its type refuses, as the daemon words it; a table's names the row's field
     const typed = errorsByKey(
       'analysis.timeout: invalid value: string "five", expected a duration; ' +

@@ -118,14 +118,16 @@ export const fromDraft = (
 
 /**
  * The daemon's messages for each key, from a 400's detail of `<key>: <message>; ...`, several for
- * one key joined as they came
+ * one key joined as they came. A problem in an entry of a map comes as `<key>.<entry>: <message>`
+ * and is kept as `<entry>: <message>`
  */
 export const errorsByKey = (detail: string | null | undefined, keys: string[]) => {
   const found = new Map<string, string>();
   for (const part of (detail ?? "").split("; ")) {
-    const key = keys.find((k) => part.startsWith(`${k}: `));
+    const key =
+      keys.find((k) => part.startsWith(`${k}: `)) ?? keys.find((k) => part.startsWith(`${k}.`));
     if (!key) continue;
-    const message = part.slice(key.length + 2);
+    const message = part.slice(key.length + (part.startsWith(`${key}: `) ? 2 : 1));
     found.set(key, found.has(key) ? `${found.get(key)}; ${message}` : message);
   }
   return found;
