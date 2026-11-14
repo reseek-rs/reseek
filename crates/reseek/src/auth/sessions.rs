@@ -96,11 +96,14 @@ pub struct SignIn {
 
 impl SignIn {
   /// The role `authentication` gives `subject`, who signed in this way; `None` when it lets them
-  /// in no more, as for a local account removed, a provider removed, or groups or allow-lists
-  /// that refuse them.
+  /// in no more, as for a local account removed, password login or forwarded identities turned
+  /// off, a provider removed, or groups or allow-lists that refuse them.
   pub fn role(&self, subject: &str, authentication: &Authentication) -> Option<Role> {
     match &self.origin {
       Origin::Local => {
+        if !authentication.local.enabled {
+          return None;
+        }
         let username = local::username_of(subject)?;
         if username == authentication.username {
           return Some(Role::Administrator);
@@ -113,6 +116,7 @@ impl SignIn {
         let subject = oidc::provider_subject(name, subject)?;
         provider_role(options, subject, self.email.as_deref(), &self.groups).ok()
       }
+      Origin::Proxy if !authentication.proxy.enabled => None,
       Origin::Proxy => Mapping::from(&authentication.proxy.role_mapping).role(&self.groups),
     }
   }

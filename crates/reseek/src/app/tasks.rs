@@ -343,6 +343,35 @@ mod tests {
   }
 
   #[tokio::test(start_paused = true)]
+  async fn turning_a_way_of_signing_in_off_ends_its_sessions() {
+    let config = |local: bool, proxy: bool| {
+      format!(
+        "[web]\ntrusted_proxies = [\"127.0.0.1/32\"]\n[web.authentication.local]\n\
+         enabled = {local}\n[web.authentication.proxy]\nenabled = {proxy}\n\
+         [web.authentication.proxy.role_mapping]\nreadwrite = [\"users\"]\n{VIEWER}"
+      )
+    };
+    let app = app(&config(true, true), &[]).await.with_page();
+    let local = signed_in(&app).await;
+    let page = with(request("GET", "/", None), "x-authentik-username", "alice");
+    let page = app.send(with(page, "x-authentik-groups", "users")).await;
+    let proxied = set_cookie(&page.headers, "reseek_session").unwrap();
+
+    reload(&app, &config(false, true)).await;
+    assert_eq!(status(&app, &local).await, 403, "withheld at once");
+    assert_eq!(status(&app, &proxied).await, 200);
+    pass(SETTLE).await;
+    until_ended(&app, &local).await;
+    assert!(!ended(&app, &proxied).await);
+
+    reload(&app, &config(true, false)).await;
+    assert_eq!(status(&app, &proxied).await, 403);
+    pass(SETTLE).await;
+    until_ended(&app, &proxied).await;
+    assert_eq!(status(&app, &local).await, 401, "it takes a new sign-in");
+  }
+
+  #[tokio::test(start_paused = true)]
   async fn a_removal_made_while_stopped_ends_the_session_after_the_start() {
     let app = app(VIEWER, &[]).await;
     let cookie = signed_in(&app).await;
