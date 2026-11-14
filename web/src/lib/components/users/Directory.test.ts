@@ -126,8 +126,9 @@ describe("the users directory", () => {
   });
 
   describe("in pages", () => {
-    const many = Array.from({ length: 120 }, (_, n) => userSummary(`user${n}`));
-    /** the directory over `many`, a page at a time, answering a filter on Blocked with none */
+    // two pages at the smallest size, the second short: each row drawn is slow to mount
+    const many = Array.from({ length: 30 }, (_, n) => userSummary(`user${n}`));
+    /** the directory over `many`, a page at a time, answering a filter on Blocked with three */
     const paged = async (place: Partial<DirectoryAddress> = {}) => {
       vi.useFakeTimers();
       const net = fakeNetwork((url) => {
@@ -168,47 +169,47 @@ describe("the users directory", () => {
       )!;
 
     it("reads only the page shown and keeps the place in the address", async () => {
-      const { asked, places } = await paged();
-      expect(lines()).toBe(50);
-      pressed("Page 3").click();
+      const { asked, places } = await paged({ size: 25 });
+      expect(lines()).toBe(25);
+      pressed("Page 2").click();
       await flushFaked();
-      expect(asked().at(-1)).toEqual(["100", "50"]);
-      expect(lines()).toBe(20);
-      expect(places).toEqual([{ page: 3, size: 50 }]);
-      expect(pressed("Page 3").getAttribute("aria-current")).toBe("page");
+      expect(asked().at(-1)).toEqual(["25", "25"]);
+      expect(lines()).toBe(5);
+      expect(places).toEqual([{ page: 2, size: 25 }]);
+      expect(pressed("Page 2").getAttribute("aria-current")).toBe("page");
       expect(pressed("Next page").disabled).toBe(true);
       // every row says where it is among all of them, the header first
       const rows = [...document.querySelectorAll('[role="grid"] [role="row"]')];
       expect(rows[0].getAttribute("aria-rowindex")).toBe("1");
-      expect(rows[1].getAttribute("aria-rowindex")).toBe("102");
+      expect(rows[1].getAttribute("aria-rowindex")).toBe("27");
     });
 
     it("follows the address when a link moves it", async () => {
-      const { asked, address } = await paged({ page: 3, size: 50 });
-      expect(lines()).toBe(20);
+      const { asked, address } = await paged({ page: 2, size: 25 });
+      expect(lines()).toBe(5);
       // the sidebar's link to the directory, with no page in it
       address.value = directoryAt(new URLSearchParams());
       await flushFaked();
       expect(asked().at(-1)).toEqual(["0", "50"]);
-      expect(lines()).toBe(50);
+      expect(lines()).toBe(30);
       expect(pressed("Page 1").getAttribute("aria-current")).toBe("page");
     });
 
     it("starts again from the first page when a filter changes", async () => {
-      const { asked, places } = await paged({ page: 2, size: 50 });
-      expect(asked()).toEqual([["50", "50"]]);
+      const { asked, places } = await paged({ page: 2, size: 25 });
+      expect(asked()).toEqual([["25", "25"]]);
       pressed("Blocked").click();
       await flushFaked();
       // one read, of the first page: the old page is never read under the new filter
       expect(asked()).toEqual([
-        ["50", "50"],
-        ["0", "50"]
+        ["25", "25"],
+        ["0", "25"]
       ]);
-      expect(places).toEqual([{ page: 1, size: 50 }]);
+      expect(places).toEqual([{ page: 1, size: 25 }]);
     });
 
     it("keeps every filter in the address, so a link shows just what it names", async () => {
-      const { address } = await paged({ page: 2, size: 50, hasTransfers: true });
+      const { address } = await paged({ page: 2, size: 25, hasTransfers: true });
       pressed("Blocked").click();
       await flushFaked();
       expect(address.value).toMatchObject({ hasTransfers: true, blocked: true, page: 1 });
@@ -221,9 +222,9 @@ describe("the users directory", () => {
 
     it("lands on the last page when the one asked for is past the end", async () => {
       const { asked, places } = await paged({ page: 9, size: 25 });
-      expect(places).toEqual([{ page: 5, size: 25 }]);
-      expect(asked().at(-1)).toEqual(["100", "25"]);
-      expect(lines()).toBe(20);
+      expect(places).toEqual([{ page: 2, size: 25 }]);
+      expect(asked().at(-1)).toEqual(["25", "25"]);
+      expect(lines()).toBe(5);
     });
   });
 });
