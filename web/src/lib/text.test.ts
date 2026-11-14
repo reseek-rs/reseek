@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fold, linkify, pathParts, snippetParts, splitTail } from "./text";
+import { fold, linkify, pathParts, snippetParts, splitExtension, splitTail } from "./text";
 
 describe("links in text", () => {
   it("makes http and https runs links and keeps the rest as text", () => {
@@ -63,6 +63,14 @@ describe("cutting in the middle", () => {
     ]);
     expect(splitTail("x\\" + "a".repeat(60), true)[1]).toHaveLength(12);
     expect(splitTail("short")).toEqual(["", "short"]);
+  });
+
+  it("splits a kept end before its extension, which stays when the end is cut", () => {
+    expect(splitExtension("y Fists.flac")).toEqual(["y Fists", ".flac"]);
+    expect(splitExtension("スマス.flac")).toEqual(["スマス", ".flac"]);
+    expect(splitExtension("\\Lift Yr. Skinny")).toEqual(["\\Lift Yr. Skinny", ""]);
+    expect(splitExtension("no extension")).toEqual(["no extension", ""]);
+    expect(splitExtension(".bashrc")).toEqual(["", ".bashrc"]);
   });
 
   it("keeps as wide an end in a script whose letters are twice as wide", () => {

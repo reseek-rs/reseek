@@ -64,12 +64,43 @@ const brokenFigures = (page: Page, texts: string[]) =>
     return broken;
   }, texts);
 
-/** Checks the two long file names that differ only at their ends show those ends */
+/**
+ * Checks the two long file names that differ only at their ends show those ends, and their
+ * extension
+ */
 const endsShow = async (page: Page, what: string) => {
-  for (const end of ["_part1.flac", "_part2.flac"]) {
+  for (const end of ["_part1", "_part2", ".flac"]) {
     expect(await drawnWhole(page, end), `${what}: no "${end}" drawn whole`).toBeGreaterThan(0);
   }
 };
+
+/**
+ * Narrows the name of the file whose name holds `part` to a width less than its kept end, and
+ * gives back whether its extension is still drawn whole
+ */
+const extensionInNarrowName = (page: Page, part: string, extension: string) =>
+  page.locator("[data-content]").evaluate(
+    (area, [part, extension]) => {
+      const name = [...area.querySelectorAll<HTMLElement>("span.flex.min-w-0")].find(
+        (e) => e.textContent.includes(part) && e.textContent.endsWith(extension)
+      )!;
+      name.style.width = "3rem";
+      name.style.flex = "none";
+      const box = name.getBoundingClientRect();
+      const walker = document.createTreeWalker(name, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = node.textContent!;
+        if (!text.endsWith(extension)) continue;
+        const range = document.createRange();
+        range.setStart(node, text.length - extension.length);
+        range.setEnd(node, text.length);
+        const drawn = range.getBoundingClientRect();
+        return drawn.width > 0 && drawn.left >= box.left - 0.5 && drawn.right <= box.right + 0.5;
+      }
+      return false;
+    },
+    [part, extension]
+  );
 
 for (const [width, height] of [
   [390, 844],
@@ -115,6 +146,8 @@ for (const [width, height] of [
           );
           await fits(page, path, shows("_part2.flac"));
           await endsShow(page, `${path}, ${groupBy}`);
+          // a name cell narrower than the name's kept end still shows its extension
+          expect(await extensionInNarrowName(page, "_part2", ".flac")).toBe(true);
         });
       }
     }

@@ -115,6 +115,15 @@ export const splitTail = (text: string, path = false): [string, string] => {
 };
 
 /**
+ * A kept tail split before its extension, a dot and up to eight letters or digits, which stays
+ * when even the tail is cut; a tail without one is all kept text
+ */
+export const splitExtension = (tail: string): [string, string] => {
+  const ext = /\.[\p{L}\p{N}]{1,8}$/u.exec(tail);
+  return ext ? [tail.slice(0, ext.index), ext[0]] : [tail, ""];
+};
+
+/**
  * The start of `text` up to `chars` characters and `lines` lines, never cut inside a letter, for a
  * long text shown folded; null when the whole text fits
  */
