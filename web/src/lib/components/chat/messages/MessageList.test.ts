@@ -100,6 +100,16 @@ describe("the message list", () => {
     expect(pages.filter((p) => p !== null)).toEqual([102, 2]);
   });
 
+  it("reads the root text size once a pass, not once per line", async () => {
+    history(PAGE);
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(24);
+    const style = vi.spyOn(window, "getComputedStyle");
+    await open();
+    const root = style.mock.calls.filter(([e]) => e === document.documentElement).length;
+    // a page of lines, each guessed in rem, read the size a few times over, never per line
+    expect(root).toBeLessThan(PAGE / 4);
+  });
+
   it("opens where a message no longer stored was, and says so once", async () => {
     // messages 1 to 300 with 150 gone, read newest first before an id or oldest first after one
     fakeNetwork((url) => {

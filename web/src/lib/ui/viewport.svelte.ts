@@ -30,18 +30,28 @@ export const viewport = {
   }
 };
 
-// a probe 1rem tall changes size with the root font size, which nothing else announces
+/** the root font size in pixels while something follows it, null while it is to be read again */
+let rootPx: number | null = null;
+const readRoot = () => parseFloat(getComputedStyle(document.documentElement).fontSize);
+
+// a probe 1rem tall changes size with the root font size, which nothing else announces. While
+// something follows it the size is read once and kept until the probe changes size
 const rootSize = createSubscriber((update) => {
   const probe = document.createElement("div");
   probe.setAttribute("aria-hidden", "true");
   probe.style.cssText =
     "position:absolute;top:0;left:0;width:0;height:1rem;visibility:hidden;pointer-events:none";
   document.body.append(probe);
-  const observer = new ResizeObserver(update);
+  rootPx = readRoot();
+  const observer = new ResizeObserver(() => {
+    rootPx = readRoot();
+    update();
+  });
   observer.observe(probe);
   return () => {
     observer.disconnect();
     probe.remove();
+    rootPx = null;
   };
 });
 
@@ -52,6 +62,6 @@ const rootSize = createSubscriber((update) => {
 export const rem = {
   get px(): number {
     rootSize();
-    return parseFloat(getComputedStyle(document.documentElement).fontSize);
+    return rootPx ?? readRoot();
   }
 };
