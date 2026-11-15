@@ -2,7 +2,9 @@ import { mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { jobs } from "#lib/jobs/jobs.svelte.js";
+import { live } from "#lib/live/live.svelte.js";
 import { flush } from "#lib/testing/flush.js";
+import { connected } from "#lib/testing/live.js";
 import { fakeNetwork } from "#lib/testing/network.js";
 
 import JobsPage from "./JobsPage.svelte";
@@ -33,6 +35,7 @@ describe("the Jobs page", () => {
     if (page) unmount(page);
     page = null;
     jobs.rows.clear();
+    live.stop();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     document.body.innerHTML = "";
@@ -57,5 +60,33 @@ describe("the Jobs page", () => {
     expect(toggle?.getAttribute("aria-expanded")).toBe("true");
     expect(scrolled).toHaveBeenCalledWith({ block: "center" });
     expect(document.body.textContent).toContain("locked");
+  });
+
+  it("keeps a job removed under its sender's open card until the card closes", async () => {
+    const sent = { ...cleanup, starter: { kind: "user", name: "alice" } };
+    const net = connected((url) => {
+      if (url.pathname.endsWith("/api/v0/jobs")) return { jobs: [sent] };
+      if (url.pathname.endsWith("/api/v0/jobs/schedules")) return [];
+      return undefined;
+    });
+    page = mount(JobsPage, { target: document.body, props: {} });
+    await flush();
+    await flush();
+    const row = () => document.querySelector(`#job-${cleanup.id}`);
+    const name = row()!.querySelector<HTMLElement>("a")!;
+    // the name's card, from the keys
+    name.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+    await flush();
+    expect(document.querySelector('[role="dialog"][aria-label="Profile of alice"]')).not.toBeNull();
+    net.frame("jobs.removed", { ids: [cleanup.id] });
+    await flush();
+    expect(row()).not.toBeNull();
+    document
+      .querySelector('[role="dialog"]')!
+      .dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+      );
+    await flush();
+    expect(row()).toBeNull();
   });
 });

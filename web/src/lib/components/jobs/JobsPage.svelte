@@ -28,7 +28,7 @@
   } from "#lib/jobs/jobs.js";
   import { jobs, jobsSeen } from "#lib/jobs/jobs.svelte.js";
   import type { ActiveFilter } from "#lib/lists/filtered.js";
-  import { Freeze, heldBy } from "#lib/lists/interaction.svelte.js";
+  import { heldBy } from "#lib/lists/interaction.svelte.js";
   import { keepCurrent } from "#lib/live/keep.svelte.js";
   import { href } from "#lib/nav.js";
   import { session } from "#lib/session.svelte.js";
@@ -40,9 +40,8 @@
   // first, under the schedules; `shown` opens one job's parts, as a link from elsewhere asks
   let { shown = null }: { shown?: string | null } = $props();
 
-  // a name's card open in the list holds its reload
-  const freeze = new Freeze();
-  keepCurrent(() => void jobs.load(), undefined, freeze);
+  // a name's card open in the list holds its rows and its reload
+  keepCurrent(() => void jobs.load(), undefined, jobs.rows.freeze);
   void jobs.load();
   // the page shows every failure while it is open, so the bottom bar's mark clears; the
   // daemon's own time of the last failure is kept, so no clock is compared with another
@@ -217,7 +216,7 @@
   {:else}
     <!-- the rows share the list's columns, so rows with different actions line up -->
     <ul
-      {@attach heldBy(freeze)}
+      {@attach heldBy(jobs.rows.freeze)}
       class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 divide-y overflow-hidden rounded-card border bg-surface text-sm md:grid-cols-[auto_minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
       {#each listed as job (job.id)}
         <li id={`job-${job.id}`} class="col-span-full grid grid-cols-subgrid list-row">
