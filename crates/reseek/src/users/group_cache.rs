@@ -258,6 +258,21 @@ impl GroupCache {
     lock(&self.facts.watched)
   }
 
+  /// In line for `username`'s watch, with the count of their watches completed while others
+  /// waited as it is then.
+  fn line_up<'a>(&'a self, username: &'a str) -> (WatchTurn<'a>, Option<u64>) {
+    // in line and the count read under its lock, under which the last place to end drops it
+    let watches = lock(&self.watches);
+    let turn = WatchTurn::line_up(self, username);
+    (turn, watches.get(username).copied())
+  }
+
+  /// How many watches of `username` completed while others waited for their turn; `None` when
+  /// nobody does.
+  fn watch_count(&self, username: &str) -> Option<u64> {
+    lock(&self.watches).get(username).copied()
+  }
+
   /// Waits until no other change to the groups we put users in runs, and holds off the next one
   /// until it is dropped.
   pub async fn regrouping(&self) -> tokio::sync::MutexGuard<'_, ()> {
@@ -335,19 +350,20 @@ impl<'a> WatchTurn<'a> {
 
   /// The watch made under this turn completed: counted when someone waits for the turn.
   fn completed(&self) {
+    let mut watches = lock(&self.groups.watches);
     if self.turn.as_ref().is_some_and(|turn| !turn.alone()) {
-      *lock(&self.groups.watches)
-        .entry(self.username.to_string())
-        .or_default() += 1;
+      *watches.entry(self.username.to_string()).or_default() += 1;
     }
   }
 }
 
 impl Drop for WatchTurn<'_> {
   fn drop(&mut self) {
+    // the place goes and the count with it in one step, as one lining up reads the count
+    let mut watches = lock(&self.groups.watches);
     drop((self.turn.take(), self.waiting.take()));
     if !self.groups.watching.held(self.username) {
-      lock(&self.groups.watches).remove(self.username);
+      watches.remove(self.username);
     }
   }
 }
@@ -702,12 +718,9 @@ impl Directory {
     username: &str,
     again: bool,
   ) -> Result<(), ClientError> {
-    let completed = |groups: &GroupCache| lock(&groups.watches).get(username).copied();
-    // in line before the count is read, so a holder ending meanwhile sees us and keeps it
-    let mut turn = WatchTurn::line_up(&self.groups, username);
-    let before = completed(&self.groups);
+    let (mut turn, before) = self.groups.line_up(username);
     turn.take().await;
-    if completed(&self.groups) != before || (!again && self.is_watched(username)) {
+    if self.groups.watch_count(username) != before || (!again && self.is_watched(username)) {
       return Ok(());
     }
     let asking = Asking::new(&self.groups, username);
@@ -1010,6 +1023,96 @@ mod tests {
         country_code: Some(String::new()),
       }),
     })
+  }
+
+  /// How many watches each task of the stress test makes.
+  const ROUNDS: u64 = 20_000;
+
+  /// Polls `watch` up to `polls` times, yielding between, and gives it up if it is not done
+  /// by then; with `polls` 0, until it is done.
+  async fn polled<F: Future>(watch: F, polls: u64) -> Option<F::Output> {
+    let mut watch = std::pin::pin!(watch);
+    let mut polled = 0;
+    loop {
+      let poll = std::future::poll_fn(|cx| std::task::Poll::Ready(watch.as_mut().poll(cx)));
+      if let std::task::Poll::Ready(done) = poll.await {
+        return Some(done);
+      }
+      polled += 1;
+      if polled == polls {
+        return None;
+      }
+      tokio::task::yield_now().await;
+    }
+  }
+
+  // threads and tasks racing for two users' watch turns, some given up at a random poll, each
+  // doing what a watch does: in line, the count read, the turn, then the count read again, and
+  // asking unless it changed. The count never goes down under one in line, and once every watch
+  // is over nothing is left of them
+  #[test]
+  fn watch_turns_at_once_drop_no_count_and_leave_nothing() {
+    const USERS: [&str; 2] = ["alice", "bob"];
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+      .worker_threads(8)
+      .enable_all()
+      .build()
+      .unwrap();
+    let groups = Arc::new(GroupCache::default());
+    let dropped = Arc::new(AtomicU64::new(0));
+    runtime.block_on(async {
+      let tasks: Vec<_> = (0..16u64)
+        .map(|task| {
+          let (groups, dropped) = (groups.clone(), dropped.clone());
+          tokio::spawn(async move {
+            // xorshift, seeded per task
+            let mut seed = task * 2_654_435_761 + 1;
+            let mut next = move |below: u64| {
+              seed ^= seed << 13;
+              seed ^= seed >> 7;
+              seed ^= seed << 17;
+              seed % below
+            };
+            for _ in 0..ROUNDS {
+              let user = USERS[next(2) as usize];
+              let asking = next(3);
+              // one in four is given up at a random poll
+              let polls = if next(4) == 0 { 1 + next(4) } else { 0 };
+              let (groups, dropped) = (&groups, &dropped);
+              let watch = async move {
+                let (mut turn, before) = groups.line_up(user);
+                turn.take().await;
+                let after = groups.watch_count(user);
+                if after < before {
+                  dropped.fetch_add(1, Ordering::SeqCst);
+                }
+                if after == before {
+                  for _ in 0..asking {
+                    tokio::task::yield_now().await;
+                  }
+                  turn.completed();
+                }
+              };
+              polled(watch, polls).await;
+            }
+          })
+        })
+        .collect();
+      for task in tasks {
+        task.await.unwrap();
+      }
+    });
+    let dropped = dropped.load(Ordering::SeqCst);
+    let left = lock(&groups.watches).clone();
+    let held: Vec<&str> = USERS
+      .into_iter()
+      .filter(|u| groups.watching.held(u))
+      .collect();
+    assert_eq!(
+      (dropped, left, held),
+      (0, HashMap::new(), Vec::new()),
+      "counts dropped under one in line, counts and turns left"
+    );
   }
 
   #[tokio::test]
