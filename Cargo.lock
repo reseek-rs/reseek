@@ -4248,8 +4248,7 @@ dependencies = [
 [[package]]
 name = "soulseek-client"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56e0066892f216cc6f1d0eab445fea111cc14825e04369cfccf537cc948f6d07"
+source = "git+https://github.com/reseek-rs/soulseek-client?branch=main#94efc13752ba14be7bb0f19fb5891ceb9f6c3715"
 dependencies = [
  "bitflags 2.13.2",
  "socket2",

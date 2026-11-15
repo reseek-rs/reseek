@@ -64,9 +64,10 @@ serde_path_to_error = "0.1"
 serde_plain = "1"
 sha1 = "0.11"
 sha2 = "0.11"
-# the Soulseek client, made and published in github.com/reseek-rs/soulseek-client; protocol types
-# come through its `soulseek_proto` re-export, so the two versions always agree
-soulseek-client = "0.1"
+# the Soulseek client, made in github.com/reseek-rs/soulseek-client and taken from its main until
+# 0.2 is cut; `cargo update -p soulseek-client` moves to its latest commit. Protocol types come
+# through its `soulseek_proto` re-export, so the two versions always agree
+soulseek-client = { git = "https://github.com/reseek-rs/soulseek-client", branch = "main" }
 subtle = "2"
 syn = { version = "3", features = ["full"] }
 thiserror = "2"
