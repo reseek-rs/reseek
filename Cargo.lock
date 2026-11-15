@@ -3535,7 +3535,6 @@ dependencies = [
  "serde_json",
  "sha1 0.11.0",
  "sha2 0.11.1",
- "soulseek-client",
  "soulseek-proto",
  "tempfile",
  "thiserror 2.0.21",

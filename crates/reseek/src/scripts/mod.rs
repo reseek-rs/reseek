@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use api_types::events::{Event, EventRecord, EventType};
 use cascade::Watcher;
-use soulseek_client::LogLimiter;
+use reseek_shares::LogLimiter;
 use tokio::sync::Notify;
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;

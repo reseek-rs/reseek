@@ -12,8 +12,9 @@ use std::time::Instant;
 
 use api_types::activity::ActivityKind;
 use api_types::users::blocking::BlockScope;
+use reseek_shares::LogLimiter;
 use reseek_shares::{lock, traverses};
-use soulseek_client::{BrowseReply, EncodedFrame, LogLimiter};
+use soulseek_client::{BrowseReply, EncodedFrame};
 use soulseek_proto::RemoteFilename;
 use soulseek_proto::peer::{BrowseResponse, Directory};
 use tracing::{debug, error, trace, warn};

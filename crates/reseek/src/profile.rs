@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, Rgb, RgbImage};
-use soulseek_client::LogLimiter;
+use reseek_shares::LogLimiter;
 use tracing::warn;
 
 use crate::config::Options;

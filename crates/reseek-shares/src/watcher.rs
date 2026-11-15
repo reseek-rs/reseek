@@ -13,11 +13,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::LogLimiter;
 use notify::event::{AccessKind, AccessMode};
 use notify::{
   Config, ErrorKind, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _,
 };
-use soulseek_client::LogLimiter;
 use tokio::sync::mpsc;
 use tracing::{Instrument, debug, info, warn};
 

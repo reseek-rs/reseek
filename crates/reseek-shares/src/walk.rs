@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
-use soulseek_client::LogLimiter;
+use crate::LogLimiter;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 

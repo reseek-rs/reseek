@@ -10,7 +10,7 @@ use axum::Extension;
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use soulseek_client::LogLimiter;
+use reseek_shares::LogLimiter;
 use tracing::{info, warn};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;

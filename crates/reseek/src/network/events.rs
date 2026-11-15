@@ -13,9 +13,10 @@ use api_types::messaging::ServerMessage;
 use api_types::state::{DistributedNetworkState, ServerConnectionState};
 use api_types::users::UserPresence;
 use chrono::Utc;
+use reseek_shares::LogLimiter;
 use soulseek_client::{
-  Client, ClientError, ClientState, DistributedNetworkInfo, Event, LogLimiter, PrivateMessage,
-  SessionEnd, SessionStatus, Transfer, TransferState,
+  Client, ClientError, ClientState, DistributedNetworkInfo, Event, PrivateMessage, SessionEnd,
+  SessionStatus, Transfer, TransferState,
 };
 use tokio::sync::broadcast::{self, error::RecvError};
 use tokio_util::sync::CancellationToken;

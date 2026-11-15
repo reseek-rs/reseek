@@ -13,9 +13,10 @@ use api_types::live::LiveFrame;
 use api_types::relay::RelayUploadOutcome;
 use api_types::transfers::{TransferDirection, TransferOutcome, TransferStates};
 use chrono::Utc;
+use reseek_shares::LogLimiter;
 use reseek_shares::lock;
 use soulseek_client::{
-  ClientError, InputFactory, LogLimiter, ProgressUpdated, SlotAwaiter, SlotReleased, StateChanged,
+  ClientError, InputFactory, ProgressUpdated, SlotAwaiter, SlotReleased, StateChanged,
   Transfer as Snapshot, TransferOptions, UploadInput, UploadRequest, UploadSource,
 };
 use tokio::sync::{mpsc, watch};

@@ -25,8 +25,9 @@ use std::time::Duration;
 use api_types::state::UserStatistics;
 use api_types::users::{CachedUser, StatisticsSnapshot, UserPresence, UserStatus};
 use chrono::Utc;
+use reseek_shares::LogLimiter;
 use reseek_shares::lock;
-use soulseek_client::{Client, ClientError, LogLimiter};
+use soulseek_client::{Client, ClientError};
 use soulseek_proto::server::UserStats;
 use tracing::{Instrument, debug, info, trace, warn};
 

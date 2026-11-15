@@ -21,9 +21,9 @@ pub mod uploads;
 use std::time::Duration;
 
 use api_types::transfers::TransferDirection;
+use reseek_shares::LogLimiter;
 use rusqlite::Row;
 use rusqlite::types::Type;
-use soulseek_client::LogLimiter;
 use tracing::warn;
 
 use crate::db::{self, Database, DbError, Location, Schema};

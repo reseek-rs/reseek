@@ -11,8 +11,8 @@ use std::net::{IpAddr, Ipv6Addr};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use reseek_shares::LogLimiter;
 use reseek_shares::lock;
-use soulseek_client::LogLimiter;
 use tokio::sync::Notify;
 use tokio::time::Instant;
 use tracing::warn;

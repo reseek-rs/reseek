@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use soulseek_client::LogLimiter;
+use reseek_shares::LogLimiter;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio_util::sync::CancellationToken;

@@ -11,7 +11,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::{Extension, Json};
 use openidconnect::RedirectUrl;
-use soulseek_client::LogLimiter;
+use reseek_shares::LogLimiter;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 use utoipa_axum::router::OpenApiRouter;

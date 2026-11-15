@@ -17,8 +17,9 @@ use std::time::Instant;
 
 use api_types::transfers::{EnqueueFailure, SendFilesResponse};
 use chrono::Utc;
+use reseek_shares::LogLimiter;
 use reseek_shares::lock;
-use soulseek_client::{ClientError, LogLimiter};
+use soulseek_client::ClientError;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, SemaphorePermit};
 use tracing::{Instrument, debug, info, trace, warn};
 

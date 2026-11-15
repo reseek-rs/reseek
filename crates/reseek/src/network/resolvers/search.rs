@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 
 use api_types::users::blocking::BlockScope;
 use regex::Regex;
+use reseek_shares::LogLimiter;
 use reseek_shares::patterns;
-use soulseek_client::{ClientError, LogLimiter, SearchReply};
+use soulseek_client::{ClientError, SearchReply};
 use soulseek_proto::SearchQuery;
 use soulseek_proto::peer::{File, SearchResponse};
 use tokio::sync::Semaphore;

@@ -13,7 +13,7 @@ use api_types::auth::{Principal, Role, Via};
 use api_types::events::{Event, SessionCreated, SessionRevokeReason, SessionRevoked};
 use axum::http::{HeaderMap, HeaderValue, Uri, header};
 use chrono::{DateTime, Utc};
-use soulseek_client::LogLimiter;
+use reseek_shares::LogLimiter;
 use tracing::{Instrument, debug, info, warn};
 
 use super::cookies::{self, Scope};

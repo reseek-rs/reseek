@@ -11,9 +11,9 @@ use api_types::Page;
 use api_types::events::{Event, EventRecord, EventType, EventsQuery};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use reseek_shares::LogLimiter;
 use rusqlite::types::Value;
 use rusqlite::{Connection, params, params_from_iter};
-use soulseek_client::LogLimiter;
 use tracing::{error, warn};
 
 use super::{EventBus, samples};

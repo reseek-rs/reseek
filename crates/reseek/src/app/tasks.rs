@@ -11,7 +11,7 @@ use std::sync::Arc;
 use api_types::events::{Event, SessionRevokeReason, SessionRevoked};
 use api_types::live::LiveFrame;
 use chrono::{DateTime, Utc};
-use soulseek_client::LogLimiter;
+use reseek_shares::LogLimiter;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{Instrument, debug, info, info_span, warn};
 

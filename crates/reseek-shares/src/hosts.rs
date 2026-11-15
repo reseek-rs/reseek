@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::LogLimiter;
 use api_types::shares::Share as ApiShare;
-use soulseek_client::LogLimiter;
 use tracing::{debug, info, warn};
 
 use super::phase::Phase;

@@ -14,7 +14,6 @@ testing = []
 api-types.workspace = true
 cascade.workspace = true
 reseek-relay-proto.workspace = true
-soulseek-client.workspace = true
 soulseek-proto.workspace = true
 
 chrono.workspace = true

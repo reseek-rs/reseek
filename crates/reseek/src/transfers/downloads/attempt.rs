@@ -11,10 +11,11 @@ use std::time::Duration;
 use api_types::live::LiveFrame;
 use api_types::transfers::{TransferOutcome, TransferStates};
 use chrono::Utc;
+use reseek_shares::LogLimiter;
 use soulseek_client::{
-  ClientError, DownloadOutput, DownloadRequest, DownloadSink, LogLimiter, OutputFactory,
-  PeerRequestOptions, ProgressUpdated, RequestStyle, SizeMismatchResolver, StateChanged,
-  Transfer as Snapshot, TransferOptions,
+  ClientError, DownloadOutput, DownloadRequest, DownloadSink, OutputFactory, PeerRequestOptions,
+  ProgressUpdated, RequestStyle, SizeMismatchResolver, StateChanged, Transfer as Snapshot,
+  TransferOptions,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
