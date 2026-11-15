@@ -335,14 +335,11 @@ mod tests {
     cancel.cancel();
   }
 
-  /// How a slow program writes a file: opened as `open` does, `first` written `before` after
-  /// the opening, a `pause`, then `rest`, and closed.
+  /// How a slow program writes a file: opened as `open` does, each text of `writes` written
+  /// after its wait, an empty one writing nothing, and closed.
   struct SlowWriter {
     open: fn(&Path) -> fs::File,
-    before: Duration,
-    first: &'static str,
-    pause: Duration,
-    rest: &'static str,
+    writes: Vec<(Duration, &'static str)>,
   }
 
   /// A shell redirect into the file: emptied as it is opened.
@@ -369,10 +366,12 @@ mod tests {
     watcher.start(watch, cancel.clone()).await;
 
     let mut file = (writer.open)(&dir.path().join(name));
-    tokio::time::sleep(writer.before).await;
-    file.write_all(writer.first.as_bytes()).unwrap();
-    tokio::time::sleep(writer.pause).await;
-    file.write_all(writer.rest.as_bytes()).unwrap();
+    for (wait, text) in writer.writes {
+      tokio::time::sleep(wait).await;
+      if !text.is_empty() {
+        file.write_all(text.as_bytes()).unwrap();
+      }
+    }
     drop(file);
 
     let mut seen = vec![next_change(&mut changes).await];
@@ -393,15 +392,15 @@ mod tests {
       .collect()
   }
 
-  /// Rewrites `config.toml` as a shell redirect from a program that writes part, pauses, then
-  /// writes the rest.
+  /// Rewrites `config.toml` as a shell redirect from a program that writes part, waits `pause`,
+  /// then writes the rest.
   fn rewritten(pause: Duration) -> SlowWriter {
     SlowWriter {
       open: emptied,
-      before: Duration::ZERO,
-      first: "[server]\nport = 3000\n",
-      pause,
-      rest: "address = \"whole\"\n",
+      writes: vec![
+        (Duration::ZERO, "[server]\nport = 3000\n"),
+        (pause, "address = \"whole\"\n"),
+      ],
     }
   }
 
@@ -420,6 +419,23 @@ mod tests {
     }
   }
 
+  #[tokio::test]
+  async fn a_file_that_changes_between_the_two_reads_is_read_once_whole() {
+    // each write lands after the quiet, between the first read and the second
+    let wait = SETTLE.debounce + SETTLE.again / 2 + Duration::from_millis(100);
+    let writer = SlowWriter {
+      open: emptied,
+      writes: vec![
+        (Duration::ZERO, "[server]\nport = 3000\n"),
+        (wait, "address = \"half\"\n"),
+        (wait, "timeout = \"9s\"\n"),
+      ],
+    };
+    let poll = Watch::Poll(Duration::from_millis(50));
+    let read = slowly_written(poll, "config.toml", writer).await;
+    assert_eq!(read, [(3000, "half".to_string(), 9)]);
+  }
+
   /// longer than the quiet and the second read
   #[cfg(target_os = "linux")]
   const LONG: Duration = Duration::from_millis(1500);
@@ -433,10 +449,30 @@ mod tests {
 
   #[cfg(target_os = "linux")]
   #[tokio::test]
+  async fn a_file_written_whole_and_held_is_read_at_its_close() {
+    let writer = SlowWriter {
+      open: emptied,
+      writes: vec![
+        (
+          Duration::ZERO,
+          "[server]\nport = 3000\naddress = \"whole\"\n",
+        ),
+        (LONG, ""),
+      ],
+    };
+    let read = slowly_written(Watch::Events, "config.toml", writer).await;
+    assert_eq!(read, whole());
+  }
+
+  #[cfg(target_os = "linux")]
+  #[tokio::test]
   async fn a_new_drop_in_first_written_well_after_its_opening_is_read_once_whole() {
     let writer = SlowWriter {
-      before: Duration::from_millis(450),
-      ..rewritten(LONG)
+      open: emptied,
+      writes: vec![
+        (Duration::from_millis(450), "[server]\nport = 3000\n"),
+        (LONG, "address = \"whole\"\n"),
+      ],
     };
     let read = slowly_written(Watch::Events, "config.d/10-a.toml", writer).await;
     assert_eq!(read, whole());
@@ -447,13 +483,41 @@ mod tests {
   async fn a_slow_append_is_read_once_whole() {
     let writer = SlowWriter {
       open: appended,
-      before: Duration::from_millis(300),
-      first: "address = \"half\"\n",
-      pause: LONG,
-      rest: "timeout = \"9s\"\n",
+      writes: vec![
+        (Duration::from_millis(300), "address = \"half\"\n"),
+        (LONG, "timeout = \"9s\"\n"),
+      ],
     };
     let read = slowly_written(Watch::Events, "config.toml", writer).await;
     assert_eq!(read, [(2000, "half".to_string(), 9)]);
+  }
+
+  #[cfg(target_os = "linux")]
+  #[test]
+  fn a_rename_a_removal_or_lost_events_end_a_write() {
+    use notify::event::{DataChange, Flag, RemoveKind, RenameMode};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let (_watcher, files, _events) = settling(dir.path(), None);
+    let told = |kind: EventKind| notify::Event::new(kind).add_path(path.clone());
+    let written = told(EventKind::Modify(ModifyKind::Data(DataChange::Any)));
+    let ends = [
+      (
+        "renamed onto",
+        told(EventKind::Modify(ModifyKind::Name(RenameMode::To))),
+      ),
+      ("removed", told(EventKind::Remove(RemoveKind::File))),
+      (
+        "events lost",
+        notify::Event::new(EventKind::Other).set_flag(Flag::Rescan),
+      ),
+    ];
+    for (what, end) in ends {
+      files.seen.note(&written);
+      assert_eq!(files.writing(), Writing::Open(vec![path.clone()]), "{what}");
+      files.seen.note(&end);
+      assert_eq!(files.writing(), Writing::Closed, "{what}");
+    }
   }
 
   /// The watcher over `dir` and its file events, watched as `poll` says
