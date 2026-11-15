@@ -21,13 +21,13 @@ use axum::response::{IntoResponse, Response};
 use cascade::{Change, Lasts, Loaded};
 use chrono::Utc;
 use serde_json::Value;
-use tracing::{info, warn};
+use tracing::{Instrument, info, warn};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use super::error::ApiError;
 use crate::app::AppState;
-use crate::auth::passwords::{Changer, Setting};
+use crate::auth::passwords::Changer;
 use crate::auth::sessions::lifetime;
 use crate::auth::{Administrator, AnyRole, Authorized, RequestSession, require_interactive};
 use crate::config::{Options, redact, view};
@@ -158,16 +158,15 @@ async fn patch_options(
     None => Lasts::UntilRemoved,
   };
   let set = with_urls(&current, patch.set)?;
-  let setting = app.auth.setters.begin(setter(session)).await;
-  let change = app
-    .config
-    .set_overrides(
-      set,
-      patch.unset,
-      &admin.principal.subject,
-      lasts,
-      patch.revision.as_deref(),
-    )
+  let config = app.config.clone();
+  let by = admin.principal.subject.clone();
+  let revision = patch.revision.clone();
+  let write = async move {
+    config
+      .set_overrides(set, patch.unset, &by, lasts, revision.as_deref())
+      .await
+  };
+  let change = written(&app, session, write, Option::as_deref)
     .await
     .map_err(|e| match e {
       cascade::Error::Invalid(_) | cascade::Error::Value { .. } => {
@@ -176,7 +175,6 @@ async fn patch_options(
       }
       other => ApiError::from(other),
     })?;
-  made(setting, change.as_deref());
   info!(
     by = admin.principal.subject,
     keys = keys.join(", "),
@@ -211,9 +209,10 @@ async fn delete_override(
     require_interactive(&admin.principal)?;
   }
   let read = query.revision.as_deref();
-  let setting = app.auth.setters.begin(setter(session)).await;
-  let change = app.config.remove_override(&key, read).await?;
-  made(setting, change.as_deref());
+  let config = app.config.clone();
+  let (removed, against) = (key.clone(), query.revision.clone());
+  let write = async move { config.remove_override(&removed, against.as_deref()).await };
+  let change = written(&app, session, write, Option::as_deref).await?;
   info!(
     by = admin.principal.subject,
     key, "runtime override removed"
@@ -318,18 +317,21 @@ async fn patch_file(
   require_interactive(&admin.principal)?;
   let name = file(&current, patch.file.as_deref())?.name.clone();
   let set = with_urls(&current, patch.set)?;
-  let setting = app.auth.setters.begin(setter(session)).await;
-  let written = app
-    .config
-    .patch_file(
-      &name,
-      patch.revision.as_deref(),
-      patch.options_revision.as_deref(),
-      set,
-      patch.unset,
-    )
-    .await?;
-  made(setting, written.change.as_deref());
+  let config = app.config.clone();
+  let (file, revision) = (name.clone(), patch.revision.clone());
+  let options_revision = patch.options_revision.clone();
+  let write = async move {
+    config
+      .patch_file(
+        &file,
+        revision.as_deref(),
+        options_revision.as_deref(),
+        set,
+        patch.unset,
+      )
+      .await
+  };
+  let written = written(&app, session, write, |w| w.change.as_deref()).await?;
   info!(
     by = admin.principal.subject,
     file = name,
@@ -366,12 +368,14 @@ async fn put_file(
   )?;
   require_interactive(&admin.principal)?;
   let name = file(&current, replace.file.as_deref())?.name.clone();
-  let setting = app.auth.setters.begin(setter(session)).await;
-  let written = app
-    .config
-    .replace_file(&name, replace.revision.as_deref(), replace.text)
-    .await?;
-  made(setting, written.change.as_deref());
+  let config = app.config.clone();
+  let file = name.clone();
+  let write = async move {
+    config
+      .replace_file(&file, replace.revision.as_deref(), replace.text)
+      .await
+  };
+  let written = written(&app, session, write, |w| w.change.as_deref()).await?;
   info!(
     by = admin.principal.subject,
     file = name,
@@ -437,22 +441,36 @@ fn with_urls(
   Ok(set)
 }
 
-/// The browser session a change is made from, which a new password it sets for its own account
-/// does not end.
-fn setter(session: Option<Extension<RequestSession>>) -> Option<Changer> {
-  session.map(|Extension(RequestSession(session))| Changer {
+/// Writes a change of the configuration, which `session` makes, on a task of its own, recording
+/// the session when the change gives a local account a new password, so that session is not
+/// ended for it. A request that goes away meanwhile leaves both the change and the record made.
+async fn written<T: Send + 'static>(
+  app: &AppState,
+  session: Option<Extension<RequestSession>>,
+  write: impl Future<Output = Result<T, cascade::Error>> + Send + 'static,
+  change: fn(&T) -> Option<&Change<Options>>,
+) -> Result<T, cascade::Error> {
+  let app = app.clone();
+  let changer = session.map(|Extension(RequestSession(session))| Changer {
     session: session.id,
     subject: session.subject,
-  })
-}
-
-/// Records `change`, `None` when nothing changed, in `setting`.
-fn made(setting: Setting<'_>, change: Option<&Change<Options>>) {
-  if let Some(change) = change {
-    setting.made(
-      &change.previous.values.web.authentication,
-      &change.current.values.web.authentication,
-    );
+  });
+  let task = async move {
+    let setting = app.auth.setters.begin(changer).await;
+    let written = write.await;
+    if let Some(change) = written.as_ref().ok().and_then(change) {
+      setting.made(
+        &change.previous.values.web.authentication,
+        &change.current.values.web.authentication,
+      );
+    }
+    written
+  };
+  match tokio::spawn(task.in_current_span()).await {
+    Ok(written) => written,
+    Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+    // the runtime is shutting down
+    Err(_) => Err(cascade::Error::Stopped),
   }
 }
 

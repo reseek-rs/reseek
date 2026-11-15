@@ -498,6 +498,41 @@ mod tests {
   }
 
   #[tokio::test(start_paused = true)]
+  async fn a_password_change_whose_request_goes_away_keeps_the_setters_session() {
+    let app = app("remote_configuration = true\n", &[]).await;
+    let setter = admin(&app, "reseek").await;
+    let other = admin(&app, "reseek").await;
+    let mut changing = Box::pin(app.send_from(OUTSIDE, new_password(&setter, "n3w")));
+    let in_effect = std::future::poll_fn(|cx| {
+      if app
+        .state
+        .config
+        .current()
+        .values
+        .web
+        .authentication
+        .password
+        == "n3w"
+      {
+        std::task::Poll::Ready(())
+      } else {
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+      }
+    });
+    // the change is written and the request goes away before it is answered, as a tab reloaded
+    tokio::select! {
+      biased;
+      () = in_effect => {}
+      answer = &mut changing => panic!("answered before it went away: {}", answer.status),
+    }
+    drop(changing);
+    pass(SETTLE).await;
+    until_ended(&app, &other).await;
+    assert_eq!(status(&app, &setter).await, 200);
+  }
+
+  #[tokio::test(start_paused = true)]
   async fn a_password_read_half_written_ends_no_session() {
     let whole = "[web.authentication]\npassword = \"s3cret\"\n";
     let app = app(whole, &[]).await;
