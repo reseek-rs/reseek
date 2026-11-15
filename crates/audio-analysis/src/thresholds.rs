@@ -242,3 +242,46 @@ impl ReadingThresholds {
   }
 }
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn thresholds_read_from_json_keep_the_defaults_they_do_not_name() {
+    let measure: MeasureThresholds = serde_json::from_str(r#"{"cutoffRangeDb": 50.0}"#).unwrap();
+    assert_eq!(
+      measure,
+      MeasureThresholds {
+        cutoff_range_db: 50.0,
+        ..MeasureThresholds::default()
+      }
+    );
+    let reading: ReadingThresholds = serde_json::from_str(r#"{"sharpShelfDb": 40.0}"#).unwrap();
+    assert_eq!(
+      reading,
+      ReadingThresholds {
+        sharp_shelf_db: 40.0,
+        ..ReadingThresholds::default()
+      }
+    );
+    let profile: Profile =
+      serde_json::from_str(r#"{"hz": 16000.0, "name": "mp3 ~128 kbps", "kbps": 128}"#).unwrap();
+    assert_eq!(profile.guide, None);
+  }
+
+  fn refused<T: serde::de::DeserializeOwned>(json: &str) {
+    assert!(serde_json::from_str::<T>(json).is_err(), "{json} was taken");
+  }
+
+  #[test]
+  fn a_key_no_threshold_has_is_refused_at_every_level() {
+    refused::<MeasureThresholds>(r#"{"cutoffRange": 50.0}"#);
+    refused::<ReadingThresholds>(r#"{"sharpShelf": 40.0}"#);
+    refused::<ReadingThresholds>(
+      r#"{"profiles": [{"hz": 16000.0, "name": "a", "kbps": 128, "guid": "A"}]}"#,
+    );
+    refused::<ReadingThresholds>(
+      r#"{"otherRateEdges": [{"hz": 15000.0, "rate": "30 kHz", "source": "a"}]}"#,
+    );
+  }
+}

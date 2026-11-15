@@ -495,6 +495,47 @@ fn a_canceled_analysis_stops_and_one_out_of_time_reports_what_it_has() {
   );
 }
 
+/// A transcode that reads as one with the thresholds the analyzer ships with.
+fn a_17_khz_cut(dir: &Path) -> PathBuf {
+  flac(
+    dir,
+    "cut.flac",
+    &music(1, 44_100, fixtures::cut_at(17_000.0)),
+    16,
+  )
+}
+
+#[test]
+fn the_reading_uses_the_thresholds_it_is_given() {
+  let dir = tempfile::tempdir().unwrap();
+  let measured = engine::run(&a_17_khz_cut(dir.path()), &settings()).unwrap();
+  assert_eq!(read(&measured).verdict, Verdict::LikelyTranscode);
+  // no shelf is this sharp, so no window stops with an encoder's low-pass
+  let blunt = ReadingThresholds {
+    sharp_shelf_db: 1000.0,
+    ..ReadingThresholds::default()
+  };
+  let reading = crate::reading::read(&measured, &blunt);
+  assert_ne!(reading.verdict, Verdict::LikelyTranscode, "{reading:#?}");
+}
+
+#[test]
+fn measuring_uses_the_thresholds_it_is_given() {
+  let dir = tempfile::tempdir().unwrap();
+  // every window is quieter than full scale, so every one is silent
+  let deaf = Settings {
+    thresholds: MeasureThresholds {
+      silence_dbfs: 0.0,
+      ..MeasureThresholds::default()
+    },
+    ..settings()
+  };
+  let measured = engine::run(&a_17_khz_cut(dir.path()), &deaf).unwrap();
+  assert!(!measured.windows.is_empty());
+  assert!(measured.windows.iter().all(|w| w.cutoff_hz.is_none()));
+  assert_eq!(read(&measured).verdict, Verdict::Inconclusive);
+}
+
 proptest::proptest! {
   #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
 
