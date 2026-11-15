@@ -3,13 +3,14 @@
 //! group's own `slots` in that group.
 //!
 //! An upload is in the queue from when it is accepted until it ends, whether it started or not.
-//! Each user gets one upload at a time: their uploads take that turn in the order they asked for
-//! a slot, and each holds it until its upload has returned, after its peer was told how it
-//! ended. An upload is ready once it asked for a slot and holds its user's turn. Each pass over the queue starts ready uploads while slots are free: privileged, then
-//! the groups in `transfers.groups.order`, and within a group the upload a bump put in front,
-//! else the one ready longest for `roundrobin` or queued longest for `firstinfirstout`.
-//! A user's group is looked up on every pass, so a user moved between groups waits in their
-//! new group; once started, an upload's slot belongs to the group that gave it.
+//! Each user gets one upload at a time: their uploads take that turn in the order they asked for a
+//! slot, and each holds it until its upload has returned, after its peer was told how it ended. An
+//! upload is ready once it asked for a slot and holds its user's turn. Each pass over the queue
+//! starts ready uploads while slots are free: privileged, then the groups in
+//! `transfers.groups.order`, and within a group the upload a bump put in front, else the one ready
+//! longest for `roundrobin` or queued longest for `firstinfirstout`. A user's group is looked up on
+//! every pass, so a user moved between groups waits in their new group; once started, an upload's
+//! slot belongs to the group that gave it.
 //!
 //! Every change to the queue, and the pass it calls for, happens under one lock. Times are a
 //! counter taken under that lock, so two uploads are never queued or ready at the same moment.

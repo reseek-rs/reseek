@@ -1,7 +1,8 @@
 //! Searches we start on the network: each is recorded before it is sent, waits as `Queued` while
-//! `soulseek.search.max_concurrent` others run, is followed while peers answer, its responses
-//! saved as they come, and stored with every response it took once it ends. Searches that a stop left running are ended at the next start with the responses they
-//! saved, and finished ones older than `retention.search` are deleted every five minutes.
+//! `soulseek.search.max_concurrent` others run, is followed while peers answer, its responses saved
+//! as they come, and stored with every response it took once it ends. Searches that a stop left
+//! running are ended at the next start with the responses they saved, and finished ones older than
+//! `retention.search` are deleted every five minutes.
 //!
 //! [`Searches`] is the engine; it answers the API's search calls and the search topic's
 //! snapshot, and tells the download engine what a download's search was for. A search of the

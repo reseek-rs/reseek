@@ -1,11 +1,10 @@
-//! Following the options while running: a change to the search request filters compiles them
-//! again, a change to the Soulseek, upload or download options patches the client and sets the
-//! global speed limits, a change to
-//! whether we take private room invitations is told to the server while logged in, a change to
-//! the listener or to port mapping moves the
-//! mapping on the router, new credentials log in again at once, another change that takes
-//! effect only on a new session is flagged while connected, a change to how we reach the server
-//! starts the watchdog over, and rooms added to the configuration are joined.
+//! Following the options while running: a change to the search request filters compiles them again,
+//! a change to the Soulseek, upload or download options patches the client and sets the global
+//! speed limits, a change to whether we take private room invitations is told to the server while
+//! logged in, a change to the listener or to port mapping moves the mapping on the router, new
+//! credentials log in again at once, another change that takes effect only on a new session is
+//! flagged while connected, a change to how we reach the server starts the watchdog over, and rooms
+//! added to the configuration are joined.
 
 use std::sync::Arc;
 
