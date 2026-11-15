@@ -23,7 +23,9 @@ pub const SECONDS: usize = 34;
 /// Audio in memory: a sample rate and one sample vector per channel.
 #[derive(Clone)]
 pub struct Audio {
+  /// samples per second
   pub rate: u32,
+  /// the samples of each channel, from -1 to 1, all the same length
   pub channels: Vec<Vec<f32>>,
 }
 

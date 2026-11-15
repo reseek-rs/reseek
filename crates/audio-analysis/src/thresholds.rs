@@ -62,7 +62,8 @@ pub struct ReadingThresholds {
   /// a drop across the cutoff of at least this many dB is an encoder's low-pass, not a natural
   /// roll-off
   pub sharp_shelf_db: f64,
-  /// a cutoff at or above this fraction of the band's top counts as reaching it
+  /// a cutoff at or above this fraction of the band's top counts as reaching it. Set below the
+  /// measure `full_band`, it counts as full some windows measuring never searched for inner steps
   pub full_band: f64,
   /// content that rolls off gently below this fraction of the band's top is band-limited by
   /// nature, and the reading says it cannot tell
@@ -240,3 +241,4 @@ impl ReadingThresholds {
       .filter_map(|profile| Some((profile.hz, profile.guide.as_deref()?)))
   }
 }
+
