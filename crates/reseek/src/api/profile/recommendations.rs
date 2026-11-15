@@ -36,8 +36,9 @@ fn unanswered(what: &str, error: ClientError) -> ApiError {
   }
 }
 
-/// The client's sorted lists as the API shows them.
+/// The server's lists as the API shows them, [`sorted`].
 fn shown(lists: soulseek_proto::server::Recommendations) -> Recommendations {
+  let lists = sorted(lists);
   let each = |list: Vec<soulseek_proto::server::Recommendation>| {
     list
       .into_iter()
@@ -50,6 +51,24 @@ fn shown(lists: soulseek_proto::server::Recommendations) -> Recommendations {
   Recommendations {
     recommended: each(lists.recommendations),
     unrecommended: each(lists.unrecommendations),
+  }
+}
+
+/// Both blocks of a reply merged and split again by score: above zero is recommended, highest
+/// first; zero and below is not, lowest first.
+fn sorted(
+  recommendations: soulseek_proto::server::Recommendations,
+) -> soulseek_proto::server::Recommendations {
+  let (mut recommended, mut unrecommended): (Vec<_>, Vec<_>) = recommendations
+    .recommendations
+    .into_iter()
+    .chain(recommendations.unrecommendations)
+    .partition(|recommendation| recommendation.count > 0);
+  recommended.sort_by_key(|recommendation| std::cmp::Reverse(recommendation.count));
+  unrecommended.sort_by_key(|recommendation| recommendation.count);
+  soulseek_proto::server::Recommendations {
+    recommendations: recommended,
+    unrecommendations: unrecommended,
   }
 }
 
@@ -180,4 +199,35 @@ async fn liked_by(
     .await
     .map_err(|e| unanswered("users who like the interest", e))?;
   Ok(Json(reply.usernames))
+}
+
+#[cfg(test)]
+mod tests {
+  use soulseek_proto::server::{Recommendation, Recommendations};
+
+  use super::*;
+
+  fn scored(interest: &str, count: i32) -> Recommendation {
+    Recommendation {
+      interest: interest.into(),
+      count,
+    }
+  }
+
+  #[test]
+  fn recommendations_are_merged_and_split_by_score() {
+    let reply = Recommendations {
+      recommendations: vec![scored("jazz", 2), scored("noise", -1), scored("folk", 5)],
+      unrecommendations: vec![scored("polka", -4), scored("blues", 0)],
+    };
+    let sorted = sorted(reply);
+    assert_eq!(
+      sorted.recommendations,
+      [scored("folk", 5), scored("jazz", 2)]
+    );
+    assert_eq!(
+      sorted.unrecommendations,
+      [scored("polka", -4), scored("noise", -1), scored("blues", 0)]
+    );
+  }
 }
