@@ -614,22 +614,28 @@ mod tests {
     .await;
   }
 
+  /// The configuration with the built-in account's password as a hash of `password`.
+  fn hashed(password: &str) -> String {
+    let hash = crate::auth::local::hash(password);
+    format!("[web.authentication]\npassword_hash = \"{hash}\"\n")
+  }
+
   #[tokio::test(start_paused = true)]
   async fn a_password_hash_changed_to_another_ends_the_older_sessions() {
-    let config = |password: &str| {
-      let hash = crate::auth::local::hash(password);
-      format!("[web.authentication]\npassword_hash = \"{hash}\"\n")
-    };
-    let app = app(&config("s3cret"), &[]).await;
+    let app = app(&hashed("s3cret"), &[]).await;
     let cookie = admin(&app, "s3cret").await;
     pass(SETTLE).await;
-    reload(&app, &config("n3w")).await;
+    reload(&app, &hashed("n3w")).await;
     pass(SETTLE).await;
     until_ended(&app, &cookie).await;
+  }
 
-    // and while stopped
-    let cookie = admin(&app, "n3w").await;
-    std::fs::write(app.dir.path().join("config.toml"), config("again")).unwrap();
+  #[tokio::test(start_paused = true)]
+  async fn a_password_hash_changed_while_stopped_ends_the_older_sessions() {
+    let app = app(&hashed("s3cret"), &[]).await;
+    let cookie = admin(&app, "s3cret").await;
+    pass(SETTLE).await;
+    std::fs::write(app.dir.path().join("config.toml"), hashed("n3w")).unwrap();
     let app = app.restarted(&[]).await;
     pass(SETTLE).await;
     until_ended(&app, &cookie).await;
