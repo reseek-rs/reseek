@@ -1,6 +1,7 @@
 //! Following the options while running: a change to the search request filters compiles them
-//! again, a change to the Soulseek, upload or download options or to whether we take private
-//! room invitations patches the client, a change to the listener or to port mapping moves the
+//! again, a change to the Soulseek, upload or download options patches the client, a change to
+//! whether we take private room invitations is told to the server while logged in, a change to
+//! the listener or to port mapping moves the
 //! mapping on the router, new credentials log in again at once, another change that takes
 //! effect only on a new session is flagged while connected, a change to how we reach the server
 //! starts the watchdog over, and rooms added to the configuration are joined.
@@ -64,7 +65,6 @@ async fn apply(
   if applied.soulseek != values.soulseek
     || applied.transfers.upload != values.transfers.upload
     || applied.transfers.download != values.transfers.download
-    || applied.chat.accept_private_room_invitations != values.chat.accept_private_room_invitations
   {
     let _reconfiguring = network.reconfiguring().lock().await;
     let alternative = app.state.current().alternative_speed_limits;
@@ -88,6 +88,12 @@ async fn apply(
         return None;
       }
     }
+  }
+  let invitations = values.chat.accept_private_room_invitations;
+  if applied.chat.accept_private_room_invitations != invitations
+    && network.client().state().is_logged_in()
+  {
+    super::events::tell_invitations(network.client().clone(), invitations);
   }
   let credentials = credentials(network.client(), applied, &values);
   let relogin = credentials == Credentials::New;
@@ -200,7 +206,6 @@ mod tests {
     let change = json!({ "set": {
       "transfers.upload.speed_limit": 64,
       "transfers.upload.slots": 3,
-      "chat.accept_private_room_invitations": false,
     } });
     let answer = app
       .send(request("PATCH", "/api/v0/options", Some(change)))
@@ -213,7 +218,6 @@ mod tests {
       tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(client.options().maximum_concurrent_uploads, 3);
-    assert!(!client.options().accept_private_room_invitations);
     assert!(!app.state.state.current().pending_reconnect);
   }
 

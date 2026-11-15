@@ -14,8 +14,8 @@ use api_types::state::{DistributedNetworkState, ServerConnectionState};
 use api_types::users::UserPresence;
 use chrono::Utc;
 use soulseek_client::{
-  ClientError, ClientState, DistributedNetworkInfo, Event, LogLimiter, PrivateMessage, SessionEnd,
-  SessionStatus, Transfer, TransferState,
+  Client, ClientError, ClientState, DistributedNetworkInfo, Event, LogLimiter, PrivateMessage,
+  SessionEnd, SessionStatus, Transfer, TransferState,
 };
 use tokio::sync::broadcast::{self, error::RecvError};
 use tokio_util::sync::CancellationToken;
@@ -370,7 +370,14 @@ async fn handle(app: &AppState, event: Event, session: &mut Session) {
         .await;
     }
     Event::PrivilegedUserListReceived(usernames) => app.users.privileged_listed(&usernames),
-    Event::PrivilegeNotificationReceived { username, .. } => {
+    Event::PrivilegeNotificationReceived {
+      username,
+      id,
+      requires_acknowledgment,
+    } => {
+      if requires_acknowledgment && let Some(id) = id {
+        acknowledge_privileges(app, id);
+      }
       privileges_granted(app, username);
     }
     Event::RoomListReceived(list) => app.messaging.room_list_received(list).await,
@@ -438,6 +445,19 @@ async fn user_status(app: &AppState, status: &soulseek_proto::server::UserStatus
       app.users.presence_moved(username, previous, presence);
     }
   }
+}
+
+/// Acknowledges the privilege notification `id`, as the server asks.
+fn acknowledge_privileges(app: &AppState, id: u32) {
+  let client = app.network.client().clone();
+  tokio::spawn(
+    async move {
+      if let Err(e) = client.acknowledge_privilege_notification(id).await {
+        debug!(error = %e, id, "privilege notification not acknowledged");
+      }
+    }
+    .in_current_span(),
+  );
 }
 
 /// The server says `username` was granted privileges: they are privileged from now on, and when
@@ -516,13 +536,34 @@ async fn connected(app: &AppState, number: u64) {
   app.network.forget_reconnect();
 }
 
-/// The server accepted our login: the downloads waiting for a user who was offline try them
-/// again, and what needs the session runs in the background.
+/// The server accepted our login: the server is told whether we take private room
+/// invitations, the downloads waiting for a user who was offline try them again, and what needs
+/// the session runs in the background.
 fn logged_in(app: &AppState, username: &str) {
   info!(username, "Logged in to the Soulseek server");
   app.network.watchdog().logged_in();
+  let invitations = app
+    .config
+    .current()
+    .values
+    .chat
+    .accept_private_room_invitations;
+  tell_invitations(app.network.client().clone(), invitations);
   app.downloads.login();
   tokio::spawn(after_login(app.clone()).in_current_span());
+}
+
+/// Tells the server whether other users may add us to their private rooms, on a task of its own.
+pub(super) fn tell_invitations(client: Client, accept: bool) {
+  tokio::spawn(
+    async move {
+      match client.set_private_room_invitations(accept).await {
+        Ok(confirmed) => debug!(accept, confirmed, "private room invitations set"),
+        Err(e) => warn!(error = %e, accept, "private room invitations not set"),
+      }
+    }
+    .in_current_span(),
+  );
 }
 
 /// Once the shares are initialized: the server is told what we share and what we like and hate,
@@ -1159,5 +1200,68 @@ mod tests {
       ["soulseek.server_keepalive.probes"]
     );
     drop(patching);
+  }
+
+  #[tokio::test]
+  async fn the_server_is_told_whether_we_take_invitations_at_each_login_and_on_a_change() {
+    use soulseek_proto::server::PrivateRoomToggle;
+    use soulseek_proto::{ServerRequest, ServerResponse};
+
+    use crate::testing::soulseek::{Server, app};
+
+    let config = format!("remote_configuration = true\n{}", crate::testing::TRUSTED);
+    let app = app(&config).await;
+    // the server confirms the setting as it took it
+    let mut server = Server::start(|request| match request {
+      ServerRequest::PrivateRoomToggle(toggle) => {
+        vec![ServerResponse::PrivateRoomToggle(toggle.clone())]
+      }
+      _ => Vec::new(),
+    })
+    .await;
+    let told = |request: &ServerRequest| match request {
+      ServerRequest::PrivateRoomToggle(PrivateRoomToggle { accept_invitations }) => {
+        Some(*accept_invitations)
+      }
+      _ => None,
+    };
+    server.login(&app).await;
+    assert!(server.received(told).await, "the default takes them");
+    let change = serde_json::json!({ "set": { "chat.accept_private_room_invitations": false } });
+    let (status, _) = app.call("PATCH", "/api/v0/options", Some(change)).await;
+    assert_eq!(status, 200);
+    assert!(!server.received(told).await, "the change, while logged in");
+    server.drop_session(&app).await;
+    server.login(&app).await;
+    assert!(!server.received(told).await, "the next login");
+  }
+
+  #[tokio::test]
+  async fn a_privilege_notification_is_acknowledged_as_the_server_asks() {
+    use soulseek_proto::server::{AddPrivilegedUser, NotifyPrivileges};
+    use soulseek_proto::{ServerRequest, ServerResponse};
+
+    use crate::testing::soulseek::{Server, app};
+
+    let app = app(crate::testing::TRUSTED).await;
+    let mut server = Server::silent().await;
+    server.login(&app).await;
+    server.send(vec![
+      ServerResponse::AddPrivilegedUser(AddPrivilegedUser {
+        username: "bob".into(),
+      }),
+      ServerResponse::NotifyPrivileges(NotifyPrivileges {
+        id: 9,
+        username: "carol".into(),
+      }),
+    ]);
+    // the added user wants no acknowledgment, so the first one is carol's
+    let acknowledged = server
+      .received(|request| match request {
+        ServerRequest::AcknowledgeNotifyPrivileges(ack) => Some(ack.id),
+        _ => None,
+      })
+      .await;
+    assert_eq!(acknowledged, 9);
   }
 }
