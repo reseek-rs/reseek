@@ -63,6 +63,17 @@ impl Downloads {
       .inactivity;
     let cancel = CancellationToken::new();
     let client = self.network.client();
+    // the client asks a peer about any file, so a download it does not run is found here
+    let running = |transfer: &soulseek_client::Transfer| {
+      transfer.username == username && transfer.filename.as_str() == record.filename
+    };
+    if client.state().is_logged_in() && !client.downloads().iter().any(running) {
+      let detail = format!("no active download of {} from {username}", record.filename);
+      return Err(ApiError::conflict(
+        "Transfer is not queued remotely",
+        Some(detail),
+      ));
+    }
     let asked = client.get_download_place_in_queue(
       username,
       record.filename.clone(),

@@ -2641,3 +2641,29 @@ async fn a_download_is_held_to_the_global_download_limit() {
     started.elapsed()
   );
 }
+
+#[tokio::test]
+async fn the_place_of_a_download_the_client_does_not_run_is_not_asked_of_its_peer() {
+  use api_types::transfers::TransferDirection;
+
+  use crate::testing::soulseek::{self, Server};
+  use crate::transfers::fixtures::{Row, insert};
+
+  let app = soulseek::app(TRUSTED).await;
+  let server = Server::silent().await;
+  server.login(&app).await;
+  let row = Row::new(
+    "alice",
+    TransferDirection::Download,
+    TransferStates::QueuedRemotely,
+  );
+  let id = row.id;
+  insert(&app.state.transfers, vec![row]).await;
+  let position = format!("/api/v0/transfers/downloads/alice/{id}/position");
+  let answer = app.send(request("GET", &position, None)).await;
+  assert_eq!(answer.status, 409, "{:?}", answer.body);
+  assert_eq!(
+    answer.json()["detail"],
+    "no active download of @@share\\dir\\file.mp3 from alice"
+  );
+}
