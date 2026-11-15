@@ -17,8 +17,8 @@ use std::time::Duration;
 use api_types::state::ConnectionWatchdogState;
 use cascade::Watcher;
 use chrono::Utc;
-use reseek_shares::{backoff, lock};
-use soulseek_client::{Client, ClientError, Outage};
+use reseek_shares::{Outage, backoff, lock};
+use soulseek_client::{Client, ClientError};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, info, info_span, warn};
@@ -420,7 +420,7 @@ impl Watchdog {
         return;
       }
       let span = info_span!("server_connect", attempt = failed + 1);
-      match self.attempt(&attempt).instrument(span).await {
+      match self.attempt(&attempt, failed == 0).instrument(span).await {
         Attempt::Connected | Attempt::Canceled => return,
         Attempt::Stop => {
           self.stop(&attempt);
@@ -436,11 +436,10 @@ impl Watchdog {
     }
   }
 
-  /// One attempt with the current options, once the shares are initialized. The client logs
-  /// the connect itself, so this is told at debug.
-  async fn attempt(&self, cancel: &CancellationToken) -> Attempt {
+  /// One attempt with the current options, once the shares are initialized: told at info when it
+  /// is the `first` since the last login or restart, at debug when it retries.
+  async fn attempt(&self, cancel: &CancellationToken, first: bool) -> Attempt {
     let inner = &self.inner;
-    debug!("Attempting to connect to the Soulseek server");
     tokio::select! {
       () = cancel.cancelled() => {
         debug!("Reconnection attempt canceled");
@@ -454,6 +453,13 @@ impl Watchdog {
       super::warn_no_credentials();
       return Attempt::Stop;
     };
+    let (address, port) = (soulseek.address.as_str(), soulseek.port);
+    let told = "Attempting to connect to the Soulseek server";
+    if first {
+      info!(address, port, username, "{told}");
+    } else {
+      debug!(address, port, username, "{told}");
+    }
     match inner
       .client
       .connect(&soulseek.address, soulseek.port, username, password, cancel)
@@ -471,7 +477,7 @@ impl Watchdog {
         );
         Attempt::Unanswered
       }
-      // the disconnect it caused says why; nothing retries a refused login until asked to
+      // the disconnect handler logs why; nothing retries a refused login until asked to
       Err(ClientError::LoginRejected(reason)) => {
         debug!(reason, "login refused; not trying again");
         Attempt::Stop

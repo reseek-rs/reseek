@@ -29,6 +29,7 @@ mod hosts;
 mod init;
 pub mod log_format;
 pub mod options;
+mod outage;
 pub mod patterns;
 mod phase;
 mod repository;
@@ -64,12 +65,12 @@ use tracing::{Instrument, debug, error, info, info_span, trace, warn};
 use crate::db::{Database, DbError};
 pub use folders::FolderError;
 pub use hosts::HostError;
+pub use outage::Outage;
 use phase::{Edge, Phase, ScanResult};
 pub use repository::SCHEMA;
 pub use reseek_relay_proto::LOCAL_HOST;
 use scanner::{Outcome, Settings};
 use share::Share;
-pub use soulseek_client::Outage;
 pub use visibility::View;
 
 /// Failed share queries, which arrive at the network's search rate.
