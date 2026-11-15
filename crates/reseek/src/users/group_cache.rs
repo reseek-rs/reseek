@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{
   Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use api_types::state::UserStatistics;
 use api_types::users::{CachedUser, StatisticsSnapshot, UserPresence, UserStatus};
@@ -199,13 +199,12 @@ impl Reported {
 pub struct GroupCache {
   /// what the server said, and the users it watches for us
   facts: Reported,
-  /// when each user forgotten by hand in this run was forgotten, so a watch asked for before
-  /// does not watch them; taken with `watched` held
-  forgotten: Mutex<HashMap<String, Instant>>,
+  /// the users whose watch is on its way to the server, each with whether they were forgotten
+  /// by hand since it was asked for, so its answer does not watch them; taken with `watched`
+  /// held
+  asking: Mutex<HashMap<String, bool>>,
   /// one watch of a user at a time
   watching: Turns,
-  /// how many watches of each user completed, so a caller that waited for another's knows
-  watches: Mutex<HashMap<String, u64>>,
   /// the users whose statistics are being asked for again
   refetching: Mutex<HashSet<String>>,
   /// the presence of each buddy as we knew it when a server session ended, until a status of
@@ -268,8 +267,39 @@ impl GroupCache {
 pub struct Unwatched {
   /// the user was watched
   pub was: bool,
-  /// the mark an earlier forget had left
-  mark: Option<Instant>,
+  /// the watch on its way was marked forgotten already
+  marked: bool,
+}
+
+/// A watch of one user on its way to the server, from just before it is asked for until its
+/// answer is taken or it fails; a forget meanwhile marks it.
+struct Asking<'a> {
+  groups: &'a GroupCache,
+  username: String,
+}
+
+impl<'a> Asking<'a> {
+  fn new(groups: &'a GroupCache, username: &str) -> Self {
+    lock(&groups.asking).insert(username.to_string(), false);
+    Self {
+      groups,
+      username: username.to_string(),
+    }
+  }
+
+  /// Whether the user was forgotten since the watch was asked for.
+  fn forgotten(&self) -> bool {
+    lock(&self.groups.asking)
+      .get(&self.username)
+      .copied()
+      .unwrap_or(false)
+  }
+}
+
+impl Drop for Asking<'_> {
+  fn drop(&mut self) {
+    lock(&self.groups.asking).remove(&self.username);
+  }
 }
 
 /// What a status the server sent tells beside itself.
@@ -595,26 +625,23 @@ impl Directory {
     self.watch_once(client, username, true).await
   }
 
-  /// The watch itself, one per user at a time: a caller that waited while another watched the
-  /// user takes that watch for its own, and one that finds the user watched already is done
-  /// unless `again`.
+  /// The watch itself, one per user at a time: a caller that finds the user watched once its
+  /// turn comes is done unless `again`.
   async fn watch_once(
     &self,
     client: &Client,
     username: &str,
     again: bool,
   ) -> Result<(), ClientError> {
-    let completed = |groups: &GroupCache| lock(&groups.watches).get(username).copied();
-    let before = completed(&self.groups);
     let _turn = self.groups.watching.take(username).await;
-    if completed(&self.groups) != before || (!again && self.is_watched(username)) {
+    if !again && self.is_watched(username) {
       return Ok(());
     }
-    let asked = Instant::now();
+    let asking = Asking::new(&self.groups, username);
     let watched = client.watch_user(username).await?;
     // the server watches them from its answer on, so the status asked for next, which the
     // follower of the client's events may take before this task does, finds them watched
-    if !self.watch_taken(username, asked) {
+    if !self.watch_taken(asking) {
       debug!(
         username,
         "user forgotten while the watch was asked for; not watched"
@@ -626,9 +653,6 @@ impl Directory {
     if let Err(e) = self.status_of(client, username).await {
       warn!(username, error = %e, "status of a watched user not fetched");
     }
-    *lock(&self.groups.watches)
-      .entry(username.to_string())
-      .or_default() += 1;
     info!(username, "Added user to watch list");
     Ok(())
   }
@@ -641,42 +665,43 @@ impl Directory {
     Ok(())
   }
 
-  /// Puts `username`, whose watch was asked for at `asked`, among the watched users, unless
-  /// they were forgotten since; says whether they were. Decided with the watched users held,
-  /// as [`Directory::forget_watched`] forgets with them held, so the two never cross.
-  fn watch_taken(&self, username: &str, asked: Instant) -> bool {
+  /// Puts the user of the watch `asking`, answered now, among the watched users, unless they
+  /// were forgotten since it was asked for; says whether they were. Decided with the watched
+  /// users held, as [`Directory::forget_watched`] forgets with them held, so the two never
+  /// cross.
+  fn watch_taken(&self, asking: Asking<'_>) -> bool {
     let mut watched = self.groups.watched();
-    let forgotten = lock(&self.groups.forgotten).get(username).copied();
-    if forgotten.is_some_and(|forgotten| asked <= forgotten) {
+    if asking.forgotten() {
       return false;
     }
-    watched.insert(username.to_string());
+    watched.insert(asking.username.clone());
     true
   }
 
-  /// Forgets `username` for the watched users: off them, without telling the server, and
-  /// marked forgotten now, both with the watched users held. A status of theirs handled from
-  /// here on makes no touch, and a watch asked for before does not watch them. Says what
-  /// [`Directory::unforget_watched`] puts back.
+  /// Forgets `username` for the watched users: off them, without telling the server, and their
+  /// watch on its way to the server, if any, marked forgotten, both with the watched users held.
+  /// A status of theirs handled from here on makes no touch, and a watch asked for before does
+  /// not watch them. Says what [`Directory::unforget_watched`] puts back.
   pub(super) fn forget_watched(&self, username: &str) -> Unwatched {
     let mut watched = self.groups.watched();
     let was = watched.remove(username);
-    let mark = lock(&self.groups.forgotten).insert(username.to_string(), Instant::now());
-    Unwatched { was, mark }
+    let mut asking = lock(&self.groups.asking);
+    let marked = asking
+      .get_mut(username)
+      .is_some_and(|forgotten| std::mem::replace(forgotten, true));
+    Unwatched { was, marked }
   }
 
   /// Undoes [`Directory::forget_watched`] when there was nobody to forget: `username` is
-  /// watched again when they were, and an earlier forget's mark is kept as it was.
+  /// watched again when they were, and their watch on its way is marked as it was.
   pub(super) fn unforget_watched(&self, username: &str, before: Unwatched) {
     let mut watched = self.groups.watched();
     if before.was {
       watched.insert(username.to_string());
     }
-    let mut forgotten = lock(&self.groups.forgotten);
-    match before.mark {
-      Some(mark) => forgotten.insert(username.to_string(), mark),
-      None => forgotten.remove(username),
-    };
+    if let Some(forgotten) = lock(&self.groups.asking).get_mut(username) {
+      *forgotten = before.marked;
+    }
   }
 
   /// Tells the server to stop watching `username`, who was forgotten and is off the watched
@@ -898,3 +923,60 @@ mod tests {
     assert!(reported.of(&fresh(next + 5 * KEPT - 1)).is_some());
   }
 }
+  use soulseek_proto::server::{WatchUserResponse, WatchedUser};
+  use soulseek_proto::{ServerRequest, ServerResponse};
+
+  /// The server's answer to a watch of `username`, who exists when `exists`.
+  fn watched(username: &str, exists: bool) -> ServerResponse {
+    ServerResponse::WatchUser(WatchUserResponse {
+      username: username.into(),
+      user: exists.then(|| WatchedUser {
+        status: soulseek_proto::UserPresence::Online,
+        stats: UserStats::default(),
+        country_code: Some(String::new()),
+      }),
+    })
+  }
+
+  #[tokio::test]
+  async fn a_watch_answered_failed_or_forgotten_leaves_nothing_behind() {
+    let app = crate::testing::soulseek::app("").await;
+    let users = &app.state.users;
+    // dave's watch is answered only when the test says
+    let mut server = crate::testing::soulseek::Server::start(|request| match request {
+      ServerRequest::WatchUser(asked) if asked.username != "dave" => {
+        vec![watched(&asked.username, asked.username == "alice")]
+      }
+      _ => Vec::new(),
+    })
+    .await;
+    server.login(&app).await;
+    let client = app.state.network.client();
+    let asking = || lock(&users.groups.asking).len();
+    users.watch(client, "alice").await;
+    assert!(users.is_watched("alice"));
+    assert!(users.try_watch(client, "nobody").await.is_err());
+    // a forget with no watch on its way marks nothing
+    users.set_notes("carol", "kind".into()).await.unwrap();
+    users.remove("carol", false).await.unwrap();
+    assert_eq!(asking(), 0);
+
+    users.set_notes("dave", "kind".into()).await.unwrap();
+    let watching = users.try_watch(client, "dave");
+    let forgetting = async {
+      let asked = |request: &ServerRequest| {
+        matches!(request, ServerRequest::WatchUser(asked) if asked.username == "dave").then_some(())
+      };
+      server.received(asked).await;
+      assert_eq!(asking(), 1, "the watch on its way");
+      users.remove("dave", false).await.unwrap();
+      server.send(vec![watched("dave", true)]);
+    };
+    let (watched, ()) = tokio::join!(watching, forgetting);
+    watched.unwrap();
+    assert!(
+      !users.is_watched("dave"),
+      "forgotten while it was asked for"
+    );
+    assert_eq!(asking(), 0);
+  }
