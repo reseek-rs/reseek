@@ -98,6 +98,25 @@ test.describe("with a mouse", () => {
     await opened(page, more.first());
   });
 
+  test("a second click on a row's More closes its menu", async ({ page }) => {
+    const { low } = await rows(page, 1000);
+    await low.click();
+    await expect(open(page)).toHaveCount(1);
+    await low.click({ force: true });
+    await expect(open(page)).toHaveCount(0);
+    await expect(page.getByRole("menu")).toHaveCount(0);
+  });
+
+  test("the page stays held while the menu a click switched to is open", async ({ page }) => {
+    const { more, low } = await rows(page, 1000);
+    await low.click();
+    await clearOfMenu(page, (await more.first().boundingBox())!);
+    await more.first().click({ force: true });
+    await expect(open(page)).toHaveCount(1);
+    await expect(open(page)).toBeFocused();
+    expect(await page.evaluate(() => document.body.style.pointerEvents)).toBe("none");
+  });
+
   test("a press on the header over a hidden row's More only closes the menu", async ({ page }) => {
     const { more, low } = await rows(page, 1000);
     const hidden = await underHeader(page, more);
@@ -151,6 +170,16 @@ test.describe("on a touch screen", () => {
     await expect(open(page)).toHaveCount(0);
     await expect(lineOf(more.first())).not.toHaveAttribute("aria-selected", "true");
     await expect(page.locator("[data-inspector]")).toHaveCount(0);
+  });
+
+  test("a second tap on a row's More closes its menu", async ({ page }) => {
+    const { low } = await rows(page, 780);
+    await low.tap();
+    await expect(open(page)).toHaveCount(1);
+    await open(page).evaluate((e) => Promise.all(e.getAnimations().map((a) => a.finished)));
+    await tap(page, low);
+    await expect(open(page)).toHaveCount(0);
+    await expect(page.getByRole("menu")).toHaveCount(0);
   });
 
   test("a tap on the header over a hidden row's More only closes the menu", async ({ page }) => {

@@ -12,12 +12,15 @@
     class: className,
     onInteractOutside,
     onCloseAutoFocus,
+    customAnchor,
     ...rest
   }: DropdownMenu.ContentProps = $props();
 
   // in a LazyRoot there is no trigger of the menu's own: it hangs from the button that opened
   // it, which gets focus back on close
   const anchor = anchorOf();
+  /** what the menu hangs from: the caller's anchor, else a LazyRoot's button */
+  const hangsFrom = () => customAnchor ?? anchor?.();
 </script>
 
 <DropdownMenu.Portal>
@@ -28,10 +31,12 @@
       "z-50 max-h-(--bits-dropdown-menu-content-available-height) max-w-(--bits-dropdown-menu-content-available-width) min-w-32 origin-(--bits-dropdown-menu-content-transform-origin) overflow-y-auto rounded-control border bg-overlay p-1 text-fg shadow-raised outline-none data-[state=closed]:animate-popover-out data-[state=open]:animate-popover-in",
       className
     )}
-    customAnchor={anchor?.()}
+    customAnchor={hangsFrom()}
     onInteractOutside={(e) => {
       onInteractOutside?.(e);
-      if (!e.defaultPrevented) switchOnPress(e, anchor?.());
+      // a press on the button the menu hangs from only closes it
+      const from = hangsFrom();
+      if (!e.defaultPrevented) switchOnPress(e, from instanceof HTMLElement ? from : null);
     }}
     onCloseAutoFocus={(e) => {
       if (onCloseAutoFocus) onCloseAutoFocus(e);

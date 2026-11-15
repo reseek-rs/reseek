@@ -304,6 +304,19 @@ test("a click on a chat's menu button opens it with focus while another chat's i
   await expect(buttons.first()).toBeFocused();
 });
 
+test("a second click on a chat's menu button closes its menu", async ({ page }) => {
+  await fakeChat(page);
+  await visit(page, "/chat");
+  await open(page, "/chat/rooms/indie");
+  const button = page.getByRole("button", { name: /^Menu for / }).first();
+  await button.click({ force: true });
+  const opened = page.locator("[role=menu][data-state=open]");
+  await expect(opened).toHaveCount(1);
+  await button.click({ force: true });
+  await expect(opened).toHaveCount(0);
+  await expect(page.getByRole("menu")).toHaveCount(0);
+});
+
 test("a message takes the page's own hover tint", async ({ page }) => {
   await fakeChat(page);
   await visit(page, "/chat");
@@ -348,6 +361,21 @@ test("an address typed over a chat asks nothing of its name", async ({ page }) =
 
 test.describe("on a phone", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test("a second tap on a chat's menu button closes its menu", async ({ page }) => {
+    await fakeChat(page);
+    await visit(page, "/chat");
+    const button = page.getByRole("button", { name: /^Menu for / }).first();
+    const box = (await button.boundingBox())!;
+    const at = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    await page.touchscreen.tap(at.x, at.y);
+    const opened = page.locator("[role=menu][data-state=open]");
+    await expect(opened).toHaveCount(1);
+    await opened.evaluate((e) => Promise.all(e.getAnimations().map((a) => a.finished)));
+    await page.touchscreen.tap(at.x, at.y);
+    await expect(opened).toHaveCount(0);
+    await expect(page.getByRole("menu")).toHaveCount(0);
+  });
 
   test("a first long press on a message's time opens its menu", async ({ page }) => {
     await fakeChat(page);
