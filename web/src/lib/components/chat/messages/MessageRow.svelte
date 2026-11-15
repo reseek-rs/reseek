@@ -40,6 +40,11 @@
     "notice"?: boolean;
     /** the keys are on it: it takes focus, and Tab goes from it to its actions */
     "active": boolean;
+    /**
+     * the message just before or after the one focus is in: its actions are in the tab order,
+     * unseen, so Tab and Shift+Tab come to them from there
+     */
+    "near"?: boolean;
     /** what the list's line menu marks it with, which says whether its menu is open */
     "data-menu-open"?: true;
     /** where the list's open menu hangs: at the pointer, or from the message itself for the keys */
@@ -60,6 +65,7 @@
     room,
     notice = false,
     active,
+    near = false,
     "data-menu-open": menuOpen,
     menu,
     onclosemenu,
@@ -238,14 +244,20 @@
   {#if actions.length}
     <!-- over the message's top right corner on hover, while focus is in it or its menu is open.
          Last in the message, so a screen reader reads the author and the text first. Every
-         action is also in the menu, which a touch reaches with a long press -->
+         action is also in the menu, which a touch reaches with a long press. Beside the message
+         focus is in, it is there unseen, for Tab to come to -->
     <div
       bind:this={toolbar}
       role="group"
       aria-label="Message actions"
-      class="absolute -top-3 right-3 z-10 hidden items-center rounded-control border bg-overlay p-0.5 shadow-raised group-focus-within/message:flex group-hover/message:flex group-data-menu-open/message:flex">
+      class={[
+        "absolute -top-3 right-3 z-10 items-center rounded-control border bg-overlay p-0.5 shadow-raised group-focus-within/message:flex group-focus-within/message:opacity-100 group-hover/message:flex group-hover/message:opacity-100 group-data-menu-open/message:flex group-data-menu-open/message:opacity-100",
+        near ? "flex opacity-0" : "hidden"
+      ]}>
       {#each actions as action (action.label)}
-        <Tooltip text={action.label} dormant={!awake}>
+        <!-- awake beside the message focus is in too, so the keys landing on an action don't
+             draw it anew, which would take the focus out of the toolbar it hides with -->
+        <Tooltip text={action.label} dormant={!awake && !near}>
           {#snippet child({ props })}
             <Button
               {...props}

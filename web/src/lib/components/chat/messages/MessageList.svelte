@@ -222,7 +222,30 @@
   const focusout = (e: FocusEvent) => {
     const to = e.relatedTarget;
     if (lineMenu.line === null && to instanceof Node && !box?.contains(to)) active = null;
+    if (!(to instanceof Node && box?.contains(to))) within = null;
   };
+
+  /** the line of the message focus is in */
+  let within = $state<string | null>(null);
+  const focusin = (e: FocusEvent) => {
+    within = (e.target as Element).closest<HTMLElement>("[data-message]")?.dataset.line ?? null;
+  };
+  /**
+   * the messages just before and after the one focus is in, whose actions are in the tab order
+   * unseen: a message's actions are hidden until focus is in it, too late for Shift+Tab from the
+   * next message, or Tab from the one before, to find them
+   */
+  const near = $derived.by(() => {
+    const at = within === null ? -1 : lines.findIndex((l) => l.key === within);
+    if (at === -1) return new Set<string>();
+    const message = (from: number, step: 1 | -1) => {
+      for (let i = from + step; i >= 0 && i < lines.length; i += step) {
+        if (lines[i].kind === "message") return [lines[i].key];
+      }
+      return [];
+    };
+    return new Set([...message(at, -1), ...message(at, 1)]);
+  });
 
   /** The message line at the top of the view, and how far below the view's top it starts */
   const leftAt = (): ScrollMark | null => {
@@ -394,6 +417,7 @@
     onscroll={scrolled}
     onpointerdown={grip}
     onkeydown={keydown}
+    onfocusin={focusin}
     onfocusout={focusout}
     {@attach lineMenu.attach}
     {@attach shown.attach}
@@ -432,6 +456,7 @@
               room={pane.target.kind === "room"}
               notice={notices}
               active={line.message.localId === active}
+              near={near.has(line.key)}
               {...lineMenu.mark(line)}
               menu={lineMenu.anchor}
               onclosemenu={() => {

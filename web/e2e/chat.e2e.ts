@@ -167,8 +167,7 @@ test("the keys reach what can be done with a message", async ({ page }) => {
   // the keys put focus on the newest message, which shows its toolbar
   const newest = log.locator("[data-message]").last();
   await expect(newest).toBeFocused();
-  await expect(copy).toHaveCount(1);
-  await expect(copy).toBeVisible();
+  await expect(newest.getByRole("button", { name: "Copy text" })).toBeVisible();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("menuitem", { name: "Copy text" })).toBeVisible();
   await page.keyboard.press("Escape");
@@ -202,6 +201,28 @@ test("Tab goes from a link in a message to its actions, which show their tooltip
   await expect(page.locator("[data-tooltip-content]")).toHaveText(
     (await action.getAttribute("aria-label"))!
   );
+});
+
+test("Shift+Tab goes from a message to the actions of the one before it", async ({ page }) => {
+  await fakeChat(page);
+  await visit(page, "/chat");
+  await open(page, "/chat/rooms/indie");
+  const log = page.getByRole("log");
+  await expect(log.getByText("anyone have the new boards of canada rip?")).toBeVisible();
+  const [first, second] = [
+    log.locator("[data-message]").first(),
+    log.locator("[data-message]").nth(1)
+  ];
+  // the second message's name, the first stop in it
+  await second.getByRole("link").first().focus();
+  await page.keyboard.press("Shift+Tab");
+  // its last action, which the message's author's chat is
+  const actions = first.getByRole("group", { name: "Message actions" });
+  await expect(actions.locator("a, button").last()).toBeFocused();
+  await expect(actions).toHaveCSS("opacity", "1");
+  // and back down to the name it came from
+  await page.keyboard.press("Tab");
+  await expect(second.getByRole("link").first()).toBeFocused();
 });
 
 test("a chat row shows its menu is open while the pointer is on the menu", async ({ page }) => {
