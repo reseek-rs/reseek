@@ -17,10 +17,10 @@ use uuid::Uuid;
 use super::Downloads;
 use crate::api::error::ApiError;
 use crate::db::DbError;
-use crate::network::peer_count;
 use crate::transfers::categories::{Condition, IN_PROGRESS, QUEUED, UNFINISHED};
 use crate::transfers::state::column;
 use crate::transfers::store;
+use soulseek_client::peer_count;
 
 /// How long a place a peer gave is answered again without asking it.
 const ASK_EVERY: Duration = Duration::from_secs(10);

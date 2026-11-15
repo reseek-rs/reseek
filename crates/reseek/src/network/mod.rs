@@ -50,12 +50,6 @@ const STATISTICS_FOR: Duration = Duration::from_secs(4 * 3600);
 /// The message the client is disconnected with at shutdown.
 const SHUTTING_DOWN: &str = "Shutting down";
 
-/// A count a peer reports of its own queue: a place in it or its length. Some clients send -1
-/// for one they don't know, which reads unsigned as past `i32::MAX`; that is None.
-pub fn peer_count(value: u32) -> Option<u32> {
-  i32::try_from(value).is_ok().then_some(value)
-}
-
 /// Why the daemon itself ended the server session, carried as the disconnect's error so that
 /// what follows the disconnect knows not to reconnect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]

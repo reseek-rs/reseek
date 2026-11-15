@@ -23,8 +23,8 @@ use tracing::{debug, error, trace, warn};
 
 use super::{Searches, store, suspect};
 use crate::live::{Live, Topic};
-use crate::network::peer_count;
 use crate::users::Directory;
+use soulseek_client::peer_count;
 
 /// How often the counts of a running search are written and pushed at most.
 const COUNTS_EVERY: Duration = Duration::from_millis(250);

@@ -30,10 +30,10 @@ use crate::config::enums::RetryPartial;
 use crate::files::mode::to_unix_file_mode;
 use crate::files::{WriteGuard, create_file};
 use crate::network::options::request_style;
-use crate::network::peer_count;
 use crate::safety::Os;
 use crate::transfers::state::{self, State};
 use crate::transfers::{PROGRESS_EVERY, Record, STATES, store};
+use soulseek_client::peer_count;
 
 /// The smallest size an old 32-bit client reports as 0, one byte short of 2 GiB.
 const OVERFLOWED_SIZE: u64 = i32::MAX as u64;

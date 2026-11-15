@@ -123,7 +123,10 @@ fn options(
     file_limit: request.file_limit,
     filter_responses: request.filter_responses,
     minimum_response_file_count: request.minimum_response_file_count,
-    maximum_peer_queue_length: request.maximum_peer_queue_length.unwrap_or(u32::MAX),
+    // the client keeps a queue as long as its bound, the API drops one as long as its own
+    maximum_peer_queue_length: request
+      .maximum_peer_queue_length
+      .map_or(u32::MAX, |longest| longest.saturating_sub(1)),
     minimum_peer_upload_speed: request.minimum_peer_upload_speed,
     remove_single_character_search_terms: true,
     state_changed: Some(state_changed),
@@ -763,6 +766,23 @@ mod tests {
       .filter_map(|search| search["id"].as_str())
       .collect();
     assert!(ids.contains(&known), "{ids:?}");
+  }
+
+  #[test]
+  fn the_apis_queue_bound_drops_a_queue_as_long_as_it() {
+    let bound = |longest: Option<u32>| {
+      let request = SearchRequest {
+        maximum_peer_queue_length: longest,
+        ..serde_json::from_value(json!({ "searchText": "x" })).unwrap()
+      };
+      options(&request, Duration::from_secs(1), Arc::new(|_, _| {})).maximum_peer_queue_length
+    };
+    assert_eq!(
+      bound(Some(3)),
+      2,
+      "the client keeps a queue as long as its bound"
+    );
+    assert_eq!(bound(None), u32::MAX);
   }
 
   #[test]
