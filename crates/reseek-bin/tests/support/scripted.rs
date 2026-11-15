@@ -57,6 +57,25 @@ impl Scripted {
   }
 }
 
+/// A message connection to the daemon listening on `listen`, introduced as `username`, from
+/// `from`; `None` when this machine cannot send from that address.
+pub async fn introduced(listen: u16, username: &str, from: Ipv4Addr) -> Option<PeerSide> {
+  let socket = tokio::net::TcpSocket::new_v4().unwrap();
+  socket.bind(SocketAddr::from((from, 0))).ok()?;
+  let stream = socket
+    .connect(SocketAddr::from((Ipv4Addr::LOCALHOST, listen)))
+    .await
+    .unwrap();
+  let mut side = PeerSide::new(stream);
+  let hello = InitMessage::PeerInit(PeerInit {
+    username: username.into(),
+    connection_type: PeerConnectionType::Peer,
+    token: 0,
+  });
+  side.send(&hello.encode()).await;
+  Some(side)
+}
+
 /// Connects to the daemon as `username` for the transfer `token`, reads where it asks to
 /// start, checks it is `start`, and sends the file of `size` bytes from there.
 pub async fn send_from(daemon: SocketAddr, username: &str, token: u32, start: u64, size: usize) {

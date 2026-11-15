@@ -7,7 +7,7 @@
 mod support;
 
 use std::collections::BTreeMap;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,11 +17,10 @@ use api_types::transfers::{Transfer, TransferDirection, TransferOutcome, Transfe
 use api_types::users::BuddyChange;
 use serde_json::json;
 use soulseek_client::{ClientError, ClientOptions, UploadInput, UploadRequest};
-use soulseek_proto::init::PeerInit;
+use soulseek_proto::PeerMessage;
 use soulseek_proto::peer::{QueueDownload, TransferRequest, TransferResponse, UploadFailed};
-use soulseek_proto::{InitMessage, PeerConnectionType, PeerMessage};
 use support::peer::PeerSide;
-use support::scripted::{Scripted, send_from};
+use support::scripted::{Scripted, introduced, send_from};
 use support::soulfind::{self, Soulfind, User};
 use support::transfers::{self, Asked, asked, content, file, scratch};
 use support::{
@@ -81,25 +80,6 @@ async fn offer(side: &mut PeerSide, remote: &str, token: u32, size: u64) {
     file_size: Some(size),
   });
   side.send(&offer.encode()).await;
-}
-
-/// A message connection to the daemon listening on `listen`, introduced as `username`, from
-/// `from`; `None` when this machine cannot send from that address.
-async fn introduced(listen: u16, username: &str, from: Ipv4Addr) -> Option<PeerSide> {
-  let socket = tokio::net::TcpSocket::new_v4().unwrap();
-  socket.bind(SocketAddr::from((from, 0))).ok()?;
-  let stream = socket
-    .connect(SocketAddr::from((Ipv4Addr::LOCALHOST, listen)))
-    .await
-    .unwrap();
-  let mut side = PeerSide::new(stream);
-  let hello = InitMessage::PeerInit(PeerInit {
-    username: username.into(),
-    connection_type: PeerConnectionType::Peer,
-    token: 0,
-  });
-  side.send(&hello.encode()).await;
-  Some(side)
 }
 
 /// The download of `remote` from `username` once `ready` holds for it.
@@ -231,9 +211,17 @@ async fn a_file_sent_unasked_never_replaces_a_file_and_keeps_its_size() {
   let api = signed_in(&daemon).await;
   until(&api, "logged in", logged_in).await;
   let sender = Scripted::start(&server).await;
-  let mut side = introduced(listen, sender.name(), Ipv4Addr::LOCALHOST)
+  // the sender reaches the daemon from the address the server gives for it
+  let given = sender
+    .user
+    .client
+    .get_user_endpoint(sender.name())
     .await
     .unwrap();
+  let IpAddr::V4(from) = given.ip() else {
+    panic!("the server gives IPv4 addresses");
+  };
+  let mut side = introduced(listen, sender.name(), from).await.unwrap();
   let allowed = |token| {
     PeerMessage::TransferResponse(TransferResponse::Allowed {
       token,
