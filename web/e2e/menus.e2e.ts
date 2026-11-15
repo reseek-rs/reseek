@@ -40,11 +40,14 @@ const clearOfMenu = async (page: Page, box: { y: number; height: number }) => {
  */
 const opened = async (page: Page, more: Locator) => {
   const button = (await more.boundingBox())!;
+  // the switch opens the new menu a tick after the old one closes: the focused menu is the new
+  // one, and it is measured once it has flown in
   await expect(open(page)).toHaveCount(1);
+  await expect(open(page)).toBeFocused();
+  await open(page).evaluate((e) => Promise.all(e.getAnimations().map((a) => a.finished)));
   const box = (await open(page).boundingBox())!;
   expect(box.y).toBeGreaterThanOrEqual(button.y + button.height);
   expect(box.y).toBeLessThan(button.y + button.height + 20);
-  await expect(open(page)).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await expect(open(page).locator("[data-highlighted]")).toHaveCount(1);
   await page.keyboard.press("Escape");
