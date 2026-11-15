@@ -212,9 +212,10 @@ mod tests {
       .send(request("PATCH", "/api/v0/options", Some(change)))
       .await;
     assert_eq!(answer.status, 200, "{:?}", answer.body);
-    let speeds = app.state.network.speeds();
+    let upload = app.state.network.speeds().upload();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while speeds.limits().0 != Some(64) {
+    // 64 KiB/s grants 6553 bytes every 100 ms
+    while crate::testing::grants(&upload).await != 6553 {
       assert!(tokio::time::Instant::now() < deadline, "never applied");
       tokio::time::sleep(Duration::from_millis(20)).await;
     }

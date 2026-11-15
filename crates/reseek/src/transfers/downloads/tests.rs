@@ -2571,3 +2571,75 @@ async fn a_paused_download_canceled_is_pushed_as_no_longer_paused() {
   );
   assert!(!read(&app, paused.id).await.paused);
 }
+
+/// A download moves no faster than the global download limit: 1 KiB/s lets 102 bytes through
+/// every 100 ms, so a file of 1000 bytes the peer sends at once takes nine refills and more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_download_is_held_to_the_global_download_limit() {
+  use soulseek_proto::init::{FileTransferInit, PeerInit};
+  use soulseek_proto::peer::{TransferRequest, TransferResponse};
+  use soulseek_proto::{InitMessage, PeerConnectionType, PeerMessage, TransferDirection};
+  use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+  let config = format!("[transfers.download]\nspeed_limit = 1\n{TRUSTED}");
+  let app = crate::testing::soulseek::app(&config).await;
+  let peers = Peers::start(&app, &["alice"]).await;
+  let file = "@@a\\Album\\1.flac";
+  let size = 1000;
+  let group = super::Group {
+    username: "alice".into(),
+    files: vec![super::FileRequest {
+      filename: file.into(),
+      size,
+      position: None,
+    }],
+    destination: None,
+    folder: None,
+    search_id: None,
+  };
+  let enqueued = app
+    .state
+    .downloads
+    .enqueue(Uuid::new_v4(), vec![group], false)
+    .await;
+  let id = enqueued.into_iter().next().unwrap().unwrap().enqueued[0].id;
+  let mut alice = peers.connected("alice").await;
+  alice.asked_for(file).await;
+  alice
+    .send(PeerMessage::TransferRequest(TransferRequest {
+      direction: TransferDirection::Upload,
+      token: 1,
+      filename: file.into(),
+      file_size: Some(size),
+    }))
+    .await;
+  assert!(matches!(
+    alice.next().await,
+    PeerMessage::TransferResponse(TransferResponse::Allowed { token: 1, .. })
+  ));
+  let port = app.state.config.current().values.soulseek.listen_port;
+  let mut transfer = tokio::net::TcpStream::connect(("127.0.0.1", port))
+    .await
+    .unwrap();
+  let mut init = InitMessage::PeerInit(PeerInit {
+    username: "alice".into(),
+    connection_type: PeerConnectionType::Transfer,
+    token: 0,
+  })
+  .encode();
+  init.extend(FileTransferInit { token: 1 }.encode());
+  transfer.write_all(&init).await.unwrap();
+  let mut offset = [0; 8];
+  transfer.read_exact(&mut offset).await.unwrap();
+  let started = std::time::Instant::now();
+  transfer.write_all(&[7; 1000]).await.unwrap();
+  read_until(&app, id, |r| {
+    r.state == State::Completed(TransferOutcome::Succeeded)
+  })
+  .await;
+  assert!(
+    started.elapsed() >= std::time::Duration::from_millis(800),
+    "moved in {:?}",
+    started.elapsed()
+  );
+}

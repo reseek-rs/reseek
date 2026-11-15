@@ -219,8 +219,8 @@ mod tests {
     let (chunk, report) = governor.pace(Arc::new(|| LEECHERS_GROUP.to_string()));
     let never = CancellationToken::new();
     assert_eq!(chunk(&transfer(), 1000, never.clone()).await, 102);
-    // the client's limit let 40 through and 30 were written
-    report(&transfer(), 1000, 40, 30);
+    // 30 of the 102 granted were written
+    report(&transfer(), 1000, 102, 30);
     let before = tokio::time::Instant::now();
     assert_eq!(
       chunk(&transfer(), 1000, never).await,

@@ -923,3 +923,38 @@ async fn a_queued_user_the_cache_does_not_know_is_asked_about_again() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn an_uploads_chunks_are_held_to_the_global_limit_as_well_as_its_groups() {
+  let (_files, app) = shared_app("[transfers.upload]\nspeed_limit = 1\n").await;
+  let (chunk, _) = app.state.uploads.governor.pace(std::sync::Arc::new(|| {
+    crate::config::DEFAULT_GROUP.to_string()
+  }));
+  // the default group sets no limit, so 1 KiB/s is the global one: 102 bytes a 100 ms
+  let granted = chunk(
+    &soulseek_client::Transfer {
+      direction: soulseek_proto::TransferDirection::Upload,
+      username: "alice".into(),
+      filename: SHARED.into(),
+      token: 1,
+      remote_token: None,
+      state: soulseek_client::TransferState::InProgress,
+      size: 1_000_000,
+      start_offset: 0,
+      bytes_transferred: 0,
+      bytes_remaining: 1_000_000,
+      percent_complete: 0.0,
+      average_speed: 0.0,
+      start_time: None,
+      end_time: None,
+      elapsed_time: None,
+      remaining_time: None,
+      ip_endpoint: None,
+      error: None,
+    },
+    50_000,
+    CancellationToken::new(),
+  )
+  .await;
+  assert_eq!(granted, 102);
+}

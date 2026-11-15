@@ -2,9 +2,8 @@
 //! `transfers.db` so it lasts across restarts, shown in the state document, and in force for the
 //! global limits of each direction and the uploads' privileged bucket.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use reseek_shares::lock;
 use rusqlite::{Connection, OptionalExtension};
 use soulseek_client::{Governor, Reporter, TokenBucket};
 use tracing::{debug, info};
@@ -19,8 +18,6 @@ use crate::db::{Database, DbError};
 pub struct Global {
   upload: Arc<TokenBucket>,
   download: Arc<TokenBucket>,
-  /// the upload and download limits in force, KiB/s, `None` for no limit
-  limits: Mutex<(Option<u32>, Option<u32>)>,
 }
 
 /// The upload and download limits `options` set for the pair `alternative` names.
@@ -35,13 +32,12 @@ fn pair(options: &Options, alternative: bool) -> (Option<u32>, Option<u32>) {
 impl Global {
   /// The limits `options` set for the pair `alternative` names, each bucket full.
   pub fn new(options: &Options, alternative: bool) -> Self {
-    let limits = pair(options, alternative);
+    let (upload, download) = pair(options, alternative);
     // the bucket takes 0 as no limit
     let bucket = |limit: Option<u32>| Arc::new(TokenBucket::for_speed(limit.unwrap_or(0)));
     Self {
-      upload: bucket(limits.0),
-      download: bucket(limits.1),
-      limits: Mutex::new(limits),
+      upload: bucket(upload),
+      download: bucket(download),
     }
   }
 
@@ -49,19 +45,9 @@ impl Global {
   /// next 100 ms on.
   pub fn set(&self, options: &Options, alternative: bool) {
     let (upload, download) = pair(options, alternative);
-    let mut limits = lock(&self.limits);
-    if *limits == (upload, download) {
-      return;
-    }
-    *limits = (upload, download);
     self.upload.set_speed(upload.unwrap_or(0));
     self.download.set_speed(download.unwrap_or(0));
     debug!(?upload, ?download, "global speed limits set");
-  }
-
-  /// The upload and download limits in force, KiB/s, `None` for no limit.
-  pub fn limits(&self) -> (Option<u32>, Option<u32>) {
-    *lock(&self.limits)
   }
 
   /// The bucket every upload asks after its group's.
@@ -144,12 +130,16 @@ pub async fn switch(app: &AppState, alternative: bool, by: &str) -> Result<(), A
 mod tests {
   use serde_json::json;
 
-  use crate::testing::{TestApp, app, request};
+  use crate::testing::{TestApp, app, grants, request};
 
-  /// The global upload and download limits in force.
-  fn limits(app: &TestApp) -> (Option<u32>, Option<u32>) {
-    app.state.network.speeds().limits()
+  /// What the global upload and download buckets grant in 100 ms: 6553 bytes for 64 KiB/s, 1638
+  /// for 16, 819 for 8, and `u32::MAX` for no limit.
+  async fn limits(app: &TestApp) -> (u32, u32) {
+    let speeds = app.state.network.speeds();
+    (grants(&speeds.upload).await, grants(&speeds.download).await)
   }
+
+  const NONE: u32 = u32::MAX;
 
   #[tokio::test]
   async fn the_switch_reaches_the_global_limits_and_lasts_across_a_restart() {
@@ -160,24 +150,24 @@ mod tests {
       &[],
     )
     .await;
-    assert_eq!(limits(&app), (Some(64), None));
+    assert_eq!(limits(&app).await, (6553, NONE));
     let on = json!({ "alternative": true });
     let answer = app
       .send(request("PUT", "/api/v0/transfers/speed-limits", Some(on)))
       .await;
     assert_eq!(answer.status, 204, "{:?}", answer.body);
     assert!(app.state.state.current().alternative_speed_limits);
-    assert_eq!(limits(&app), (Some(16), Some(8)));
+    assert_eq!(limits(&app).await, (1638, 819));
 
     let app = app.restarted(&[]).await;
     assert!(app.state.state.current().alternative_speed_limits);
-    assert_eq!(limits(&app), (Some(16), Some(8)));
+    assert_eq!(limits(&app).await, (1638, 819));
     let off = json!({ "alternative": false });
     let answer = app
       .send(request("PUT", "/api/v0/transfers/speed-limits", Some(off)))
       .await;
     assert_eq!(answer.status, 204);
-    assert_eq!(limits(&app), (Some(64), None));
+    assert_eq!(limits(&app).await, (6553, NONE));
   }
 
   #[tokio::test]
@@ -277,5 +267,29 @@ mod tests {
       Instant::now() - before,
       std::time::Duration::from_millis(100)
     );
+  }
+
+  #[tokio::test]
+  async fn a_switch_that_cannot_be_kept_leaves_the_limits_as_they_were() {
+    let app = app(
+      "[web.authentication]\ntrusted_networks = [\"127.0.0.0/8\"]\n\
+       [transfers.upload]\nspeed_limit = 64\nalt_speed_limit = 16\n\
+       [transfers.download]\nalt_speed_limit = 8\n",
+      &[],
+    )
+    .await;
+    app
+      .state
+      .transfers
+      .write(|conn| conn.execute("DROP TABLE speed_limits", []))
+      .await
+      .unwrap();
+    let on = json!({ "alternative": true });
+    let answer = app
+      .send(request("PUT", "/api/v0/transfers/speed-limits", Some(on)))
+      .await;
+    assert_eq!(answer.status, 500, "{:?}", answer.body);
+    assert!(!app.state.state.current().alternative_speed_limits);
+    assert_eq!(limits(&app).await, (6553, NONE));
   }
 }
