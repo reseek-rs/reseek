@@ -52,9 +52,9 @@ pub(super) const SETTLED_AFTER: Duration = Duration::from_secs(12);
 enum Settled {
   /// the peer said the file's place
   Placed(u32),
-  /// the window passed with the question unanswered
-  Unanswered,
-  /// the question could not be asked, or failed other than by going unanswered, as when the
+  /// the question asked at `asked` was written and never answered
+  Unanswered { asked: Instant },
+  /// the question was not written, or failed other than by going unanswered, as when the
   /// connection closes under it, so the peer's silence says nothing
   Unasked,
 }
@@ -428,8 +428,8 @@ impl Downloads {
                 self.heard_from(&record.username);
                 self.place_answered(record, place).await;
               }
-              Settled::Unanswered => {
-                if self.away.went_silent(&record.username) {
+              Settled::Unanswered { asked } => {
+                if self.away.went_silent(&record.username, asked) {
                   debug!("the peer neither offered the file nor said its place; its next asks hold no slot");
                 }
               }
@@ -552,20 +552,23 @@ impl Downloads {
   ) -> std::pin::Pin<Box<dyn Future<Output = Settled> + Send>> {
     let client = self.network.client().clone();
     let (username, filename) = (record.username.clone(), record.filename.clone());
-    let asked = stop.child_token();
-    let settled = Instant::now() + SETTLED_AFTER;
+    let stopped = stop.child_token();
+    let asked = Instant::now();
+    let settled = asked + SETTLED_AFTER;
     Box::pin(async move {
       // the question stops with the try or the window, whichever ends first
-      let _stops = asked.clone().drop_guard();
-      let place = client.get_download_place_in_queue(&username, filename, &asked);
-      // a question that ended early still waits out the window, in which an offer may come
+      let _stops = stopped.clone().drop_guard();
+      let place = client.get_download_place_in_queue(&username, filename, &stopped);
+      // a question that ended early still waits out the window, in which an offer may come; one
+      // still out when the window ends may not have been written yet
       let settled_as = match tokio::time::timeout_at(settled, place).await {
         Ok(Ok(place)) => return Settled::Placed(place),
-        Ok(Err(ClientError::Timeout(_))) | Err(_) => Settled::Unanswered,
+        Ok(Err(ClientError::NoResponse(_))) => Settled::Unanswered { asked },
         Ok(Err(e)) => {
           debug!(error = %e, "place in the peer's queue not asked");
           Settled::Unasked
         }
+        Err(_) => Settled::Unasked,
       };
       tokio::time::sleep_until(settled).await;
       settled_as

@@ -30,6 +30,8 @@ struct Followed {
   asked: Arc<tokio::sync::Mutex<Option<Instant>>>,
   /// they neither offered a file nor said its place within the window of its ask
   silent: bool,
+  /// when they last offered a file or said a file's place
+  heard_at: Option<Instant>,
 }
 
 /// By user, the last word on them, for the downloads that follow them. A user no download
@@ -48,6 +50,7 @@ impl Away {
         heard: watch::Sender::new(Heard::Nothing),
         asked: Arc::default(),
         silent: false,
+        heard_at: None,
       })
       .heard
       .subscribe()
@@ -99,20 +102,24 @@ impl Away {
     }
   }
 
-  /// Takes word that `username` left the ask of a file unsettled for its whole window; true the
-  /// first time, while downloads follow them.
-  pub fn went_silent(&self, username: &str) -> bool {
-    lock(&self.users)
-      .get_mut(username)
-      .is_some_and(|user| !std::mem::replace(&mut user.silent, true))
+  /// Takes word that `username` left a file's place question, asked at `asked`, unanswered for
+  /// its whole window; they are silent unless they offered a file or said a place since the
+  /// question, a late answer to it included. True when they became silent, while downloads
+  /// follow them.
+  pub fn went_silent(&self, username: &str, asked: Instant) -> bool {
+    lock(&self.users).get_mut(username).is_some_and(|user| {
+      let heard = user.heard_at.is_some_and(|at| at >= asked);
+      !heard && !std::mem::replace(&mut user.silent, true)
+    })
   }
 
-  /// Takes word that `username` offered a file or said a file's place, so their asks are
+  /// Takes word that `username` offered a file or said a file's place now, so their asks are
   /// waited for again; true when they were silent, while downloads follow them.
   pub fn answered(&self, username: &str) -> bool {
-    lock(&self.users)
-      .get_mut(username)
-      .is_some_and(|user| std::mem::replace(&mut user.silent, false))
+    lock(&self.users).get_mut(username).is_some_and(|user| {
+      user.heard_at = Some(Instant::now());
+      std::mem::replace(&mut user.silent, false)
+    })
   }
 
   /// Whether `username` left the ask of a file unsettled for its whole window and has offered

@@ -1389,15 +1389,20 @@ impl Peer {
     }
   }
 
-  /// Reads the daemon's question of the place of `filename`, and answers `place`.
-  async fn place_asked(&mut self, filename: &str, place: u32) {
-    use soulseek_proto::peer::PlaceInQueueResponse;
+  /// Reads the daemon's question of the place of `filename`.
+  async fn asked_place(&mut self, filename: &str) {
     match self.next_within(std::time::Duration::from_secs(10)).await {
       Some(soulseek_proto::PeerMessage::PlaceInQueueRequest(asked)) => {
         assert_eq!(asked.filename.as_str(), filename);
       }
       other => panic!("not a question of the place of {filename}: {other:?}"),
     }
+  }
+
+  /// Reads the daemon's question of the place of `filename`, and answers `place`.
+  async fn place_asked(&mut self, filename: &str, place: u32) {
+    use soulseek_proto::peer::PlaceInQueueResponse;
+    self.asked_place(filename).await;
     let answer = soulseek_proto::PeerMessage::PlaceInQueueResponse(PlaceInQueueResponse {
       filename: filename.into(),
       place,
@@ -1798,11 +1803,12 @@ async fn a_silent_peer_holds_the_asking_slot_for_the_window_only_and_once() {
   assert!(again.is_err(), "bob was reached on a second connection");
 }
 
-/// A peer marked silent is waited for again once it says a file's place or offers a file: the
-/// next file asked of it gets its place question, which a silent peer's file does not.
+/// A peer marked silent is waited for again once it says a file's place, to the try's question
+/// or to the API's, or offers a file: the next file asked of it gets its place question, which a
+/// silent peer's file does not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_silent_peer_that_answers_or_offers_is_waited_for_again() {
-  use soulseek_proto::peer::TransferResponse;
+  use soulseek_proto::peer::{PlaceInQueueResponse, TransferResponse};
 
   let config = format!(
     "[transfers.download]\nslots = 2\n[transfers.download.retry]\ndelay = \"1h\"\n\
@@ -1811,40 +1817,100 @@ async fn a_silent_peer_that_answers_or_offers_is_waited_for_again() {
   let app = crate::testing::soulseek::app(&config).await;
   let peers = Peers::start(&app, &["alice"]).await;
   let away = &app.state.downloads.away;
-  let files = ["@@a\\1.flac", "@@a\\2.flac", "@@a\\3.flac"];
+  // as if an earlier file's window had passed unanswered
+  let mark = || assert!(away.went_silent("alice", tokio::time::Instant::now()));
+  let files = ["@@a\\1.flac", "@@a\\2.flac", "@@a\\3.flac", "@@a\\4.flac"];
+
+  // a place said to the try's question
   let first = enqueued(&app, "alice", files[0]).await;
   let mut alice = peers.connected("alice").await;
   alice.asked_for(files[0]).await;
-  match alice.next_within(std::time::Duration::from_secs(10)).await {
-    Some(soulseek_proto::PeerMessage::PlaceInQueueRequest(asked)) => {
-      assert_eq!(asked.filename.as_str(), files[0]);
-    }
-    other => panic!("not a question of the first file's place: {other:?}"),
-  }
-  // as if an earlier file's window had passed unanswered, while this question is out
-  assert!(away.went_silent("alice"));
+  alice.asked_place(files[0]).await;
+  mark();
+  let placed = PlaceInQueueResponse {
+    filename: files[0].into(),
+    place: 4,
+  };
   alice
-    .send(soulseek_proto::PeerMessage::PlaceInQueueResponse(
-      soulseek_proto::peer::PlaceInQueueResponse {
-        filename: files[0].into(),
-        place: 4,
-      },
-    ))
+    .send(soulseek_proto::PeerMessage::PlaceInQueueResponse(placed))
     .await;
   read_until(&app, first, |r| r.place_in_queue() == Some(4)).await;
-  enqueued(&app, "alice", files[1]).await;
+  let second = enqueued(&app, "alice", files[1]).await;
   alice.asked_for(files[1]).await;
   alice.place_asked(files[1], 5).await;
+  read_until(&app, second, |r| r.place_in_queue() == Some(5)).await;
 
-  assert!(away.went_silent("alice"));
+  // a place said to the API's question
+  mark();
+  let position = format!("/api/v0/transfers/downloads/alice/{second}/position");
+  let ((status, _), ()) = tokio::join!(
+    app.call("GET", &position, None),
+    alice.place_asked(files[1], 7)
+  );
+  assert_eq!(status, 200);
+  let third = enqueued(&app, "alice", files[2]).await;
+  alice.asked_for(files[2]).await;
+  alice.place_asked(files[2], 6).await;
+  read_until(&app, third, |r| r.place_in_queue() == Some(6)).await;
+
+  // an offer
+  mark();
   assert!(matches!(
     alice.offer(files[0], 1).await,
     TransferResponse::Allowed { token: 1, .. }
   ));
   read_until(&app, first, |r| r.state == State::Initializing).await;
-  enqueued(&app, "alice", files[2]).await;
-  alice.asked_for(files[2]).await;
-  alice.place_asked(files[2], 6).await;
+  enqueued(&app, "alice", files[3]).await;
+  alice.asked_for(files[3]).await;
+  alice.place_asked(files[3], 8).await;
+}
+
+/// A peer is marked silent only for a place question written and left unanswered with no word
+/// from it in the window: alice answers seven seconds late, after the question's own wait but
+/// inside the window, and bob's connection closes under the question, so neither is marked and
+/// their next files get their place questions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_late_answer_or_a_question_never_answered_for_a_close_leaves_no_mark() {
+  use super::attempt::SETTLED_AFTER;
+
+  let config = format!(
+    "[transfers.download]\nslots = 2\n[transfers.download.retry]\ndelay = \"1h\"\n\
+     max_delay = \"1h\"\n[soulseek.connection.timeout]\ninactivity = \"60s\"\n{TRUSTED}"
+  );
+  let app = crate::testing::soulseek::app(&config).await;
+  let peers = Peers::start(&app, &["alice", "bob"]).await;
+  let (alices, bobs) = (
+    ["@@a\\1.flac", "@@a\\2.flac"],
+    ["@@b\\1.flac", "@@b\\2.flac"],
+  );
+  enqueued(&app, "alice", alices[0]).await;
+  let mut alice = peers.connected("alice").await;
+  alice.asked_for(alices[0]).await;
+  alice.asked_place(alices[0]).await;
+  let asked = tokio::time::Instant::now();
+  enqueued(&app, "bob", bobs[0]).await;
+  let mut bob = peers.connected("bob").await;
+  bob.asked_for(bobs[0]).await;
+  bob.asked_place(bobs[0]).await;
+  drop(bob);
+  // both slots are held by the first files' windows, so the second files wait for them
+  enqueued(&app, "alice", alices[1]).await;
+  enqueued(&app, "bob", bobs[1]).await;
+  // past the question's own wait of five seconds, inside the window
+  tokio::time::sleep_until(asked + std::time::Duration::from_secs(7)).await;
+  assert!(asked.elapsed() < SETTLED_AFTER);
+  let late = soulseek_proto::peer::PlaceInQueueResponse {
+    filename: alices[0].into(),
+    place: 4,
+  };
+  alice
+    .send(soulseek_proto::PeerMessage::PlaceInQueueResponse(late))
+    .await;
+  alice.asked_for(alices[1]).await;
+  alice.asked_place(alices[1]).await;
+  let mut bob = peers.connected("bob").await;
+  bob.asked_for(bobs[1]).await;
+  bob.asked_place(bobs[1]).await;
 }
 
 /// A user the server says does not exist ends their downloads, failed with a reason that says
