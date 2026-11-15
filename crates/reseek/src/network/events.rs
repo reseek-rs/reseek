@@ -372,12 +372,8 @@ async fn handle(app: &AppState, event: Event, session: &mut Session) {
         .await;
     }
     Event::PrivilegedUserListReceived(usernames) => app.users.privileged_listed(&usernames),
-    Event::PrivilegeNotificationReceived {
-      username,
-      id,
-      requires_acknowledgment,
-    } => {
-      if requires_acknowledgment && let Some(id) = id {
+    Event::PrivilegeNotificationReceived { username, id } => {
+      if let Some(id) = id {
         acknowledge_privileges(app, id);
       }
       privileges_granted(app, username);
