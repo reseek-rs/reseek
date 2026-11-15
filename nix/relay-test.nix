@@ -519,7 +519,7 @@ pkgs.testers.runNixOSTest {
     with subtest("an agent with the wrong secret is refused and not listed"):
         connected = api(controller, "relay/agents")
         agent.succeed("systemctl start wrong-secret.service")
-        refused = 'reason="login refused: BadCredential" the relay controller refused this agent'
+        refused = "reason=\"the secret does not match the controller's for this agent\" the relay controller refused this agent"
         agent.wait_until_succeeds(
             f"journalctl -u wrong-secret | grep -F {shlex.quote(refused)}", timeout=60
         )
