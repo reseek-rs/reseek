@@ -86,6 +86,11 @@ uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
 webpki-roots = "1"
 
+# make the lossless and lossy audio the analyzer is tested on
+flacenc = { version = "0.5", default-features = false }
+# builds the LAME source it carries with autotools (`configure`, `make`, a C compiler), for
+# the test fixtures only; nothing of it is in a program
+mp3lame-encoder = "0.3"
 proptest = "1"
 proptest-derive = "0.9"
 tempfile = "3"

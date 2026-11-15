@@ -19,15 +19,12 @@ symphonia = { version = "0.6", features = ["all"] }
 symphonia-common = "0.6"
 tracing.workspace = true
 
-flacenc = { version = "0.5", default-features = false, optional = true }
-# builds the LAME source it carries with autotools (`configure`, `make`, a C compiler), for
-# the test fixtures only; nothing of it is in a program
-mp3lame-encoder = { version = "0.3", optional = true }
+flacenc = { workspace = true, optional = true }
+mp3lame-encoder = { workspace = true, optional = true }
 
 [dev-dependencies]
-# make the lossless and lossy audio the analyzer is tested on
-flacenc = { version = "0.5", default-features = false }
-mp3lame-encoder = "0.3"
+flacenc.workspace = true
+mp3lame-encoder.workspace = true
 proptest.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
