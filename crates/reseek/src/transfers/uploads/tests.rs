@@ -169,11 +169,7 @@ async fn a_privileged_user_is_queued_past_the_limits() {
     asked(&app, "vip", SHARED).await.as_deref(),
     Some("Too many files")
   );
-  app
-    .state
-    .users
-    .privileged_listed(&["vip".to_string()])
-    .await;
+  app.state.users.privileged_listed(&["vip".to_string()]);
   assert_eq!(asked(&app, "vip", SHARED).await, None);
   let (status, body) = app.call("GET", "/api/v0/transfers/uploads/vip", None).await;
   assert_eq!(status, 200);

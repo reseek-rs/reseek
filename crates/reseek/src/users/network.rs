@@ -131,8 +131,13 @@ impl Users {
   }
 
   /// Asks `username`'s client for its info and stores what it said before returning it, making
-  /// their row when there is none and `creates`.
-  async fn fetch_info(&self, username: &str, creates: bool) -> Result<UserInfo, ClientError> {
+  /// their row when there is none and `creates`, with whether it was stored, when pushing their
+  /// summary is the caller's.
+  async fn fetch_info(
+    &self,
+    username: &str,
+    creates: bool,
+  ) -> Result<(UserInfo, bool), ClientError> {
     let fetched = self
       .network
       .client()
@@ -146,17 +151,18 @@ impl Users {
       queue_length: fetched.queue_length,
       has_free_slot: fetched.has_free_upload_slot,
     };
-    self.directory.store_info(username, said, creates).await;
-    Ok(shown)
+    let stored = self.directory.store_info(username, said, creates).await;
+    Ok((shown, stored))
   }
 
   /// `username`'s profile after asking the network for their status, statistics and info,
   /// each on its own and all within five seconds, and storing the answers; the profile is read
   /// from the row afterwards, and what the refresh did not store is the value from before,
-  /// marked stale. A user nobody stored who the server says does not exist is a 404, and is
-  /// asked about first: the server answers statistics for any name, and keeping those would
-  /// store a row for a user who does not exist. A user stored when the refresh began is only
-  /// filled in, so forgetting them while it waits for the answers is not undone.
+  /// marked stale. Their summary is pushed once, after everything is stored. A user nobody
+  /// stored who the server says does not exist is a 404, and is asked about first: the server
+  /// answers statistics for any name, and keeping those would store a row for a user who does
+  /// not exist. A user stored when the refresh began is only filled in, so forgetting them
+  /// while it waits for the answers is not undone.
   async fn refreshed_profile(&self, username: &str) -> Result<UserProfile, ApiError> {
     let (row, _) = self
       .directory
@@ -173,7 +179,10 @@ impl Users {
     let asked_at = chrono::SubsecRound::trunc_subsecs(chrono::Utc::now(), 6);
     let client = self.network.client();
     let (status, statistics, info) = tokio::join!(
-      tokio::time::timeout(REFRESH_TIMEOUT, self.directory.status_of(client, username)),
+      tokio::time::timeout(
+        REFRESH_TIMEOUT,
+        self.directory.status_unpushed(client, username)
+      ),
       tokio::time::timeout(
         REFRESH_TIMEOUT,
         self.directory.statistics_untouched(client, username)
@@ -181,9 +190,11 @@ impl Users {
       tokio::time::timeout(REFRESH_TIMEOUT, self.fetch_info(username, !stored)),
     );
     // the info is stored as it arrives; reading the outcome logs a failure
-    refreshed("info", username, info);
+    let info_stored = refreshed("info", username, info).is_some_and(|(_, stored)| stored);
     let mut touches = Vec::new();
-    if let Some(status) = refreshed("status", username, status) {
+    let mut moved = false;
+    if let Some((status, status_moved)) = refreshed("status", username, status) {
+      moved = status_moved;
       touches.push(Touch::Status {
         presence: status.presence,
         is_privileged: status.is_privileged,
@@ -196,7 +207,10 @@ impl Users {
     if !touches.is_empty() && !stored {
       touches.push(Touch::Asked);
     }
-    self.directory.touch_now(username, touches).await;
+    let touched = self.directory.touch_now(username, touches).await;
+    if info_stored || touched || moved {
+      self.directory.push(username).await;
+    }
 
     let mut profile = self.directory.profile(username).await?;
     if let Some(stored) = profile.user.statistics.as_mut() {
@@ -312,10 +326,14 @@ impl UserService for Users {
     self.directory.refetch_statistics(username);
     // a user with a row when asked is only filled in, so forgetting them meanwhile is not undone
     let creates = !self.directory.known.has(username);
-    self
+    let (info, stored) = self
       .fetch_info(username, creates)
       .await
-      .map_err(|e| unanswered(username, e))
+      .map_err(|e| unanswered(username, e))?;
+    if stored {
+      self.directory.push(username).await;
+    }
+    Ok(info)
   }
 
   async fn status(&self, username: &str) -> Result<UserStatus, ApiError> {

@@ -363,15 +363,15 @@ async fn handle(app: &AppState, event: Event, session: &mut Session) {
       message,
     } => app.messaging.public_message(room_name, username, message),
     Event::UserStatusChanged { status, asked } => user_status(app, &status, asked).await,
-    Event::UserStatisticsChanged(statistics) => {
+    Event::UserStatisticsChanged { statistics, asked } => {
       app
         .users
-        .statistics_received(&statistics.username, &statistics.stats)
+        .statistics_received(&statistics.username, &statistics.stats, asked)
         .await;
     }
-    Event::PrivilegedUserListReceived(usernames) => app.users.privileged_listed(&usernames).await,
+    Event::PrivilegedUserListReceived(usernames) => app.users.privileged_listed(&usernames),
     Event::PrivilegeNotificationReceived { username, .. } => {
-      privileges_granted(app, username).await;
+      privileges_granted(app, username);
     }
     Event::RoomListReceived(list) => app.messaging.room_list_received(list).await,
     // the transfer, search, room, user and distributed engines follow these themselves, and the
@@ -420,7 +420,7 @@ async fn user_status(app: &AppState, status: &soulseek_proto::server::UserStatus
   app.downloads.presence(username, presence);
   let received = app
     .users
-    .status_received(username, presence, status.is_privileged)
+    .status_received(username, presence, status.is_privileged, asked)
     .await;
   if !received.watched {
     return;
@@ -429,7 +429,7 @@ async fn user_status(app: &AppState, status: &soulseek_proto::server::UserStatus
     presence,
     is_privileged: status.is_privileged,
   };
-  app.users.touch(username, touch).await;
+  app.users.touch_watched(username, &received, touch).await;
   if !asked {
     app.users.refetch_statistics(username);
     if let Some(previous) = received.previous
@@ -442,12 +442,9 @@ async fn user_status(app: &AppState, status: &soulseek_proto::server::UserStatus
 
 /// The server says `username` was granted privileges: they are privileged from now on, and when
 /// they are us, our own privileges are read again so the time we have shows at once.
-async fn privileges_granted(app: &AppState, username: String) {
+fn privileges_granted(app: &AppState, username: String) {
   debug!(username, "privileges granted");
-  app
-    .users
-    .privileged_listed(std::slice::from_ref(&username))
-    .await;
+  app.users.privileged_listed(std::slice::from_ref(&username));
   if app.network.client().username().as_deref() != Some(username.as_str()) {
     return;
   }

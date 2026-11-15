@@ -308,6 +308,8 @@ pub struct StatusReceived {
   pub watched: bool,
   /// the user's presence before it, when it was known in this server session
   pub previous: Option<UserPresence>,
+  /// it moved the groups of a watched user with a row, whose summary the touch pushes
+  moved: bool,
 }
 
 /// Statistics as the server said them, now.
@@ -506,25 +508,24 @@ impl Directory {
     username: &str,
   ) -> Result<StatisticsSnapshot, ClientError> {
     let fetched = client.get_user_statistics(username).await?;
-    Ok(self.statistics_kept(username, &fetched.stats).await)
+    Ok(self.statistics_kept(username, &fetched.stats))
   }
 
   /// Statistics the server gave: kept, and filled into the user's row when there is one.
   async fn statistics_fetched(&self, username: &str, stats: &UserStats) -> StatisticsSnapshot {
-    let taken = self.statistics_kept(username, stats).await;
+    let taken = self.statistics_kept(username, stats);
     let touch = Touch::Statistics(taken.statistics.clone());
     self.touch(username, touch).await;
     taken
   }
 
-  /// Statistics we asked for, kept for the user's groups.
-  async fn statistics_kept(&self, username: &str, stats: &UserStats) -> StatisticsSnapshot {
+  /// Statistics we asked for, kept for the user's groups. Their summary is not pushed here: the
+  /// touch with them, or the refresh that asked for them, writes the row, which pushes it.
+  fn statistics_kept(&self, username: &str, stats: &UserStats) -> StatisticsSnapshot {
     let taken = snapshot(stats);
-    if self.learned(username, true, |facts| {
+    self.learned(username, true, |facts| {
       facts.statistics = Some(taken.clone());
-    }) {
-      self.push(username).await;
-    }
+    });
     taken
   }
 
@@ -553,36 +554,53 @@ impl Directory {
     client: &Client,
     username: &str,
   ) -> Result<UserStatus, ClientError> {
-    let status = client.get_user_status(username).await?;
-    let presence = UserPresence::from(status.presence);
-    self
-      .status_fetched(username, presence, status.is_privileged)
-      .await;
-    Ok(UserStatus {
-      presence,
-      is_privileged: status.is_privileged,
-    })
+    let (status, moved) = self.status_unpushed(client, username).await?;
+    if moved {
+      self.push(username).await;
+    }
+    Ok(status)
   }
 
-  /// The status we asked for of `username`, kept. The same reply is also raised as a status
-  /// change, and either may be taken first, so both tell of a change missed while disconnected.
-  /// A watched user's summary is pushed by the touch the reply's event makes, so here only the
-  /// summary of a user nobody watches is.
-  pub(super) async fn status_fetched(
+  /// [`Directory::status_of`] leaving the push to the caller: says whether the status moved
+  /// the groups of a user with a row whose summary is the caller's to push.
+  pub(super) async fn status_unpushed(
+    &self,
+    client: &Client,
+    username: &str,
+  ) -> Result<(UserStatus, bool), ClientError> {
+    let before = self.groups.facts(username).unwrap_or_default();
+    let status = client.get_user_status(username).await?;
+    let presence = UserPresence::from(status.presence);
+    let moved = self.status_fetched(username, presence, status.is_privileged, &before);
+    let status = UserStatus {
+      presence,
+      is_privileged: status.is_privileged,
+    };
+    Ok((status, moved))
+  }
+
+  /// The status we asked for of `username`, known as `before` when we asked, kept. The same
+  /// reply is also raised as a status change, and either may be taken first, so both tell of a
+  /// change missed while disconnected, and whether it moved the groups is worked out from
+  /// `before`. Says whether it moved the groups of a user with a row whose summary is the
+  /// caller's to push: a watched user's is pushed by the touch the reply's event makes.
+  pub(super) fn status_fetched(
     &self,
     username: &str,
     presence: UserPresence,
     is_privileged: bool,
-  ) {
+    before: &Facts,
+  ) -> bool {
     self.tell_missed(username, presence);
     let watched = self.is_watched(username);
-    let moved = self.learned(username, true, |facts| {
+    self.learned(username, true, |facts| {
       facts.presence = Some(presence);
       facts.privileged = is_privileged;
     });
-    if moved && !watched {
-      self.push(username).await;
-    }
+    let after = self.groups.facts(username).unwrap_or_default();
+    let options = self.config.current();
+    let moved = groups::moves(&options.values, before, &after) && self.known.has(username);
+    moved && !watched
   }
 
   /// Tells of a buddy's move from the presence we knew when the last server session ended to
@@ -744,26 +762,47 @@ impl Directory {
     );
   }
 
-  /// Every user on the server's list of privileged users is privileged from now on.
-  pub async fn privileged_listed(&self, usernames: &[String]) {
-    for username in usernames {
-      if self.learned(username, true, |facts| facts.privileged = true) {
-        self.push(username).await;
-      }
+  /// Every user on the server's list of privileged users is privileged from now on. The
+  /// summaries of the users with a row whose groups that moves are pushed in the background, as
+  /// the list the server sends at login names thousands, and the client's events wait meanwhile.
+  /// The stop waits for them.
+  pub fn privileged_listed(self: &Arc<Self>, usernames: &[String]) {
+    let moved: Vec<String> = usernames
+      .iter()
+      .filter(|username| self.learned(username, true, |facts| facts.privileged = true))
+      .cloned()
+      .collect();
+    debug!(
+      users = usernames.len(),
+      moved = moved.len(),
+      "privileged users listed"
+    );
+    if moved.is_empty() {
+      return;
     }
-    debug!(users = usernames.len(), "privileged users listed");
+    let this = self.clone();
+    self.tasks.spawn(
+      async move {
+        for username in &moved {
+          this.push(username).await;
+        }
+      }
+      .in_current_span(),
+    );
   }
 
   /// A status the server sent of `username`: kept when we know them, and their summary pushed
-  /// when it moves their groups, unless the server watches them: the touch of their row with it
-  /// pushes that one. Says whether it watches them, and the presence known before in this
-  /// session, or none for the first word on a buddy after a reconnect, whose change while we
-  /// were not connected is told of here unless our own request's reply was taken first.
+  /// when it moves their groups, unless the server watches them, as the touch of their row with
+  /// it pushes that one, or we `asked` for it, as the request that did pushes it. Says whether
+  /// it watches them, and the presence known before in this session, or none for the first word
+  /// on a buddy after a reconnect, whose change while we were not connected is told of here
+  /// unless our own request's reply was taken first.
   pub async fn status_received(
     &self,
     username: &str,
     presence: UserPresence,
     is_privileged: bool,
+    asked: bool,
   ) -> StatusReceived {
     let first = self.tell_missed(username, presence);
     let watched = self.is_watched(username);
@@ -772,20 +811,40 @@ impl Directory {
       previous = facts.presence.replace(presence);
       facts.privileged = is_privileged;
     });
-    if moved && !watched {
+    if moved && !watched && !asked {
       self.push(username).await;
     }
     if first {
       previous = None;
     }
-    StatusReceived { watched, previous }
+    StatusReceived {
+      watched,
+      previous,
+      moved: moved && watched,
+    }
   }
 
-  /// Statistics the server sent of `username` on its own: kept when we know them.
-  pub async fn statistics_received(&self, username: &str, stats: &UserStats) {
-    if self.learned(username, false, |facts| {
+  /// Touches the watched `username`'s row with the status `received` came from, which pushes
+  /// their summary. A touch dropped because the writer is behind pushes nothing, so the summary
+  /// of a user whose groups the status moved is pushed here then.
+  pub async fn touch_watched(&self, username: &str, received: &StatusReceived, touch: Touch) {
+    if !self.toucher.send(username, touch).await && received.moved {
+      debug!(
+        username,
+        "status touch dropped; the summary it moved pushed at once"
+      );
+      self.push(username).await;
+    }
+  }
+
+  /// Statistics the server sent of `username`: kept when we know them, and their summary pushed
+  /// when they move their groups, unless we `asked` for them: the request that did writes them
+  /// to the row, which pushes it. Either may be taken first.
+  pub async fn statistics_received(&self, username: &str, stats: &UserStats, asked: bool) {
+    let moved = self.learned(username, false, |facts| {
       facts.statistics = Some(snapshot(stats));
-    }) {
+    });
+    if moved && !asked {
       self.push(username).await;
     }
   }
@@ -882,47 +941,6 @@ impl Directory {
 #[cfg(test)]
 mod tests {
   use super::*;
-
-  #[test]
-  fn fresh_names_keep_the_cache_bounded_and_the_users_it_must_keep() {
-    let reported = Reported::default();
-    lock(&reported.watched).insert("watched".to_string());
-    reported.update("watched", true, |_| {});
-    reported.update("privileged", true, |facts| facts.privileged = true);
-    reported.update("member", true, |facts| {
-      facts.memberships.push("friends".to_string());
-    });
-    reported.update("alice", true, |_| {});
-    let fresh = |n: usize| format!("fresh{n}");
-    let known = |reported: &Reported| reported.read().by_user.len();
-    // up to the bound nothing is forgotten, and alice is read last
-    let mut next = 0;
-    while known(&reported) < KEPT {
-      reported.update(&fresh(next), true, |_| {});
-      next += 1;
-    }
-    assert!(reported.of("alice").is_some());
-    reported.update(&fresh(next), true, |_| {});
-    assert!(
-      reported.of("alice").is_some(),
-      "read after every fresh name but one"
-    );
-    assert!(
-      reported.of(&fresh(0)).is_none(),
-      "the one used longest ago goes first"
-    );
-
-    for n in next + 1..next + 5 * KEPT {
-      reported.update(&fresh(n), true, |_| {});
-    }
-    let kept = known(&reported);
-    assert!(kept <= KEPT + KEPT / 10 + 3, "{kept} users kept");
-    for name in ["watched", "privileged", "member"] {
-      assert!(reported.of(name).is_some(), "{name} was forgotten");
-    }
-    assert!(reported.of(&fresh(next + 5 * KEPT - 1)).is_some());
-  }
-}
   use soulseek_proto::server::{WatchUserResponse, WatchedUser};
   use soulseek_proto::{ServerRequest, ServerResponse};
 
@@ -980,3 +998,44 @@ mod tests {
     );
     assert_eq!(asking(), 0);
   }
+
+  #[test]
+  fn fresh_names_keep_the_cache_bounded_and_the_users_it_must_keep() {
+    let reported = Reported::default();
+    lock(&reported.watched).insert("watched".to_string());
+    reported.update("watched", true, |_| {});
+    reported.update("privileged", true, |facts| facts.privileged = true);
+    reported.update("member", true, |facts| {
+      facts.memberships.push("friends".to_string());
+    });
+    reported.update("alice", true, |_| {});
+    let fresh = |n: usize| format!("fresh{n}");
+    let known = |reported: &Reported| reported.read().by_user.len();
+    // up to the bound nothing is forgotten, and alice is read last
+    let mut next = 0;
+    while known(&reported) < KEPT {
+      reported.update(&fresh(next), true, |_| {});
+      next += 1;
+    }
+    assert!(reported.of("alice").is_some());
+    reported.update(&fresh(next), true, |_| {});
+    assert!(
+      reported.of("alice").is_some(),
+      "read after every fresh name but one"
+    );
+    assert!(
+      reported.of(&fresh(0)).is_none(),
+      "the one used longest ago goes first"
+    );
+
+    for n in next + 1..next + 5 * KEPT {
+      reported.update(&fresh(n), true, |_| {});
+    }
+    let kept = known(&reported);
+    assert!(kept <= KEPT + KEPT / 10 + 3, "{kept} users kept");
+    for name in ["watched", "privileged", "member"] {
+      assert!(reported.of(name).is_some(), "{name} was forgotten");
+    }
+    assert!(reported.of(&fresh(next + 5 * KEPT - 1)).is_some());
+  }
+}

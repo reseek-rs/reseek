@@ -335,9 +335,9 @@ impl Directory {
   }
 
   /// Marks that we dealt with `username` for each of `touches` and writes them before
-  /// returning, for a caller that answers from the row; pushes their summary when the row
-  /// changed.
-  async fn touch_now(&self, username: &str, touches: Vec<Touch>) {
+  /// returning, for a caller that answers from the row; says whether the row changed, when
+  /// pushing their summary is the caller's.
+  async fn touch_now(&self, username: &str, touches: Vec<Touch>) -> bool {
     let now = Utc::now();
     let mut pending = touch::Pending::default();
     for touch in touches {
@@ -349,12 +349,15 @@ impl Directory {
       .db
       .write(move |conn| touch::write(conn, &batch, &reported));
     match written.await {
-      Ok(changed) => {
-        for username in changed {
-          self.changed(&username).await;
-        }
+      Ok(changed) if !changed.is_empty() => {
+        self.noted(username);
+        true
       }
-      Err(e) => warn!(username, error = %e, "user touches not written"),
+      Ok(_) => false,
+      Err(e) => {
+        warn!(username, error = %e, "user touches not written");
+        false
+      }
     }
   }
 
@@ -458,9 +461,15 @@ impl Directory {
 
   /// Pushes `username`'s summary after their row or block changed; they have a row now.
   async fn changed(&self, username: &str) {
+    self.noted(username);
+    self.push(username).await;
+  }
+
+  /// `username`'s row changed, so they have one and what was built from it before is dropped;
+  /// pushing their summary is the caller's.
+  fn noted(&self, username: &str) {
     self.known.added(username);
     self.forget(username);
-    self.push(username).await;
   }
 
   /// Pushes `username`'s summary as it is now. Built and pushed in the user's turn, so of two

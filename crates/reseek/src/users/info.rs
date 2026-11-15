@@ -29,10 +29,10 @@ pub struct PeerInfo {
 
 impl Directory {
   /// Stores what `username`'s client said about itself, making their row when there is none
-  /// and `creates`, and pushes their summary when it was stored. The picture is kept only while
-  /// `users.cache_pictures` is on and it is no larger than `users.picture_max_bytes`, and its
-  /// tag is stored with it.
-  pub(super) async fn store_info(&self, username: &str, peer: PeerInfo, creates: bool) {
+  /// and `creates`; says whether it was stored, when pushing their summary is the caller's. The
+  /// picture is kept only while `users.cache_pictures` is on and it is no larger than
+  /// `users.picture_max_bytes`, and its tag is stored with it.
+  pub(super) async fn store_info(&self, username: &str, peer: PeerInfo, creates: bool) -> bool {
     let has_picture = peer.picture.is_some();
     let picture = {
       let options = self.config.current();
@@ -57,10 +57,14 @@ impl Directory {
       .write(move |conn| write(conn, &name, &stored, picture.as_deref(), &reported, creates))
       .await;
     match written {
-      Ok(true) => self.changed(username).await,
+      Ok(true) => {
+        self.noted(username);
+        return true;
+      }
       Ok(false) => debug!(username, "user info not stored; the user has no row"),
       Err(e) => warn!(username, error = %e, "user info not stored"),
     }
+    false
   }
 }
 
