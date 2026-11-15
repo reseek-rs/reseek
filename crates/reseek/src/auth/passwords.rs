@@ -60,6 +60,28 @@ pub fn changed(previous: &Authentication, current: &Authentication) -> Vec<Strin
   subjects
 }
 
+/// The subjects of the local accounts `current` gives a password `previous` does not give
+/// them: a new password, or an account added or renamed.
+pub fn given(previous: &Authentication, current: &Authentication) -> Vec<String> {
+  let mut subjects = Vec::new();
+  if previous.username != current.username
+    || Checked::built_in(previous) != Checked::built_in(current)
+  {
+    subjects.push(subject_of(&current.username));
+  }
+  for (name, user) in &current.local.users {
+    if previous
+      .local
+      .users
+      .get(name)
+      .is_none_or(|before| Checked::user(before) != Checked::user(user))
+    {
+      subjects.push(subject_of(name));
+    }
+  }
+  subjects
+}
+
 /// A browser session making a change to the configuration: its id, and the subject it is for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Changer {
@@ -129,7 +151,7 @@ impl Setting<'_> {
     let Some(changer) = self.changer else {
       return;
     };
-    let accounts = changed(previous, current);
+    let accounts = given(previous, current);
     if !accounts.is_empty() {
       lock(&self.setters.made).push(Setter { changer, accounts });
     }

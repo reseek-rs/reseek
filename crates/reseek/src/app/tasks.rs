@@ -71,8 +71,8 @@ async fn settle_sessions(app: AppState) {
   let mut standing = loads.borrow_and_update().values.web.authentication.clone();
   // the options as they last stood, which a new password is told from
   let mut stood_as = standing.clone();
-  // when each local account's password last changed since then; a session of the account begun
-  // after that may have the new password
+  // when each local account was last given a password since then, its password changed or the
+  // account added back; a session of the account begun after that may have the new password
   let mut changed_at: HashMap<String, DateTime<Utc>> = HashMap::new();
   let mut since = tokio::time::Instant::now();
   let mut settled = false;
@@ -94,7 +94,7 @@ async fn settle_sessions(app: AppState) {
         let loaded = loads.borrow_and_update();
         if loaded.values.web.authentication != standing {
           let now = Utc::now();
-          for account in passwords::changed(&standing, &loaded.values.web.authentication) {
+          for account in passwords::given(&standing, &loaded.values.web.authentication) {
             changed_at.insert(account, now);
           }
           standing = loaded.values.web.authentication.clone();
@@ -403,7 +403,12 @@ mod tests {
 
   /// Signs in as the built-in account with `password` and returns the session cookie.
   async fn admin(app: &TestApp, password: &str) -> String {
-    let login = json!({ "username": "reseek", "password": password });
+    signed_in_as(app, "reseek", password).await
+  }
+
+  /// Signs in as `username` with `password` and returns the session cookie.
+  async fn signed_in_as(app: &TestApp, username: &str, password: &str) -> String {
+    let login = json!({ "username": username, "password": password });
     let answer = app
       .send_from(OUTSIDE, request("POST", "/api/v0/session", Some(login)))
       .await;
@@ -530,6 +535,56 @@ mod tests {
     pass(SETTLE).await;
     until_ended(&app, &other).await;
     assert_eq!(status(&app, &setter).await, 200);
+  }
+
+  /// Signs `user` in with `old`, the password `before` gives it, lets the options stand, then
+  /// loads an empty file and `after` `gap` later, as a file read empty while it was written or
+  /// an account removed and added back; the session must end once that stands.
+  async fn ends_across_an_empty_read(user: &str, old: &str, before: &str, after: &str, gap: u64) {
+    let app = app(before, &[]).await;
+    let cookie = signed_in_as(&app, user, old).await;
+    pass(SETTLE).await;
+    reload(&app, "").await;
+    pass(Duration::from_secs(gap)).await;
+    reload(&app, after).await;
+    pass(SETTLE).await;
+    until_ended(&app, &cookie).await;
+  }
+
+  fn viewer_with(password: &str) -> String {
+    format!("[web.authentication.local.users.viewer]\npassword = \"{password}\"\n")
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn a_users_password_changed_across_an_empty_read_ends_its_sessions() {
+    ends_across_an_empty_read(
+      "viewer",
+      "look",
+      &viewer_with("look"),
+      &viewer_with("seen"),
+      1,
+    )
+    .await;
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn a_named_built_in_password_changed_across_an_empty_read_ends_its_sessions() {
+    let tetra = |password: &str| {
+      format!("[web.authentication]\nusername = \"tetra\"\npassword = \"{password}\"\n")
+    };
+    ends_across_an_empty_read("tetra", "s3cret", &tetra("s3cret"), &tetra("n3w"), 1).await;
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn a_user_removed_and_added_back_with_a_new_password_ends_its_sessions() {
+    ends_across_an_empty_read(
+      "viewer",
+      "look",
+      &viewer_with("look"),
+      &viewer_with("seen"),
+      4,
+    )
+    .await;
   }
 
   #[tokio::test(start_paused = true)]
