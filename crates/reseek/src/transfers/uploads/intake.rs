@@ -237,7 +237,7 @@ impl Uploads {
     enqueue.queue_depth.set(waiting as f64);
     // a peer asking again for a file queued to them is answered as queued, not decided again:
     // the limits count that file, so they could turn it away
-    if self.sending_already(username, filename).await? {
+    if self.sending_already(username, filename, true).await? {
       enqueue.requests_accepted.inc();
       debug!(
         username,
@@ -366,7 +366,7 @@ impl Uploads {
     filename: &str,
     sees: &BTreeSet<String>,
   ) -> Result<Enqueued, ClientError> {
-    if self.sending_already(username, filename).await? {
+    if self.sending_already(username, filename, false).await? {
       return Ok(Enqueued::Already);
     }
     match self.decide(username, filename, sees).await {

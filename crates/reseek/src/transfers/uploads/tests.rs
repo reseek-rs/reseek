@@ -180,6 +180,7 @@ async fn a_running_upload_stands_for_a_new_request_and_an_ended_one_is_supersede
       remove: false,
       reason: None,
       ended: false,
+      asked: true,
     },
   );
   let listed = async || -> Vec<Uuid> {
@@ -333,6 +334,7 @@ async fn blocking_a_user_cancels_their_queued_uploads() {
         remove: false,
         reason: None,
         ended: false,
+        asked: true,
       },
     );
   }
@@ -387,6 +389,7 @@ async fn sending_shared(app: &TestApp) -> Uuid {
       remove: false,
       reason: None,
       ended: false,
+      asked: false,
     },
   );
   id
@@ -451,6 +454,10 @@ async fn a_file_asked_for_again_is_answered_queued_past_the_limits_it_fills() {
   );
   let ids: Vec<Uuid> = uploads_of_shared(&app).await.iter().map(|r| r.id).collect();
   assert_eq!(ids, [id], "the upload queued stands for the file");
+  assert!(
+    lock(&app.state.uploads.in_flight)[&id].asked,
+    "the file sent unasked is one alice asked for now"
+  );
   assert_eq!(metric(&app, "reseek_enqueue_requests_accepted"), "1");
 }
 

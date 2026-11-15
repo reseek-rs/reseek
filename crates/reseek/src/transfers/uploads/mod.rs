@@ -60,6 +60,8 @@ struct InFlight {
   reason: Option<&'static str>,
   /// the client's upload ended, before the task has written how
   ended: bool,
+  /// its user asked for the file, by a request of theirs, rather than our sending it unasked
+  asked: bool,
 }
 
 /// The upload engine.

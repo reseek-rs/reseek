@@ -87,14 +87,8 @@ fn relayed(result: &Result<Snapshot, ClientError>, record: &Record) -> (RelayUpl
 
 impl Uploads {
   /// Starts the task of the upload `record` of the file `located`, which stops when `cancel`
-  /// is canceled; `asked` when its user asked for the file.
-  pub(super) fn spawn(
-    &self,
-    record: Record,
-    located: Located,
-    cancel: CancellationToken,
-    asked: bool,
-  ) {
+  /// is canceled.
+  pub(super) fn spawn(&self, record: Record, located: Located, cancel: CancellationToken) {
     let this = self.this();
     let span = info_span!(
       "transfer",
@@ -105,7 +99,7 @@ impl Uploads {
     self.tasks.spawn(
       async move {
         let id = record.id;
-        this.run(record, located, &cancel, asked).await;
+        this.run(record, located, &cancel).await;
         this.forget(id).await;
       }
       .instrument(span),
@@ -113,13 +107,7 @@ impl Uploads {
   }
 
   /// The upload from its start to how it ended, written.
-  async fn run(
-    &self,
-    mut record: Record,
-    located: Located,
-    cancel: &CancellationToken,
-    asked: bool,
-  ) {
+  async fn run(&self, mut record: Record, located: Located, cancel: &CancellationToken) {
     let client = match self.client() {
       Ok(client) => client,
       Err(e) => return self.fail(&mut record, &e, None).await,
@@ -134,6 +122,10 @@ impl Uploads {
       Ok(Locating::NotShared) => {
         let gone = ClientError::NotFound(FILE_GONE.to_string());
         self.fail(&mut record, &gone, None).await;
+        // a request of the user's since it was sent unasked makes it theirs to be told about
+        let asked = lock(&self.in_flight)
+          .get(&record.id)
+          .is_some_and(|entry| entry.asked);
         if !asked {
           return debug!("a file sent unasked is gone; its user, who never asked, is not told");
         }
