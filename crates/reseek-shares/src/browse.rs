@@ -85,13 +85,15 @@ pub async fn listing(dbs: &[Arc<Index>], alias: Option<String>) -> Result<Vec<Di
 
 /// A browse cache opened to be sent, which stays readable once its file is removed.
 pub struct Opened {
+  /// the file, open for reading
   pub file: tokio::fs::File,
   /// the path it was opened at, which may since name another file or none
   pub path: PathBuf,
 }
 
 impl Opened {
-  pub async fn at(path: PathBuf) -> std::io::Result<Self> {
+  /// The file at `path`, opened and named by that path.
+  pub(crate) async fn at(path: PathBuf) -> std::io::Result<Self> {
     let file = tokio::fs::File::open(&path).await?;
     Ok(Self { file, path })
   }
