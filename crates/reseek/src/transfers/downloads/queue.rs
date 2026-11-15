@@ -17,7 +17,6 @@ use uuid::Uuid;
 use super::Downloads;
 use crate::api::error::ApiError;
 use crate::db::DbError;
-use crate::network::error_text;
 use crate::transfers::categories::{Condition, IN_PROGRESS, QUEUED, UNFINISHED};
 use crate::transfers::state::column;
 use crate::transfers::store;
@@ -232,13 +231,13 @@ impl Downloads {
 fn asked_failed(username: &str, error: ClientError) -> ApiError {
   match error {
     ClientError::Timeout(_) | ClientError::NoResponse(_) => {
-      ApiError::gateway_timeout(error_text(&error))
+      ApiError::gateway_timeout(error.to_string())
     }
     ClientError::UserOffline(_) | ClientError::UserNotFound(_) => ApiError::offline(username),
     ClientError::InvalidOperation(message) => ApiError::unavailable(Some(message)),
     other => ApiError::upstream(
       format!("Could not get the queue position from {username}"),
-      Some(error_text(&other)),
+      Some(other.to_string()),
     ),
   }
 }
@@ -248,13 +247,11 @@ mod tests {
   use super::*;
 
   #[test]
-  fn a_peer_that_did_not_answer_in_time_is_a_timeout_in_plain_words() {
-    let timed_out = ClientError::Timeout("the wait for PeerFile { code: TransferRequest, username: \"bob\", filename: \"@@a\\\\b.flac\" } timed out after 15000 milliseconds".into());
+  fn a_peer_that_did_not_answer_in_time_is_a_gateway_timeout() {
+    let timed_out = ClientError::Timeout("the wait timed out after 15000 milliseconds".into());
+    let said = timed_out.to_string();
     let answer = asked_failed("bob", timed_out);
     assert_eq!(answer.status(), axum::http::StatusCode::GATEWAY_TIMEOUT);
-    assert_eq!(
-      answer.message(),
-      "The wait timed out after 15000 milliseconds"
-    );
+    assert_eq!(answer.message(), said);
   }
 }

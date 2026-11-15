@@ -88,38 +88,6 @@ impl Intent {
   }
 }
 
-/// What `error` says, as the API answers it and the records keep it: a wait that timed out says
-/// so in plain words, as "The wait timed out after 15000 milliseconds".
-pub fn error_text(error: &ClientError) -> String {
-  plain_waits(&error.to_string())
-}
-
-/// `text` with every wait the client names by its wait key said without the key, and a text that
-/// is only that wait capitalized. The client writes the key's `Debug` form into the message and
-/// carries the time in no field of its own.
-// TODO: take the words from the client once its timeout text no longer names its wait key
-fn plain_waits(text: &str) -> String {
-  const WAIT: &str = "the wait for ";
-  const TIMED_OUT: &str = " timed out after ";
-  let mut plain = String::with_capacity(text.len());
-  let mut rest = text;
-  while let Some(start) = rest.find(WAIT) {
-    // a username in the key may hold the words; the last one before the milliseconds ends it
-    let after = &rest[start + WAIT.len()..];
-    let Some(end) = after.rfind(TIMED_OUT) else {
-      break;
-    };
-    plain.push_str(&rest[..start]);
-    plain.push_str("the wait");
-    rest = &after[end..];
-  }
-  plain.push_str(rest);
-  match plain.strip_prefix("the wait timed out") {
-    Some(tail) => format!("The wait timed out{tail}"),
-    None => plain,
-  }
-}
-
 /// The username and password to log in with, when both are set and not empty.
 pub fn credentials(soulseek: &crate::config::Soulseek) -> Option<(&str, &str)> {
   let username = soulseek.username.as_deref().filter(|u| !u.is_empty())?;
@@ -452,30 +420,6 @@ mod tests {
   use soulseek_client::ClientState;
 
   use super::*;
-
-  #[test]
-  fn a_wait_that_timed_out_is_said_without_its_key() {
-    let said = |error: ClientError| error_text(&error);
-    assert_eq!(
-      said(ClientError::Timeout(
-        "the wait for ServerUser { code: GetStatus, username: \"a\" } timed out after 5000 \
-         milliseconds"
-          .into()
-      )),
-      "The wait timed out after 5000 milliseconds"
-    );
-    let wrapped = ClientError::client(
-      "failed to get the status of x: the wait for ServerUser { code: GetStatus, username: \
-       \"x timed out after y\" } timed out after 5000 milliseconds",
-      None,
-    );
-    assert_eq!(
-      said(wrapped),
-      "failed to get the status of x: the wait timed out after 5000 milliseconds"
-    );
-    let plain = ClientError::Timeout("operation timed out after 10000 milliseconds".into());
-    assert_eq!(said(plain), "operation timed out after 10000 milliseconds");
-  }
 
   /// The connect waits on its name lookup, which runs on the runtime's blocking pool: the test's
   /// runtime has one blocking thread and the test holds it, so the lookup cannot end on its own

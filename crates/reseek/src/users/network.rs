@@ -53,10 +53,7 @@ fn unanswered(username: &str, error: ClientError) -> ApiError {
     ClientError::UserOffline(_) => ApiError::offline(username),
     ClientError::UserNotFound(message) => ApiError::not_found(message),
     ClientError::InvalidOperation(detail) => ApiError::unavailable(Some(detail)),
-    other => ApiError::upstream(
-      format!("Could not ask {username}"),
-      Some(crate::network::error_text(&other)),
-    ),
+    other => ApiError::upstream(format!("Could not ask {username}"), Some(other.to_string())),
   }
 }
 

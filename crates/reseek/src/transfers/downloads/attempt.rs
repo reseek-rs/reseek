@@ -30,7 +30,6 @@ use super::{Downloads, FileRequest};
 use crate::config::enums::RetryPartial;
 use crate::files::mode::to_unix_file_mode;
 use crate::files::{WriteGuard, create_file};
-use crate::network::error_text;
 use crate::network::options::request_style;
 use crate::safety::Os;
 use crate::transfers::state::{self, State};
@@ -134,7 +133,7 @@ pub(super) fn failure(error: &ClientError) -> Failure {
   };
   match error {
     ClientError::Canceled => Failure::canceled(),
-    ClientError::Timeout(_) => retry(TransferOutcome::TimedOut, error_text(error)),
+    ClientError::Timeout(_) => retry(TransferOutcome::TimedOut, error.to_string()),
     ClientError::TransferRejected(reason) => Failure {
       outcome: TransferOutcome::Rejected,
       message: reason.clone(),
@@ -156,7 +155,7 @@ pub(super) fn failure(error: &ClientError) -> Failure {
         .and_then(|source| source.downcast_ref::<io::Error>())
         .is_some_and(lasting),
     },
-    other => retry(TransferOutcome::Errored, error_text(other)),
+    other => retry(TransferOutcome::Errored, other.to_string()),
   }
 }
 
@@ -783,14 +782,11 @@ mod tests {
   }
 
   #[test]
-  fn a_wait_that_timed_out_is_kept_in_plain_words() {
-    let timed_out = ClientError::Timeout("the wait for PeerFile { code: TransferRequest, username: \"bob\", filename: \"@@a\\\\b.flac\" } timed out after 15000 milliseconds".into());
+  fn a_wait_that_timed_out_keeps_the_clients_words() {
+    let timed_out = ClientError::Timeout("the wait timed out after 15000 milliseconds".into());
     let failure = failure(&timed_out);
     assert_eq!(failure.outcome, TransferOutcome::TimedOut);
-    assert_eq!(
-      failure.message,
-      "The wait timed out after 15000 milliseconds"
-    );
+    assert_eq!(failure.message, timed_out.to_string());
   }
 
   #[test]
