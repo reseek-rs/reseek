@@ -433,8 +433,14 @@ mod tests {
       _ => None,
     };
     assert_eq!(server.received(login).await, "other");
+    // logged in first, so what drops is a session that reached the server
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !network.client().state().is_logged_in() {
+      assert!(tokio::time::Instant::now() < deadline, "never logged in");
+      tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     // from then on a lost connection is reconnected as usual
-    server.drop_session(&app).await;
+    server.close();
     assert_eq!(server.received(login).await, "other");
   }
 

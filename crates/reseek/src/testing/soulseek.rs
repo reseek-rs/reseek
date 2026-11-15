@@ -111,9 +111,15 @@ impl Server {
       .unwrap();
   }
 
+  /// Closes the connection, for a client that connects again by itself, which may be under way
+  /// before it could be seen disconnected.
+  pub fn close(&self) {
+    self.control.send(Control::Close).unwrap();
+  }
+
   /// Closes the connection and waits until the client of `app` is disconnected.
   pub async fn drop_session(&self, app: &TestApp) {
-    self.control.send(Control::Close).unwrap();
+    self.close();
     let client = app.state.network.client();
     tokio::time::timeout(Duration::from_secs(5), async {
       while client.state() != ClientState::Disconnected {
