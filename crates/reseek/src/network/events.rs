@@ -896,8 +896,9 @@ pub async fn observe_transfers(app: &AppState) {
   let (uploads, downloads) = (client.uploads(), client.downloads());
   let family = app.telemetry.metrics().transfers();
   family.uploads.count(&uploads);
-  family.uploads.pace(&uploads);
-  family.downloads.pace(&downloads);
+  let shown = app.network.shown_speeds();
+  family.uploads.pace(&uploads, &shown);
+  family.downloads.pace(&downloads, &shown);
   match tallies {
     Ok((queued, in_progress)) => family.downloads.set_counts(queued, in_progress),
     Err(e) => debug!(error = %e, "download counts not read; the gauges keep the last ones"),

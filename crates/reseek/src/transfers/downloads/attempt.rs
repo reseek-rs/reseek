@@ -15,7 +15,7 @@ use reseek_shares::LogLimiter;
 use soulseek_client::{
   ClientError, DownloadOutput, DownloadRequest, DownloadSink, OutputFactory, PeerRequestOptions,
   RequestStyle, SizeMismatchResolver, Transfer as Snapshot, TransferOptions,
-  TransferProgressUpdated as ProgressUpdated, TransferStateChanged as StateChanged,
+  TransferStateChanged as StateChanged,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
@@ -340,16 +340,19 @@ impl Downloads {
       .as_deref()
       .and_then(|text| to_unix_file_mode(text).ok());
     let (states_sent, mut states) = mpsc::channel(STATES);
+    let shown = self.network.shown_speeds();
+    let ending = shown.clone();
     let state_changed: StateChanged = Arc::new(move |_, snapshot: &Snapshot| {
+      if snapshot.state.is_terminal() {
+        ending.ended(snapshot);
+      }
       if let Err(e) = states_sent.try_send(snapshot.clone()) {
         warn!(error = %e, "download state not recorded");
       }
     });
     let (governor, reporter) = self.network.speeds().download_pace().callbacks();
     let (progress_sent, mut progress) = watch::channel((start, 0.0));
-    let progress_updated: ProgressUpdated = Arc::new(move |_, snapshot: &Snapshot| {
-      progress_sent.send_replace((snapshot.bytes_transferred, snapshot.average_speed));
-    });
+    let progress_updated = shown.reporter(progress_sent);
     let request = DownloadRequest {
       username: record.username.clone(),
       filename: record.filename.clone().into(),

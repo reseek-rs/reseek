@@ -8,6 +8,8 @@ use std::collections::HashSet;
 use api_types::telemetry as figures;
 use soulseek_client::{Transfer, TransferState};
 
+use crate::transfers::shown::ShownSpeeds;
+
 use super::catalog::PREFIX;
 use super::derived::Ema;
 use super::registry::{Counter, Gauge, Histogram, Registry};
@@ -235,11 +237,11 @@ impl TransferMetrics {
 
   /// Moves the speed averages toward the summed and the mean speed of the transfers in
   /// progress among `transfers`, or empties them when none is.
-  pub fn pace(&self, transfers: &[Transfer]) {
+  pub fn pace(&self, transfers: &[Transfer], shown: &ShownSpeeds) {
     let speeds: Vec<f64> = transfers
       .iter()
       .filter(|t| t.state == TransferState::InProgress)
-      .map(|t| t.average_speed)
+      .map(|t| shown.of(t))
       .collect();
     if speeds.is_empty() {
       self.in_progress_speed_total.reset();
@@ -251,5 +253,28 @@ impl TransferMetrics {
     self
       .in_progress_speed_average
       .update(total / speeds.len() as f64);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::time::{Duration, SystemTime};
+
+  use super::*;
+
+  #[tokio::test]
+  async fn the_speed_of_a_transfer_under_way_is_the_speed_it_shows() {
+    let app = crate::testing::app("", &[]).await;
+    let shown = ShownSpeeds::default();
+    let mut transfer = crate::testing::soulseek::transfer_snapshot().await;
+    transfer.state = TransferState::InProgress;
+    (transfer.size, transfer.start_offset) = (10_000, 0);
+    transfer.bytes_transferred = 3000;
+    transfer.start_time = Some(SystemTime::now() - Duration::from_secs(2));
+    transfer.average_speed = 777.0;
+    let speed = shown.progressed(&transfer);
+    let family = app.state.telemetry.metrics().transfers();
+    family.uploads.pace(std::slice::from_ref(&transfer), &shown);
+    assert_eq!(family.uploads.figures().in_progress.total_speed, speed);
   }
 }

@@ -17,8 +17,7 @@ use reseek_shares::LogLimiter;
 use reseek_shares::lock;
 use soulseek_client::{
   ClientError, InputFactory, SlotAwaiter, SlotReleased, Transfer as Snapshot, TransferOptions,
-  TransferProgressUpdated as ProgressUpdated, TransferStateChanged as StateChanged, UploadInput,
-  UploadRequest, UploadSource,
+  TransferStateChanged as StateChanged, UploadInput, UploadRequest, UploadSource,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
@@ -163,6 +162,9 @@ impl Uploads {
     let ending = self.this();
     let id = record.id;
     let state_changed: StateChanged = Arc::new(move |_, snapshot: &Snapshot| {
+      if snapshot.state.is_terminal() {
+        ending.shown.ended(snapshot);
+      }
       // marked before the client tells the peer, which may ask again at once
       if snapshot.state.is_terminal()
         && let Some(entry) = lock(&ending.in_flight).get_mut(&id)
@@ -174,9 +176,7 @@ impl Uploads {
       }
     });
     let (progress_sent, mut progress) = watch::channel((0u64, 0.0f64));
-    let progress_updated: ProgressUpdated = Arc::new(move |_, snapshot: &Snapshot| {
-      progress_sent.send_replace((snapshot.bytes_transferred, snapshot.average_speed));
-    });
+    let progress_updated = self.shown.reporter(progress_sent);
     let username = record.username.clone();
     let users = self.users.clone();
     let (governor, reporter) = self

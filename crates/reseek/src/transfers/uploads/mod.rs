@@ -43,6 +43,7 @@ use crate::network::Network;
 use crate::relay::Controller;
 use crate::shares::Shares;
 use crate::telemetry::Telemetry;
+use crate::transfers::shown::ShownSpeeds;
 use crate::users::Directory;
 use governor::Governor;
 use intake::Intake;
@@ -86,6 +87,8 @@ pub struct Uploads {
   in_flight: Mutex<HashMap<Uuid, InFlight>>,
   queue: UploadQueue,
   governor: Arc<Governor>,
+  /// the speed each running upload shows
+  shown: Arc<ShownSpeeds>,
   intake: Intake,
 }
 
@@ -133,6 +136,7 @@ impl Uploads {
         Box::new(move |username| grouped.queue_group(username)),
       ),
       governor: Arc::new(Governor::new(&options, network.speeds().upload())),
+      shown: network.shown_speeds(),
       intake: Intake::default(),
     });
     let engine = Arc::downgrade(&uploads);

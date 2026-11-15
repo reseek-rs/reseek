@@ -14,6 +14,7 @@ pub mod prune;
 pub mod record;
 pub mod removal;
 pub mod service;
+pub mod shown;
 pub mod speed;
 pub mod state;
 pub mod store;

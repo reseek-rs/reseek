@@ -34,6 +34,7 @@ use crate::services::Connected;
 use crate::shares::Shares;
 use crate::state::StateOwner;
 use crate::telemetry::Telemetry;
+use crate::transfers::shown::ShownSpeeds;
 use crate::transfers::speed::Global;
 use crate::users::Directory;
 pub use changes::follow_changes;
@@ -128,6 +129,8 @@ pub struct Network {
   reconfiguring: tokio::sync::Mutex<()>,
   /// the global upload and download speed limits in force
   speeds: Global,
+  /// the speed each running transfer shows
+  shown: Arc<ShownSpeeds>,
   /// the configuration the client's options were last patched from, which a session that
   /// begins runs with
   applied: Mutex<Arc<Loaded<Options>>>,
@@ -192,6 +195,7 @@ impl Network {
         statistics: tokio::sync::Mutex::new(None),
         reconfiguring: tokio::sync::Mutex::new(()),
         speeds,
+        shown: Arc::default(),
         applied: Mutex::new(startup.clone()),
         events: Mutex::new(Some(events)),
         following: Mutex::new(None),
@@ -233,6 +237,11 @@ impl Network {
   /// The global upload and download speed limits, which every transfer asks after its own.
   pub fn speeds(&self) -> &Global {
     &self.speeds
+  }
+
+  /// The speed each running transfer shows.
+  pub fn shown_speeds(&self) -> Arc<ShownSpeeds> {
+    self.shown.clone()
   }
 
   /// The loop that keeps the server connection up.
