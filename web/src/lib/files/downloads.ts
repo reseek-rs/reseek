@@ -188,15 +188,16 @@ export const downloadFolderPlan = (
  * path's. When anything in the selection is in a folder below the deepest one holding its top's
  * files, or that folder is one `whole` says was ticked whole, folders were picked, and every
  * group is sent in that deepest folder so the selection keeps its tree, as `downloadFolderPlan`
- * keeps a folder's. A folder ticked whole that holds nothing but that one is sent in its place,
- * as its own Download button sends it. When neither is, the files are loose and each goes where
- * the download pattern puts it
+ * keeps a folder's; a folder above it that `ticked` says was ticked by its own line, holding
+ * nothing but it, is sent in its place, as that line's Download button sends it. When neither
+ * is, the files are loose and each goes where the download pattern puts it
  */
 export const downloadPlan = (
   files: Schemas["File"][],
   topOf: (path: string) => string,
   separator: Separator,
-  whole: (folder: string) => boolean = () => false
+  whole: (folder: string) => boolean = () => false,
+  ticked: (folder: string) => boolean = () => false
 ): DownloadGroup[] => {
   const byTop = new Map<string, Schemas["File"][]>();
   for (const file of files) {
@@ -205,18 +206,16 @@ export const downloadPlan = (
     if (listed) listed.push(file);
     else byTop.set(top, [file]);
   }
-  /** the highest folder from `name` up ticked whole, the deepest a selection can tell apart */
-  const tickedFrom = (name: string) => {
-    let at = name;
-    while (whole(at)) {
-      const up = parentOf(at, separator);
-      if (!up || !whole(up)) break;
-      at = up;
+  /** the highest folder above `name` ticked by its own line, else `name` */
+  const sentFrom = (name: string) => {
+    let from = name;
+    for (let at = parentOf(name, separator); at; at = parentOf(at, separator)) {
+      if (ticked(at)) from = at;
     }
-    return at;
+    return from;
   };
   const tops = [...byTop.values()].map((grouped) => ({
-    name: tickedFrom(
+    name: sentFrom(
       commonFolder(
         grouped.map((f) => f.filename),
         separator

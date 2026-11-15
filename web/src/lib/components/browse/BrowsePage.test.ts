@@ -157,6 +157,76 @@ describe("browse progress", () => {
     expect(await download("Select every file in Album")).toEqual(["Album"]);
   });
 
+  it("downloads a ticked folder from its own line, however few folders the ones above hold", async () => {
+    const dir = (name: string, files: string[] = []) => ({
+      name,
+      fileCount: files.length,
+      files: files.map((f) => sharedFile(f))
+    });
+    const listings: Record<string, ReturnType<typeof dir>[]> = {
+      // the album alone under every folder above it, to the share's root
+      alice: [
+        dir("@@abcde"),
+        dir("@@abcde\\Music"),
+        dir("@@abcde\\Music\\Artist"),
+        dir("@@abcde\\Music\\Artist\\Album", ["1.flac", "2.flac"])
+      ],
+      // the artist beside another folder, holding only the album
+      bob: [
+        dir("@@abcde"),
+        dir("@@abcde\\Artist"),
+        dir("@@abcde\\Artist\\Album", ["1.flac", "2.flac"]),
+        dir("@@abcde\\Other", ["x.flac"])
+      ]
+    };
+    const net = fakeNetwork((url) => {
+      if (url.pathname.endsWith("/transfers/downloads/jobs")) return { id: "j", groups: [] };
+      const user = url.pathname.match(/users\/(\w+)\/browse$/)?.[1];
+      if (!user) return undefined;
+      return {
+        directories: listings[user],
+        directoryCount: listings[user].length,
+        lockedDirectories: [],
+        lockedDirectoryCount: 0
+      };
+    });
+    session.principal = { name: "me", role: "Administrator" } as never;
+    app.state = { server: { isConnected: true }, user: { username: "me" } } as never;
+    /** opens every folder line, ticks the line of `name`, downloads and clears the selection */
+    const download = async (name: string) => {
+      for (;;) {
+        const closed = document.querySelector<HTMLElement>("[aria-label^='Open ']");
+        if (!closed) break;
+        closed.click();
+        flushSync();
+      }
+      document.querySelector<HTMLElement>(`[aria-label="Select every file in ${name}"]`)!.click();
+      flushSync();
+      [...document.querySelectorAll("button")]
+        .find((b) => b.textContent?.trim() === "Download")!
+        .click();
+      await flushFaked();
+      [...document.querySelectorAll("button")]
+        .find((b) => b.textContent?.trim() === "Clear")!
+        .click();
+      flushSync();
+      const jobs = net.requests.filter((r) => r.url.pathname.endsWith("/transfers/downloads/jobs"));
+      const body = jobs.at(-1)!.body as { groups: { folder: string | null }[] };
+      return body.groups.map((g) => g.folder);
+    };
+    for (const user of ["alice", "bob"]) {
+      if (component) unmount(component);
+      browser.clear();
+      component = mount(BrowsePage, { target: document.body, props: { user, path: null } });
+      await flushFaked();
+      await flushFaked();
+      const artist = user === "alice" ? "@@abcde\\Music\\Artist" : "@@abcde\\Artist";
+      // as each line's own Download button sends it
+      expect(await download("Album"), user).toEqual([`${artist}\\Album`]);
+      expect(await download("Artist"), user).toEqual([artist]);
+    }
+  });
+
   it("leaves the next user's tree where it is when the one before answers late", async () => {
     let answerAlice!: (listing: Schemas["BrowseResponse"]) => void;
     const folders = (...names: string[]): Schemas["BrowseResponse"] => ({

@@ -86,6 +86,21 @@ describe("every file in a search result's folder", () => {
     expect(await asked(net)).toEqual([["s1", "@@a\\Album\\CD1"]]);
   });
 
+  it("downloads a ticked folder from its own line, though the folder above holds only it", async () => {
+    const net = open(
+      ["Artist\\Album\\1.flac", "Artist\\Album\\2.flac", "Other\\x.flac"].map((name) =>
+        sharedFile(`@@a\\Music\\${name}`)
+      )
+    );
+    const line = [
+      ...document.querySelectorAll<HTMLElement>("[aria-label^='Select every file in']")
+    ].find((l) => l.getAttribute("aria-label")!.endsWith("Album"))!;
+    line.click();
+    flushSync();
+    button("Download").click();
+    expect(await asked(net)).toEqual([["s1", "@@a\\Music\\Artist\\Album"]]);
+  });
+
   it("names who they come from as a username, which shows a name's edge spaces", () => {
     component = mount(FolderFiles, {
       target: document.body,

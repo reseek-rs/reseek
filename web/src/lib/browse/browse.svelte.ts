@@ -57,6 +57,11 @@ class Browse {
   expansion = new Expansion(false);
   /** full paths of the ticked files */
   selected = new SvelteSet<string>();
+  /**
+   * the folders ticked by their own line, which a selection is sent from: a folder that holds
+   * nothing but the one ticked reads ticked too, and its counts alone can't tell the two apart
+   */
+  linesTicked = new SvelteSet<string>();
   /** a folder the tab goes to once it shows the listing, then forgets */
   target = $state<string | null>(null);
   /** a saved listing is being read back */
@@ -81,7 +86,7 @@ class Browse {
     this.phase = "pending";
     this.errorMessage = "";
     this.progress = null;
-    this.selected.clear();
+    this.untickAll();
     this.target = null;
     const outcome = await call(() =>
       api.GET("/api/v0/users/{username}/browse", { params: byUser(name) })
@@ -141,11 +146,24 @@ class Browse {
     this.separator = "\\";
     this.info = null;
     this.expansion.reset(false);
-    this.selected.clear();
+    this.untickAll();
     this.target = null;
     this.save();
     // nothing to read back when the store is unavailable
     void writeListing(null).catch(() => {});
+  };
+
+  /** Unticks every file and folder */
+  untickAll = () => {
+    this.selected.clear();
+    this.linesTicked.clear();
+  };
+
+  /** Ticks or unticks the files under the folder `path` by its line */
+  tickLine = (path: string, filenames: string[], on: boolean) => {
+    if (!this.tick(filenames, on)) return;
+    if (on) this.linesTicked.add(path);
+    else this.linesTicked.delete(path);
   };
 
   /** Ticks or unticks files; false when that would pass the limit */

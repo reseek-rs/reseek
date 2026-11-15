@@ -25,13 +25,15 @@ const plan = (
   files: string[],
   topOf: (path: string) => string,
   separator: "\\" | "/" = "\\",
-  whole?: (folder: string) => boolean
+  whole?: (folder: string) => boolean,
+  ticked?: (folder: string) => boolean
 ) =>
   downloadPlan(
     files.map((f) => file(f)),
     topOf,
     separator,
-    whole
+    whole,
+    ticked
   ).map((g): [string | null, string[]] => [g.folder, g.files.map((f) => f.filename)]);
 
 const folder = (name: string, files: string[]) =>
@@ -91,19 +93,25 @@ describe("downloading a selection", () => {
     ]);
   });
 
-  it("sends a folder ticked whole from where it was ticked when all it holds is one folder", () => {
+  it("sends a folder from the line that was ticked, though the ones above hold only it", () => {
     const album = ["@@a\\Music\\Artist\\Album\\1.flac", "@@a\\Music\\Artist\\Album\\2.flac"];
-    const ticked = new Set(["@@a\\Music\\Artist", "@@a\\Music\\Artist\\Album"]);
-    // as the folder's own Download button sends it
-    expect(
+    // every folder above the album holds only it, so each reads ticked whole
+    const chain = ["@@a", "@@a\\Music", "@@a\\Music\\Artist", "@@a\\Music\\Artist\\Album"];
+    const whole = (folder: string) => chain.includes(folder);
+    const sent = (line: string) =>
       plan(
         album,
-        () => "@@a\\Music",
+        () => "@@a",
         "\\",
-        (folder) => ticked.has(folder)
-      )
-    ).toEqual([["@@a\\Music\\Artist", album]]);
-    expect(folder("@@a\\Music\\Artist", album)).toEqual([["@@a\\Music\\Artist", album]]);
+        whole,
+        (folder) => folder === line
+      );
+    // as each line's own Download button sends it
+    for (const line of chain.slice(1)) {
+      expect(sent(line), line).toEqual([[line, album]]);
+      expect(folder(line, album), line).toEqual([[line, album]]);
+    }
+    expect(plan(album, () => "@@a", "\\", whole)).toEqual([["@@a\\Music\\Artist\\Album", album]]);
   });
 
   it("sends every top's files in their folder once anything in the selection is nested", () => {

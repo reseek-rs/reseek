@@ -56,6 +56,8 @@
 
   let text = $state("");
   const selected = new SvelteSet<string>();
+  /** the folders ticked by their own line, which a selection is sent from */
+  const linesTicked = new SvelteSet<string>();
   /** every folder opens, so the dialog shows every file */
   const expansion = new Expansion(true);
   const write = $derived(session.can("ReadWrite") && connected);
@@ -99,15 +101,17 @@
 
   /**
    * Downloads files as one job that keeps their folders below the deepest one holding them, or
-   * that folder itself when `whole` says its line is ticked
+   * that folder itself when `whole` says its line is ticked, or a folder above it holding only it
+   * when `ticked` says its own line was
    */
   const download = (
     list: Schemas["File"][],
-    whole?: (folder: string) => boolean
+    whole?: (folder: string) => boolean,
+    ticked?: (folder: string) => boolean
   ): Promise<Enqueued> =>
     enqueuePlan(
       username,
-      downloadPlan(list, () => folder, separator, whole),
+      downloadPlan(list, () => folder, separator, whole, ticked),
       searchId
     );
   const downloadNow = async (list: Schemas["File"][]) => tell(await download(list));
@@ -156,6 +160,8 @@
               if (on) selected.add(f.filename);
               else selected.delete(f.filename);
             }
+            if (on) linesTicked.add(node.path);
+            else linesTicked.delete(node.path);
           }
         }}>
         {#snippet menu()}
@@ -187,8 +193,16 @@
   {#if write && chosen.length}
     <SelectionBar
       files={chosen}
-      ondownload={() => download(chosen, (path) => lineTicked(byPath, tickOf, path))}
-      onclear={() => selected.clear()} />
+      ondownload={() =>
+        download(
+          chosen,
+          (path) => lineTicked(byPath, tickOf, path),
+          (path) => linesTicked.has(path) && lineTicked(byPath, tickOf, path)
+        )}
+      onclear={() => {
+        selected.clear();
+        linesTicked.clear();
+      }} />
   {/if}
   {#snippet footer()}
     {#if session.can("ReadWrite")}
