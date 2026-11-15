@@ -409,6 +409,8 @@ async fn handle(app: &AppState, event: Event, session: &mut Session) {
     Event::SearchResponseReceived { search, .. } => {
       app.network.reachability.search_answered(search.token);
     }
+    // an event a newer client raises that the daemon has no use for yet
+    other => trace!(?other, "client event not followed"),
   }
 }
 
