@@ -3,8 +3,9 @@
 //! group's own `slots` in that group.
 //!
 //! An upload is in the queue from when it is accepted until it ends, whether it started or not.
-//! It is ready once the client holds the user's one upload at a time for it and asks for a
-//! slot. Each pass over the queue starts ready uploads while slots are free: privileged, then
+//! Each user gets one upload at a time: their uploads take that turn in the order they asked for
+//! a slot, and each holds it until its upload has returned, after its peer was told how it
+//! ended. An upload is ready once it asked for a slot and holds its user's turn. Each pass over the queue starts ready uploads while slots are free: privileged, then
 //! the groups in `transfers.groups.order`, and within a group the upload a bump put in front,
 //! else the one ready longest for `roundrobin` or queued longest for `firstinfirstout`.
 //! A user's group is looked up on every pass, so a user moved between groups waits in their
@@ -58,6 +59,8 @@ struct State {
   groups: Vec<Group>,
   /// in the order each user first queued
   users: Vec<UserEntries>,
+  /// by user, the upload holding the user's one upload at a time
+  turns: HashMap<String, Uuid>,
   /// what the groups were built from
   built_from: (Groups, u32),
   /// the counter times are taken from
@@ -85,6 +88,9 @@ struct Entry {
   id: Uuid,
   filename: String,
   queued: u64,
+  /// when it asked for its slot
+  asked: Option<u64>,
+  /// when it asked for its slot holding its user's turn, or the turn came to it
   ready: Option<u64>,
   started: Option<u64>,
   /// the group that gave the slot
@@ -190,6 +196,7 @@ impl UploadQueue {
         global_slots: transfers.upload.slots,
         groups: groups(options),
         users: Vec::new(),
+        turns: HashMap::new(),
         built_from: (transfers.groups.clone(), transfers.upload.slots),
         clock: 0,
         unknown: HashSet::new(),
@@ -244,6 +251,7 @@ impl UploadQueue {
       id,
       filename: filename.to_string(),
       queued,
+      asked: None,
       ready: None,
       started: None,
       group: None,
@@ -262,18 +270,62 @@ impl UploadQueue {
     self.process(&mut state);
   }
 
-  /// Marks the upload `id` ready and returns what fires once it is given a slot, which may be
-  /// at once. Asked once per upload.
+  /// Asks for the slot of the upload `id`, which is ready at once unless another upload of its
+  /// user holds the turn, and returns what fires once it is given a slot, which may be at once.
+  /// Asked once per upload.
   pub fn await_start(&self, id: Uuid) -> Result<oneshot::Receiver<()>, NotQueued> {
     let mut state = self.lock();
-    let ready = state.tick();
+    let asked = state.tick();
     let (u, i) = state.find(id).ok_or(NotQueued(id))?;
+    let username = state.users[u].username.clone();
     let entry = &mut state.users[u].entries[i];
     let signal = entry.started_signal.take().ok_or(NotQueued(id))?;
-    entry.ready = Some(ready);
-    debug!(%id, username = state.users[u].username, "upload ready for a slot");
+    entry.asked = Some(asked);
+    if state.turns.contains_key(&username) {
+      debug!(%id, username, "upload waits for the user's upload before it");
+    } else {
+      state.turns.insert(username.clone(), id);
+      state.users[u].entries[i].ready = Some(asked);
+      debug!(%id, username, "upload ready for a slot");
+    }
     self.process(&mut state);
     Ok(signal)
+  }
+
+  /// The upload `id` has returned: it leaves the queue if it has not, as by
+  /// [`UploadQueue::complete`], and the turn it held goes to its user's next upload in the order
+  /// they asked for a slot. Returns whether the queue still held it.
+  pub fn returned(&self, id: Uuid) -> bool {
+    let held = self.complete(id);
+    let mut state = self.lock();
+    let Some(username) = state
+      .turns
+      .iter()
+      .find_map(|(username, holder)| (*holder == id).then(|| username.clone()))
+    else {
+      return held;
+    };
+    state.turns.remove(&username);
+    let ready = state.tick();
+    let next = state
+      .users
+      .iter_mut()
+      .find(|user| user.username == username)
+      .and_then(|user| {
+        user
+          .entries
+          .iter_mut()
+          .filter(|e| e.asked.is_some() && e.ready.is_none())
+          .min_by_key(|e| e.asked)
+      });
+    if let Some(entry) = next {
+      entry.ready = Some(ready);
+      let next = entry.id;
+      state.turns.insert(username.clone(), next);
+      debug!(id = %next, username, "upload ready for a slot once the one before returned");
+    }
+    self.process(&mut state);
+    held
   }
 
   /// Takes the upload `id` out of the queue: a slot it holds goes back to the group that gave
@@ -679,6 +731,48 @@ pub(super) mod tests {
     assert!(!started(&mut waiting), "one still runs");
     queue.complete(running[2]);
     assert!(started(&mut waiting));
+  }
+
+  #[test]
+  fn a_users_next_upload_is_ready_only_once_the_one_before_returned() {
+    let (queue, _) = queue("[transfers.upload]\nslots = 2\n");
+    let (first, mut first_start) = ready(&queue, "alice");
+    assert!(started(&mut first_start));
+    let (_, mut second) = ready(&queue, "alice");
+    assert!(
+      !started(&mut second),
+      "a slot is free, the user's turn is not"
+    );
+    queue.complete(first);
+    assert!(
+      !started(&mut second),
+      "its slot is back, its upload not returned"
+    );
+    assert!(!queue.returned(first), "the queue let go of it already");
+    assert!(started(&mut second));
+  }
+
+  #[test]
+  fn a_users_uploads_take_the_turn_in_the_order_they_asked_failures_included() {
+    let (queue, _) = queue("[transfers.upload]\nslots = 1\n");
+    let (other, mut held) = ready(&queue, "erin");
+    assert!(started(&mut held));
+    // alice's first holds her turn while it waits for the slot erin holds
+    let (first, _first_start) = ready(&queue, "alice");
+    let (queued_first, asked_second) = (Uuid::new_v4(), Uuid::new_v4());
+    queue.enqueue(queued_first, "alice", "file");
+    queue.enqueue(asked_second, "alice", "file");
+    let mut second = queue.await_start(asked_second).unwrap();
+    let mut third = queue.await_start(queued_first).unwrap();
+    // the first fails before its slot: the turn goes to the one that asked next
+    assert!(queue.returned(first));
+    queue.complete(other);
+    assert!(started(&mut second));
+    assert!(!started(&mut third));
+    queue.complete(asked_second);
+    assert!(!started(&mut third));
+    queue.returned(asked_second);
+    assert!(started(&mut third));
   }
 
   #[test]

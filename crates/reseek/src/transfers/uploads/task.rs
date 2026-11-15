@@ -423,9 +423,10 @@ impl Uploads {
   }
 
   /// Lets go of the upload `id` once its task has written how it ended: it leaves the queue if
-  /// it has not, and it is removed from the listings when that was asked for meanwhile.
+  /// it has not, its user's next upload takes the turn, and it is removed from the listings when
+  /// that was asked for meanwhile.
   async fn forget(&self, id: Uuid) {
-    if self.queue.complete(id) {
+    if self.queue.returned(id) {
       debug!("upload taken out of the queue at its end");
     }
     let entry = lock(&self.in_flight).remove(&id);
