@@ -225,7 +225,7 @@ impl Hashed {
 }
 
 /// Whether `password` is the one `phc` was made from.
-fn verify(phc: &str, password: &str) -> bool {
+pub(super) fn verify(phc: &str, password: &str) -> bool {
   match PasswordHash::new(phc) {
     Ok(parsed) => Argon2::default()
       .verify_password(password.as_bytes(), &parsed)

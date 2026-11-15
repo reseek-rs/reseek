@@ -1,85 +1,217 @@
 //! A new password for a local account ends that account's sessions, all but the one that set
-//! it, once the configuration with it stands: which accounts a change gave a new password, and
-//! which browser sessions set one through the API.
+//! it, once the configuration with it stands: which accounts a change gave a password, the
+//! password each account had when the options last stood, kept in `auth.db` so a change made
+//! while the daemon was stopped is found at the next start, and which browser sessions set one
+//! through the API.
 
-use std::sync::Mutex;
+use std::collections::HashMap;
 
-use reseek_shares::lock;
+use chrono::{DateTime, Utc};
+use rusqlite::params;
 use tokio::sync::MutexGuard;
 
-use super::local::subject_of;
+use super::local::{self, subject_of};
 use crate::config::{Authentication, LocalUser};
+use crate::db::{Database, DbError, timestamp};
 
-/// What a password is checked against: its hash when one is set, else the password itself.
-#[derive(PartialEq)]
-enum Checked<'a> {
-  Hash(&'a str),
-  Plain(Option<&'a str>),
+/// A local account's password as the configuration holds it. Not `Debug`, so it is never
+/// logged.
+#[derive(Clone, PartialEq)]
+enum Password {
+  /// the hash it is checked against
+  Hash(String),
+  /// the password itself
+  Plain(String),
 }
 
-impl<'a> Checked<'a> {
-  fn of(hash: Option<&'a str>, plain: Option<&'a str>) -> Self {
-    match hash {
-      Some(hash) => Self::Hash(hash),
-      None => Self::Plain(plain),
+impl Password {
+  /// The password of an account with `hash` and `plain`: the hash when one is set. `None` for
+  /// neither, which the configuration refuses when it loads.
+  fn of(hash: Option<&String>, plain: Option<&String>) -> Option<Self> {
+    match (hash, plain) {
+      (Some(hash), _) => Some(Self::Hash(hash.clone())),
+      (None, Some(plain)) => Some(Self::Plain(plain.clone())),
+      (None, None) => None,
     }
   }
 
-  fn built_in(authentication: &'a Authentication) -> Self {
-    Self::of(
-      authentication.password_hash.as_deref(),
-      Some(authentication.password.as_str()),
-    )
+  fn user(user: &LocalUser) -> Option<Self> {
+    Self::of(user.password_hash.as_ref(), user.password.as_ref())
   }
 
-  fn user(user: &'a LocalUser) -> Self {
-    Self::of(user.password_hash.as_deref(), user.password.as_deref())
+  /// What is kept of it: a configured hash as it is, a plain password as an argon2 hash with a
+  /// fresh salt, so the kept value tells no more of the password than the configuration does.
+  /// Slow for a plain one.
+  fn fingerprint(&self) -> String {
+    match self {
+      Self::Hash(hash) => format!("hash:{hash}"),
+      Self::Plain(plain) => format!("argon2:{}", local::hash(plain)),
+    }
+  }
+
+  /// Whether `fingerprint` was kept of this password. Slow for a plain one.
+  fn kept_as(&self, fingerprint: &str) -> bool {
+    match self {
+      Self::Hash(hash) => fingerprint.strip_prefix("hash:") == Some(hash.as_str()),
+      Self::Plain(plain) => fingerprint
+        .strip_prefix("argon2:")
+        .is_some_and(|phc| local::verify(phc, plain)),
+    }
   }
 }
 
-/// The subjects of the local accounts that `previous` and `current` both have, under the same
-/// name, whose password differs. An account renamed or removed has no role, which ends its
-/// sessions anyway.
-pub fn changed(previous: &Authentication, current: &Authentication) -> Vec<String> {
-  let mut subjects = Vec::new();
-  if previous.username == current.username
-    && Checked::built_in(previous) != Checked::built_in(current)
-  {
-    subjects.push(subject_of(&current.username));
-  }
-  for (name, user) in &current.local.users {
-    if previous
-      .local
-      .users
-      .get(name)
-      .is_some_and(|before| Checked::user(before) != Checked::user(user))
-    {
-      subjects.push(subject_of(name));
-    }
-  }
-  subjects
+/// The local accounts of `authentication` by subject, with their passwords.
+fn accounts(authentication: &Authentication) -> HashMap<String, Password> {
+  let built_in = Password::of(
+    authentication.password_hash.as_ref(),
+    Some(&authentication.password),
+  );
+  let users = authentication
+    .local
+    .users
+    .iter()
+    .filter_map(|(name, user)| Some((subject_of(name), Password::user(user)?)));
+  // the built-in account wins a name it shares with an extra one, as when checking a password
+  users
+    .chain(built_in.map(|password| (subject_of(&authentication.username), password)))
+    .collect()
 }
 
 /// The subjects of the local accounts `current` gives a password `previous` does not give
 /// them: a new password, or an account added or renamed.
 pub fn given(previous: &Authentication, current: &Authentication) -> Vec<String> {
-  let mut subjects = Vec::new();
-  if previous.username != current.username
-    || Checked::built_in(previous) != Checked::built_in(current)
-  {
-    subjects.push(subject_of(&current.username));
-  }
-  for (name, user) in &current.local.users {
-    if previous
-      .local
-      .users
-      .get(name)
-      .is_none_or(|before| Checked::user(before) != Checked::user(user))
-    {
-      subjects.push(subject_of(name));
-    }
-  }
+  let before = accounts(previous);
+  let mut subjects: Vec<String> = accounts(current)
+    .into_iter()
+    .filter(|(subject, password)| before.get(subject) != Some(password))
+    .map(|(subject, _)| subject)
+    .collect();
+  subjects.sort();
   subjects
+}
+
+/// A local account's password compared with the one kept for it.
+pub struct Compared {
+  /// the account
+  pub subject: String,
+  /// whether one was kept for it and it is another; its sessions begun before `changed_at` end
+  pub changed: bool,
+  /// when it changed, for a changed one
+  pub changed_at: DateTime<Utc>,
+  /// what is to be kept for it now, `None` when the kept one stands
+  fingerprint: Option<String>,
+}
+
+/// The local accounts of `authentication` compared with the passwords kept for them, those
+/// with nothing kept as well; `changed_at` says when an account's password changed.
+pub async fn compare(
+  db: &Database,
+  authentication: &Authentication,
+  changed_at: impl Fn(&str) -> DateTime<Utc>,
+) -> Result<Vec<Compared>, DbError> {
+  let kept: HashMap<String, String> = db
+    .read(|conn| {
+      let mut statement = conn.prepare("SELECT subject, fingerprint FROM passwords")?;
+      statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect()
+    })
+    .await?;
+  let accounts: Vec<(String, Password, DateTime<Utc>)> = accounts(authentication)
+    .into_iter()
+    .map(|(subject, password)| {
+      let at = changed_at(&subject);
+      (subject, password, at)
+    })
+    .collect();
+  // argon2 takes a while for each plain password
+  tokio::task::spawn_blocking(move || {
+    accounts
+      .into_iter()
+      .map(|(subject, password, changed_at)| {
+        let (changed, fingerprint) = match kept.get(&subject) {
+          Some(kept) if password.kept_as(kept) => (false, None),
+          Some(_) => (true, Some(password.fingerprint())),
+          None => (false, Some(password.fingerprint())),
+        };
+        Compared {
+          subject,
+          changed,
+          changed_at,
+          fingerprint,
+        }
+      })
+      .collect()
+  })
+  .await
+  .map_err(|e| DbError::Task(e.to_string()))
+}
+
+/// Keeps what `compared` has to keep, with the time each changed, or now for one kept first.
+pub async fn keep(db: &Database, compared: &[Compared]) -> Result<(), DbError> {
+  let now = Utc::now();
+  let rows: Vec<(String, String, String)> = compared
+    .iter()
+    .filter_map(|c| {
+      let at = if c.changed { c.changed_at } else { now };
+      Some((c.subject.clone(), c.fingerprint.clone()?, timestamp(at)))
+    })
+    .collect();
+  if rows.is_empty() {
+    return Ok(());
+  }
+  db.write(move |conn| {
+    let tx = conn.transaction()?;
+    for (subject, fingerprint, at) in rows {
+      tx.execute(
+        "INSERT INTO passwords (subject, fingerprint, changed_at) VALUES (?1, ?2, ?3) ON \
+         CONFLICT (subject) DO UPDATE SET fingerprint = excluded.fingerprint, changed_at = \
+         excluded.changed_at",
+        params![subject, fingerprint, at],
+      )?;
+    }
+    tx.commit()
+  })
+  .await
+}
+
+/// Keeps the passwords `authentication` gives the local accounts nothing is kept for, as at the
+/// first start, so a change made before the options first stand is told from them.
+pub async fn keep_first(db: &Database, authentication: &Authentication) -> Result<(), DbError> {
+  let kept: Vec<String> = db
+    .read(|conn| {
+      let mut statement = conn.prepare("SELECT subject FROM passwords")?;
+      statement.query_map([], |row| row.get(0))?.collect()
+    })
+    .await?;
+  let missing: Vec<(String, Password)> = accounts(authentication)
+    .into_iter()
+    .filter(|(subject, _)| !kept.contains(subject))
+    .collect();
+  if missing.is_empty() {
+    return Ok(());
+  }
+  let rows: Vec<(String, String)> = tokio::task::spawn_blocking(move || {
+    missing
+      .into_iter()
+      .map(|(subject, password)| (subject, password.fingerprint()))
+      .collect()
+  })
+  .await
+  .map_err(|e| DbError::Task(e.to_string()))?;
+  let now = timestamp(Utc::now());
+  db.write(move |conn| {
+    let tx = conn.transaction()?;
+    for (subject, fingerprint) in rows {
+      tx.execute(
+        "INSERT INTO passwords (subject, fingerprint, changed_at) VALUES (?1, ?2, ?3) ON \
+         CONFLICT (subject) DO NOTHING",
+        params![subject, fingerprint, now],
+      )?;
+    }
+    tx.commit()
+  })
+  .await
 }
 
 /// A browser session making a change to the configuration: its id, and the subject it is for.
@@ -91,31 +223,28 @@ pub struct Changer {
   pub subject: String,
 }
 
-/// A browser session that gave local accounts a new password.
+/// A browser session that gave a local account a new password.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Setter {
   /// the session
   pub changer: Changer,
-  /// the subjects of the accounts it gave one
-  pub accounts: Vec<String>,
+  /// the subject of the account it gave one
+  pub account: String,
 }
 
 impl Setter {
   /// Whether this is the session `session`, which set the password of `account`.
   pub fn set(&self, session: &str, account: &str) -> bool {
-    self.changer.session == session && self.accounts.iter().any(|a| a == account)
+    self.changer.session == session && self.account == account
   }
 }
 
-/// The browser sessions that set a new password through the API since the configuration last
-/// stood, so the sessions a new password ends keep the one that set it.
+/// The turn for the changes browser sessions make, so the configuration is not taken to stand
+/// while one is half recorded. The sessions that set a password are kept in `auth.db` until the
+/// options stand, so they are kept across a restart.
 #[derive(Default)]
 pub struct Setters {
-  /// held from before a session makes a change until the change is recorded, so the
-  /// configuration is not taken to stand while a change is half recorded
   turn: tokio::sync::Mutex<()>,
-  /// the sessions that set a new password, oldest first
-  made: Mutex<Vec<Setter>>,
 }
 
 impl Setters {
@@ -123,47 +252,91 @@ impl Setters {
   /// makes; the change is recorded through [`Setting::made`].
   pub async fn begin(&self, changer: Option<Changer>) -> Setting<'_> {
     Setting {
-      setters: self,
       changer,
       _turn: self.turn.lock().await,
     }
   }
 
-  /// The sessions that set a new password since the last time this returned them, taken once
-  /// no change is being made and `stands` holds; `None`, keeping them, when it does not.
-  pub async fn take_if(&self, stands: impl FnOnce() -> bool) -> Option<Vec<Setter>> {
+  /// The sessions recorded in `db` as having set a password, taken once no change is being
+  /// made and `stands` holds; `None`, keeping them, when it does not.
+  pub async fn take_if(
+    &self,
+    db: &Database,
+    stands: impl FnOnce() -> bool,
+  ) -> Result<Option<Vec<Setter>>, DbError> {
     let _turn = self.turn.lock().await;
-    stands().then(|| std::mem::take(&mut *lock(&self.made)))
+    if !stands() {
+      return Ok(None);
+    }
+    db.write(|conn| {
+      let tx = conn.transaction()?;
+      let setters = {
+        let mut statement =
+          tx.prepare("SELECT session_id, subject, account FROM password_setters")?;
+        statement
+          .query_map([], |row| {
+            Ok(Setter {
+              changer: Changer {
+                session: row.get(0)?,
+                subject: row.get(1)?,
+              },
+              account: row.get(2)?,
+            })
+          })?
+          .collect::<rusqlite::Result<Vec<_>>>()?
+      };
+      tx.execute("DELETE FROM password_setters", [])?;
+      tx.commit()?;
+      Ok(setters)
+    })
+    .await
+    .map(Some)
   }
 }
 
 /// The turn of a change being made.
 pub struct Setting<'a> {
-  setters: &'a Setters,
   changer: Option<Changer>,
   _turn: MutexGuard<'a, ()>,
 }
 
 impl Setting<'_> {
-  /// Records the change made from `previous` to `current` authentication options, when it gave
-  /// a local account a new password.
-  pub fn made(self, previous: &Authentication, current: &Authentication) {
+  /// Records in `db` the change made from `previous` to `current` authentication options, when
+  /// it gave a local account a new password.
+  pub async fn made(
+    self,
+    db: &Database,
+    previous: &Authentication,
+    current: &Authentication,
+  ) -> Result<(), DbError> {
     let Some(changer) = self.changer else {
-      return;
+      return Ok(());
     };
     let accounts = given(previous, current);
-    if !accounts.is_empty() {
-      lock(&self.setters.made).push(Setter { changer, accounts });
+    if accounts.is_empty() {
+      return Ok(());
     }
+    db.write(move |conn| {
+      let tx = conn.transaction()?;
+      for account in accounts {
+        tx.execute(
+          "INSERT INTO password_setters (session_id, subject, account) VALUES (?1, ?2, ?3)",
+          params![changer.session, changer.subject, account],
+        )?;
+      }
+      tx.commit()
+    })
+    .await
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::auth::store::SCHEMA;
 
   #[test]
-  fn a_password_or_its_hash_changed_is_a_new_password() {
+  fn a_password_or_its_hash_changed_or_an_account_added_is_a_new_password() {
     let mut before = Authentication::default();
     before.local.users.insert(
       "viewer".into(),
@@ -173,22 +346,75 @@ mod tests {
       },
     );
     let mut after = before.clone();
-    assert!(changed(&before, &after).is_empty());
+    assert!(given(&before, &after).is_empty());
     after.password = "new".into();
     after.local.users.get_mut("viewer").unwrap().password = Some("seen".into());
-    assert_eq!(changed(&before, &after), ["local:reseek", "local:viewer"]);
+    assert_eq!(given(&before, &after), ["local:reseek", "local:viewer"]);
 
     // a hash set takes the place of the password, which then changes nothing
     before.password_hash = Some("$argon2id$a".into());
     after.password_hash = Some("$argon2id$a".into());
-    assert_eq!(changed(&before, &after), ["local:viewer"]);
+    assert_eq!(given(&before, &after), ["local:viewer"]);
     after.password_hash = Some("$argon2id$b".into());
-    assert_eq!(changed(&before, &after), ["local:reseek", "local:viewer"]);
+    assert_eq!(given(&before, &after), ["local:reseek", "local:viewer"]);
 
-    // renamed or removed, it has no role any more, which ends its sessions anyway
-    after.username = "admin".into();
-    after.local.users.clear();
-    assert!(changed(&before, &after).is_empty());
+    // added or renamed, an account has a password it had not
+    let renamed = Authentication {
+      username: "admin".into(),
+      ..before.clone()
+    };
+    assert_eq!(given(&before, &renamed), ["local:admin"]);
+    let mut without = before.clone();
+    without.local.users.clear();
+    assert_eq!(given(&without, &before), ["local:viewer"]);
+    // removed, it has no role any more, which ends its sessions anyway
+    assert!(given(&before, &without).is_empty());
+  }
+
+  #[tokio::test]
+  async fn a_password_is_kept_as_its_hash_or_a_salted_hash_and_compared() {
+    let db = Database::memory(&SCHEMA).await;
+    let plain = Authentication::default();
+    let hashed = Authentication {
+      password_hash: Some(local::hash("s3cret")),
+      ..Authentication::default()
+    };
+    let at: DateTime<Utc> = "2026-11-14T12:00:00Z".parse().unwrap();
+    let compare = async |authentication: &Authentication| {
+      let compared = compare(&db, authentication, |_| at).await.unwrap();
+      keep(&db, &compared).await.unwrap();
+      compared
+        .iter()
+        .map(|c| (c.subject.clone(), c.changed))
+        .collect::<Vec<_>>()
+    };
+    let kept = async || {
+      db.read(|conn| {
+        conn.query_row("SELECT fingerprint, changed_at FROM passwords", [], |row| {
+          Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+      })
+      .await
+      .unwrap()
+    };
+    let unchanged = vec![("local:reseek".to_string(), false)];
+    let changed = vec![("local:reseek".to_string(), true)];
+    assert_eq!(compare(&plain).await, unchanged, "nothing kept yet");
+    let (fingerprint, _) = kept().await;
+    assert!(
+      fingerprint.starts_with("argon2:$argon2id$"),
+      "never the password itself"
+    );
+    assert!(!fingerprint.contains("reseek"));
+    assert_eq!(compare(&plain).await, unchanged);
+    assert_eq!(compare(&hashed).await, changed);
+    assert_eq!(kept().await.1, timestamp(at));
+    assert_eq!(
+      kept().await.0,
+      format!("hash:{}", hashed.password_hash.clone().unwrap())
+    );
+    assert_eq!(compare(&hashed).await, unchanged);
+    assert_eq!(compare(&plain).await, changed);
   }
 
   fn changer(session: &str) -> Changer {
@@ -202,6 +428,7 @@ mod tests {
   async fn the_setters_are_taken_once_no_change_is_being_made_and_the_options_stand() {
     use futures_util::FutureExt;
 
+    let db = Database::memory(&SCHEMA).await;
     let before = Authentication::default();
     let after = Authentication {
       password: "new".into(),
@@ -209,13 +436,13 @@ mod tests {
     };
     let setters = Setters::default();
     let setting = setters.begin(Some(changer("a"))).await;
-    let mut taking = Box::pin(setters.take_if(|| true));
+    let mut taking = Box::pin(setters.take_if(&db, || true));
     assert!(
       (&mut taking).now_or_never().is_none(),
       "a change is being made"
     );
-    setting.made(&before, &after);
-    let taken = taking.await.unwrap();
+    setting.made(&db, &before, &after).await.unwrap();
+    let taken = taking.await.unwrap().unwrap();
     assert_eq!(taken.len(), 1);
     assert!(taken[0].set("a", "local:reseek"));
     assert!(
@@ -224,23 +451,22 @@ mod tests {
     );
     assert!(!taken[0].set("b", "local:reseek"));
 
-    setters
-      .begin(Some(changer("b")))
-      .await
-      .made(&before, &after);
+    let setting = setters.begin(Some(changer("b"))).await;
+    setting.made(&db, &before, &after).await.unwrap();
     // a change to nothing that gives a new password is no setter
-    setters
-      .begin(Some(changer("c")))
-      .await
-      .made(&before, &before);
+    let setting = setters.begin(Some(changer("c"))).await;
+    setting.made(&db, &before, &before).await.unwrap();
     assert_eq!(
-      setters.take_if(|| false).await,
+      setters.take_if(&db, || false).await.unwrap(),
       None,
       "kept while it does not stand"
     );
-    let taken = setters.take_if(|| true).await.unwrap();
+    let taken = setters.take_if(&db, || true).await.unwrap().unwrap();
     assert_eq!(taken.len(), 1);
     assert!(taken[0].set("b", "local:reseek"));
-    assert_eq!(setters.take_if(|| true).await, Some(Vec::new()));
+    assert_eq!(
+      setters.take_if(&db, || true).await.unwrap(),
+      Some(Vec::new())
+    );
   }
 }

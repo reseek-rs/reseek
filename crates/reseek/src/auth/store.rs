@@ -1,5 +1,6 @@
 //! The authentication database, `auth.db`: who signed in, their browser sessions, the API
-//! tokens, and the key session cookies are made with.
+//! tokens, the key session cookies are made with, and what was kept of each local account's
+//! password with the sessions that set one.
 
 use api_types::auth::Role;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
@@ -7,7 +8,11 @@ use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, 
 use crate::db::{self, Schema};
 
 /// The tables of `auth.db`.
-pub static SCHEMA: Schema = db::schema!("auth", ["0001_initial", "0002_session_role"], private);
+pub static SCHEMA: Schema = db::schema!(
+  "auth",
+  ["0001_initial", "0002_session_role", "0003_passwords"],
+  private
+);
 
 /// A role as the database stores it: 0, 1 and 3, as the roles have always been numbered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

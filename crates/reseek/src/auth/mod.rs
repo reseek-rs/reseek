@@ -70,7 +70,8 @@ pub struct Auth {
   pub accounts: Accounts,
   /// the OpenID Connect providers in use
   pub oidc: oidc::Providers,
-  /// the browser sessions that set a local account's password since the configuration stood
+  /// the turn for the configuration changes browser sessions make, so the one that sets a
+  /// password is recorded before the options are taken to stand
   pub setters: passwords::Setters,
 }
 

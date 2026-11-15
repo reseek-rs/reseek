@@ -459,10 +459,12 @@ async fn written<T: Send + 'static>(
     let setting = app.auth.setters.begin(changer).await;
     let written = write.await;
     if let Some(change) = written.as_ref().ok().and_then(change) {
-      setting.made(
-        &change.previous.values.web.authentication,
-        &change.current.values.web.authentication,
-      );
+      let (previous, current) = (&change.previous.values, &change.current.values);
+      let authentication = (&previous.web.authentication, &current.web.authentication);
+      let recorded = setting.made(&app.auth.db, authentication.0, authentication.1);
+      if let Err(e) = recorded.await {
+        warn!(error = %e, "the session that set a password was not recorded; it ends with the rest");
+      }
     }
     written
   };

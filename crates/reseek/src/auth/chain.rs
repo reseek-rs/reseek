@@ -514,9 +514,7 @@ pub async fn end_sessions_for_new_password(
     .map(|session| session.id)
     .filter(|id| !kept.iter().any(|setter| setter.set(id, account)))
     .collect();
-  let mut setters = kept
-    .iter()
-    .filter(|setter| setter.accounts.iter().any(|a| a == account));
+  let mut setters = kept.iter().filter(|setter| setter.account == account);
   let by = match (setters.next(), setters.next()) {
     (Some(setter), None) => Some(setter.changer.subject.clone()),
     _ => None,
