@@ -9,7 +9,7 @@ use crate::state::StateOwner;
 const REVISION: Option<&str> = option_env!("RESEEK_GIT_REVISION");
 
 /// The feed that names the latest release.
-pub const RELEASE_FEED: &str = "https://api.github.com/repos/tetra-fox/reseek/releases/latest";
+pub const RELEASE_FEED: &str = "https://api.github.com/repos/reseek-rs/reseek/releases/latest";
 
 /// The running version: `full` is `<semver> (<semver>+<revision>)`, the revision left out when
 /// the build does not name one. A debug build is a development build.

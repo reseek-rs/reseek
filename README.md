@@ -2,10 +2,10 @@
 
 Soulseek client & daemon
 
-[![ci](https://github.com/tetra-fox/reseek/actions/workflows/ci.yml/badge.svg)](https://github.com/tetra-fox/reseek/actions/workflows/ci.yml)
-[![latest release](https://img.shields.io/github/v/release/tetra-fox/reseek?include_prereleases)](https://github.com/tetra-fox/reseek/releases)
-[![ghcr](https://img.shields.io/badge/ghcr.io-tetra--fox%2Freseek-blue?logo=docker)](https://github.com/tetra-fox/reseek/pkgs/container/reseek)
-[![license](https://img.shields.io/github/license/tetra-fox/reseek)](LICENSE)
+[![ci](https://github.com/reseek-rs/reseek/actions/workflows/ci.yml/badge.svg)](https://github.com/reseek-rs/reseek/actions/workflows/ci.yml)
+[![latest release](https://img.shields.io/github/v/release/reseek-rs/reseek?include_prereleases)](https://github.com/reseek-rs/reseek/releases)
+[![ghcr](https://img.shields.io/badge/ghcr.io-reseek--rs%2Freseek-blue?logo=docker)](https://github.com/reseek-rs/reseek/pkgs/container/reseek)
+[![license](https://img.shields.io/github/license/reseek-rs/reseek)](LICENSE)
 
 ## Features
 
@@ -50,7 +50,7 @@ There are a lot more options than this. Settings in the UI shows all of them, wh
 ```yaml
 services:
   reseek:
-    image: ghcr.io/tetra-fox/reseek:latest
+    image: ghcr.io/reseek-rs/reseek:latest
     restart: unless-stopped
     ports:
       - 5030:5030
@@ -76,7 +76,7 @@ sudo chown -R 1001:1001 ./reseek
 
 ```nix
 {
-  inputs.reseek.url = "github:tetra-fox/reseek";
+  inputs.reseek.url = "github:reseek-rs/reseek";
 
   # in your configuration, with reseek.nixosModules.default imported
   services.reseek = {
@@ -95,12 +95,12 @@ sudo chown -R 1001:1001 ./reseek
 
 Alternatively, a Home Manager module is available in `homeManagerModules.default` if you'd rather run it as your user.
 
-Every push to `main` and every release is built and pushed to [tetra-fox.cachix.org](https://tetra-fox.cachix.org). Add it as a substituter to download reseek instead of building it:
+Every push to `main` and every release is built and pushed to [reseek.cachix.org](https://reseek.cachix.org). Add it as a substituter to download reseek instead of building it:
 
 ```nix
 nix.settings = {
-  substituters = [ "https://tetra-fox.cachix.org" ];
-  trusted-public-keys = [ "tetra-fox.cachix.org-1:l70MnHbfeZm2unwKH47I42/imLanZMMSxJbqoS0FvEs=" ];
+  substituters = [ "https://reseek.cachix.org" ];
+  trusted-public-keys = [ "reseek.cachix.org-1:R+i08n57zsl+eLJ6mGrCUQfE6LNnlG7Gy2qddw9D+oI=" ];
 };
 ```
 
@@ -108,7 +108,7 @@ The cached build uses reseek's own pinned nixpkgs, so leave out `inputs.reseek.i
 
 ### Plain binary
 
-Download the one for your system from [Releases](https://github.com/tetra-fox/reseek/releases), there's Linux amd64, arm64, and a universal macOS binary.
+Download the one for your system from [Releases](https://github.com/reseek-rs/reseek/releases), there's Linux amd64, arm64, and a universal macOS binary.
 
 ```sh
 chmod +x reseek-linux-amd64
@@ -168,9 +168,12 @@ Each binary and container image also carries a build provenance attestation, whi
 release workflow and commit that built it:
 
 ```sh
-gh attestation verify reseek-linux-amd64 --repo tetra-fox/reseek
-gh attestation verify oci://ghcr.io/tetra-fox/reseek:latest --repo tetra-fox/reseek
+gh attestation verify reseek-linux-amd64 --repo reseek-rs/reseek
+gh attestation verify oci://ghcr.io/reseek-rs/reseek:latest --repo reseek-rs/reseek
 ```
+
+Releases up to 0.1.0 were built as `tetra-fox/reseek`: verify those with `--repo tetra-fox/reseek`
+and pull their image from `ghcr.io/tetra-fox/reseek`.
 
 ## Building from source
 

@@ -8,7 +8,7 @@ body = """
 {% endfor %}
 {% endfor -%}
 {% if previous.version -%}
-https://github.com/tetra-fox/reseek/compare/{{ previous.version }}...{{ version }}
+https://github.com/reseek-rs/reseek/compare/{{ previous.version }}...{{ version }}
 {% endif %}
 """
 trim = true

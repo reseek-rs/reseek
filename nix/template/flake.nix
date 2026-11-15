@@ -4,7 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     reseek = {
-      url = "github:tetra-fox/reseek";
+      url = "github:reseek-rs/reseek";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
