@@ -132,7 +132,7 @@ impl Uploads {
         &options,
         Box::new(move |username| grouped.queue_group(username)),
       ),
-      governor: Arc::new(Governor::new(&options)),
+      governor: Arc::new(Governor::new(&options, network.speeds().upload())),
       intake: Intake::default(),
     });
     let engine = Arc::downgrade(&uploads);

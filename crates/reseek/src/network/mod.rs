@@ -34,6 +34,7 @@ use crate::services::Connected;
 use crate::shares::Shares;
 use crate::state::StateOwner;
 use crate::telemetry::Telemetry;
+use crate::transfers::speed::Global;
 use crate::users::Directory;
 pub use changes::follow_changes;
 pub use events::{follow_shared_counts, observe_client, observe_transfers};
@@ -130,6 +131,8 @@ pub struct Network {
   /// held while the client's options are patched, so an option change and a switch of the
   /// speed limits each read the other's outcome
   reconfiguring: tokio::sync::Mutex<()>,
+  /// the global upload and download speed limits in force
+  speeds: Global,
   /// the configuration the client's options were last patched from, which a session that
   /// begins runs with
   applied: Mutex<Arc<Loaded<Options>>>,
@@ -150,7 +153,8 @@ impl Network {
   ) -> Result<Arc<Self>, String> {
     let startup = config.current();
     let alternative = state.current().alternative_speed_limits;
-    let mut client_options = options::client_options(&startup.values, alternative)?;
+    let speeds = Global::new(&startup.values, alternative);
+    let mut client_options = options::client_options(&startup.values)?;
     client_options.validate().map_err(|e| e.to_string())?;
     let searches = IncomingSearches::new(&startup.values, shutdown.clone());
     Ok(Arc::new_cyclic(|this| {
@@ -192,6 +196,7 @@ impl Network {
         excluded: Mutex::new(Arc::from(Vec::new())),
         statistics: tokio::sync::Mutex::new(None),
         reconfiguring: tokio::sync::Mutex::new(()),
+        speeds,
         applied: Mutex::new(startup.clone()),
         events: Mutex::new(Some(events)),
         following: Mutex::new(None),
@@ -222,6 +227,11 @@ impl Network {
   /// Held while the client's options are patched.
   pub fn reconfiguring(&self) -> &tokio::sync::Mutex<()> {
     &self.reconfiguring
+  }
+
+  /// The global upload and download speed limits, which every transfer asks after its own.
+  pub fn speeds(&self) -> &Global {
+    &self.speeds
   }
 
   /// The loop that keeps the server connection up.

@@ -1,10 +1,9 @@
 //! The upload speed limits of the groups: one bucket per group, filled every 100 ms with its
 //! group's `speed_limit`, `privileged` with the global upload limit in force, the alternative
-//! one while the alternative limits are switched on. Every chunk of an
-//! upload asks the bucket of the group its user is in at that moment, then the client's own
-//! bucket for every upload, so the slower limit governs. What the group's bucket granted and
-//! the chunk did not move, because the client's limit took less or the socket took less, goes
-//! back to the bucket it came from.
+//! one while the alternative limits are switched on. Every chunk of an upload asks the bucket of
+//! the group its user is in at that moment, then the global upload bucket for what the group
+//! granted, so the slower limit governs. What each bucket granted and the chunk did not move,
+//! because the global limit took less or the socket took less, goes back to it.
 //!
 //! A change of a group's speed or of the global speed gives every group a new full bucket at
 //! once; a chunk already waiting on an old bucket is served by it within 100 ms.
@@ -22,12 +21,13 @@ use crate::config::{DEFAULT_GROUP, Groups, Options, PRIVILEGED_GROUP};
 /// Looks up the group an upload's user is in now.
 pub type CurrentGroup = Arc<dyn Fn() -> String + Send + Sync>;
 
-/// The bucket an upload's last chunk was granted bytes by, with how many.
+/// The group bucket an upload's last chunk was granted bytes by, with how many.
 type LastGrant = Arc<Mutex<Option<(Arc<TokenBucket>, u32)>>>;
 
-/// The groups' buckets.
+/// The groups' buckets, and the global one every upload asks after its group's.
 pub struct Governor {
   buckets: RwLock<Arc<HashMap<String, Arc<TokenBucket>>>>,
+  global: Arc<TokenBucket>,
   /// what the buckets were made from
   built_from: Mutex<(Groups, Option<u32>)>,
   /// the alternative speed limits are in force
@@ -65,10 +65,12 @@ fn made_from(options: &Options, alternative: bool) -> (Groups, Option<u32>) {
 }
 
 impl Governor {
-  /// The buckets for `options`, with the normal speed limits in force.
-  pub fn new(options: &Options) -> Self {
+  /// The buckets for `options`, with the normal speed limits in force, asking `global` after
+  /// each group's bucket.
+  pub fn new(options: &Options, global: Arc<TokenBucket>) -> Self {
     Self {
       buckets: RwLock::new(Arc::new(buckets(options, false))),
+      global,
       built_from: Mutex::new(made_from(options, false)),
       alternative: AtomicBool::new(false),
     }
@@ -116,23 +118,24 @@ impl Governor {
     let governor = self.clone();
     let chunk: ChunkGovernor = Arc::new(move |_, want, cancel| {
       let bucket = governor.bucket(&group());
+      let global = governor.global.clone();
       let last = granting.clone();
       Box::pin(async move {
-        match bucket.get(want, &cancel).await {
-          Ok(granted) => {
-            *lock(&last) = Some((bucket, granted));
-            granted
-          }
-          // the client sees the cancel and ends the upload
-          Err(_) => 0,
-        }
+        // the client sees a cancel and ends the upload
+        let Ok(granted) = bucket.get(want, &cancel).await else {
+          return 0;
+        };
+        *lock(&last) = Some((bucket, granted));
+        global.get(granted, &cancel).await.unwrap_or(0)
       })
     });
-    let reporter: Reporter = Arc::new(move |_, _, _, moved| {
+    let global = self.global.clone();
+    let reporter: Reporter = Arc::new(move |_, _, granted, moved| {
       let taken = lock(&last).take();
-      if let Some((bucket, granted)) = taken {
-        bucket.give_back(granted.saturating_sub(moved));
+      if let Some((bucket, group_granted)) = taken {
+        bucket.give_back(group_granted.saturating_sub(moved));
       }
+      global.give_back(granted.saturating_sub(moved));
     });
     (chunk, reporter)
   }
@@ -149,6 +152,16 @@ mod tests {
 
   fn options(toml: &str) -> Options {
     toml::from_str(toml).unwrap()
+  }
+
+  /// The groups' buckets for `toml`, under a global limit of `global` KiB/s, 0 for none.
+  fn limited(toml: &str, global: u32) -> Governor {
+    Governor::new(&options(toml), Arc::new(TokenBucket::for_speed(global)))
+  }
+
+  /// The groups' buckets for `toml`, without a global limit.
+  fn grouped(toml: &str) -> Governor {
+    limited(toml, 0)
   }
 
   /// A snapshot no governor here looks at.
@@ -177,9 +190,9 @@ mod tests {
 
   #[tokio::test(start_paused = true)]
   async fn a_speed_change_rebuckets_a_running_upload_at_its_next_chunk() {
-    let governor = Arc::new(Governor::new(&options(
+    let governor = Arc::new(grouped(
       "[transfers.groups.default.upload]\nspeed_limit = 1\n",
-    )));
+    ));
     let (chunk, report) = governor.pace(Arc::new(|| DEFAULT_GROUP.to_string()));
     let never = CancellationToken::new();
     assert_eq!(chunk(&transfer(), 50_000, never.clone()).await, 102);
@@ -200,9 +213,9 @@ mod tests {
 
   #[tokio::test(start_paused = true)]
   async fn what_a_chunk_did_not_move_goes_back_to_its_group() {
-    let governor = Arc::new(Governor::new(&options(
+    let governor = Arc::new(grouped(
       "[transfers.groups.leechers.upload]\nspeed_limit = 1\n",
-    )));
+    ));
     let (chunk, report) = governor.pace(Arc::new(|| LEECHERS_GROUP.to_string()));
     let never = CancellationToken::new();
     assert_eq!(chunk(&transfer(), 1000, never.clone()).await, 102);
@@ -219,9 +232,9 @@ mod tests {
 
   #[test]
   fn a_group_without_a_bucket_takes_the_default_ones_and_privileged_the_global_speed() {
-    let governor = Governor::new(&options(
+    let governor = grouped(
       "[transfers.upload]\nspeed_limit = 7\n[transfers.groups.default.upload]\nspeed_limit = 3\n",
-    ));
+    );
     assert!(Arc::ptr_eq(
       &governor.bucket("blacklisted"),
       &governor.bucket(DEFAULT_GROUP)
@@ -230,5 +243,45 @@ mod tests {
       &governor.bucket(PRIVILEGED_GROUP),
       &governor.bucket(DEFAULT_GROUP)
     ));
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn the_slower_of_the_group_and_the_global_limit_governs_each_interval() {
+    // a group under the global limit, then the global limit under the group
+    for (group, global) in [(1, 100), (100, 1)] {
+      let governor = Arc::new(limited(
+        &format!("[transfers.groups.default.upload]\nspeed_limit = {group}\n"),
+        global,
+      ));
+      let (chunk, report) = governor.pace(Arc::new(|| DEFAULT_GROUP.to_string()));
+      let never = CancellationToken::new();
+      let before = tokio::time::Instant::now();
+      for interval in 0..3 {
+        let granted = chunk(&transfer(), 50_000, never.clone()).await;
+        assert_eq!(granted, 102, "group {group}, global {global}");
+        report(&transfer(), 50_000, granted, granted);
+        assert_eq!(
+          tokio::time::Instant::now() - before,
+          Duration::from_millis(100 * interval)
+        );
+      }
+    }
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn what_a_chunk_did_not_move_goes_back_to_the_group_and_the_global_limit() {
+    let governor = Arc::new(limited(
+      "[transfers.groups.default.upload]\nspeed_limit = 3\n",
+      2,
+    ));
+    let (chunk, report) = governor.pace(Arc::new(|| DEFAULT_GROUP.to_string()));
+    let never = CancellationToken::new();
+    let before = tokio::time::Instant::now();
+    // the group grants 307 and the global limit 204 of them
+    assert_eq!(chunk(&transfer(), 1000, never.clone()).await, 204);
+    report(&transfer(), 1000, 204, 100);
+    // 207 came back to the group and 104 to the global limit
+    assert_eq!(chunk(&transfer(), 1000, never).await, 104);
+    assert_eq!(tokio::time::Instant::now(), before);
   }
 }

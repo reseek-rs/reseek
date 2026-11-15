@@ -1,5 +1,6 @@
 //! Following the options while running: a change to the search request filters compiles them
-//! again, a change to the Soulseek, upload or download options patches the client, a change to
+//! again, a change to the Soulseek, upload or download options patches the client and sets the
+//! global speed limits, a change to
 //! whether we take private room invitations is told to the server while logged in, a change to
 //! the listener or to port mapping moves the
 //! mapping on the router, new credentials log in again at once, another change that takes
@@ -68,7 +69,8 @@ async fn apply(
   {
     let _reconfiguring = network.reconfiguring().lock().await;
     let alternative = app.state.current().alternative_speed_limits;
-    let patch = match options::patch(applied, &values, alternative) {
+    network.speeds().set(&values, alternative);
+    let patch = match options::patch(applied, &values) {
       Ok(patch) => patch,
       Err(e) => {
         warn!(error = e, "Failed to apply option update");
@@ -196,7 +198,7 @@ mod tests {
   use crate::testing::{app, request};
 
   #[tokio::test]
-  async fn a_live_change_reaches_the_client_without_a_reconnect() {
+  async fn a_live_change_takes_effect_without_a_reconnect() {
     let app = app(
       "remote_configuration = true\n[web.authentication]\n\
        trusted_networks = [\"127.0.0.0/8\"]\n",
@@ -205,15 +207,14 @@ mod tests {
     .await;
     let change = json!({ "set": {
       "transfers.upload.speed_limit": 64,
-      "transfers.upload.slots": 3,
     } });
     let answer = app
       .send(request("PATCH", "/api/v0/options", Some(change)))
       .await;
     assert_eq!(answer.status, 200, "{:?}", answer.body);
-    let client = app.state.network.client();
+    let speeds = app.state.network.speeds();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while client.options().maximum_upload_speed != 64 {
+    while speeds.limits().0 != Some(64) {
       assert!(tokio::time::Instant::now() < deadline, "never applied");
       tokio::time::sleep(Duration::from_millis(20)).await;
     }

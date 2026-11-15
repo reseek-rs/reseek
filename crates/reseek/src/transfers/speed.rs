@@ -1,16 +1,92 @@
 //! Which pair of speed limits is in force, the normal or the alternative one: kept in
 //! `transfers.db` so it lasts across restarts, shown in the state document, and in force for the
-//! client's global limits and the uploads' privileged bucket.
+//! global limits of each direction and the uploads' privileged bucket.
 
+use std::sync::{Arc, Mutex};
+
+use reseek_shares::lock;
 use rusqlite::{Connection, OptionalExtension};
-use soulseek_client::ClientOptionsPatch;
-use tracing::{info, warn};
+use soulseek_client::{Governor, Reporter, TokenBucket};
+use tracing::{debug, info};
 
 use crate::api::error::ApiError;
 use crate::app::AppState;
 use crate::config::Options;
 use crate::db::{Database, DbError};
-use crate::network::options::client_options;
+
+/// The global upload and download speed limits: one bucket per direction, which every transfer
+/// going that way asks after its own limits.
+pub struct Global {
+  upload: Arc<TokenBucket>,
+  download: Arc<TokenBucket>,
+  /// the upload and download limits in force, KiB/s, `None` for no limit
+  limits: Mutex<(Option<u32>, Option<u32>)>,
+}
+
+/// The upload and download limits `options` set for the pair `alternative` names.
+fn pair(options: &Options, alternative: bool) -> (Option<u32>, Option<u32>) {
+  let transfers = &options.transfers;
+  (
+    transfers.upload_speed_limit(alternative),
+    transfers.download_speed_limit(alternative),
+  )
+}
+
+impl Global {
+  /// The limits `options` set for the pair `alternative` names, each bucket full.
+  pub fn new(options: &Options, alternative: bool) -> Self {
+    let limits = pair(options, alternative);
+    // the bucket takes 0 as no limit
+    let bucket = |limit: Option<u32>| Arc::new(TokenBucket::for_speed(limit.unwrap_or(0)));
+    Self {
+      upload: bucket(limits.0),
+      download: bucket(limits.1),
+      limits: Mutex::new(limits),
+    }
+  }
+
+  /// Puts the limits `options` set for the pair `alternative` names in force from the buckets'
+  /// next 100 ms on.
+  pub fn set(&self, options: &Options, alternative: bool) {
+    let (upload, download) = pair(options, alternative);
+    let mut limits = lock(&self.limits);
+    if *limits == (upload, download) {
+      return;
+    }
+    *limits = (upload, download);
+    self.upload.set_speed(upload.unwrap_or(0));
+    self.download.set_speed(download.unwrap_or(0));
+    debug!(?upload, ?download, "global speed limits set");
+  }
+
+  /// The upload and download limits in force, KiB/s, `None` for no limit.
+  pub fn limits(&self) -> (Option<u32>, Option<u32>) {
+    *lock(&self.limits)
+  }
+
+  /// The bucket every upload asks after its group's.
+  pub fn upload(&self) -> Arc<TokenBucket> {
+    self.upload.clone()
+  }
+
+  /// The governor and the reporter of one download: each chunk asks the download bucket, and
+  /// what it granted and the chunk did not move goes back to it.
+  pub fn download_pace(&self) -> (Governor, Reporter) {
+    let bucket = self.download.clone();
+    let governor: Governor = Arc::new(move |_, want, cancel| {
+      let bucket = bucket.clone();
+      Box::pin(async move {
+        // the client sees the cancel and ends the download
+        bucket.get(want, &cancel).await.unwrap_or(0)
+      })
+    });
+    let bucket = self.download.clone();
+    let reporter: Reporter = Arc::new(move |_, _, granted, moved| {
+      bucket.give_back(granted.saturating_sub(moved));
+    });
+    (governor, reporter)
+  }
+}
 
 fn read(conn: &Connection) -> rusqlite::Result<bool> {
   let stored = conn
@@ -38,42 +114,21 @@ pub async fn stored(db: &Database) -> Result<bool, DbError> {
   db.read(read).await
 }
 
-/// The patch that gives the client the global limits `options` set for the pair `alternative`
-/// names.
-fn limits(options: &Options, alternative: bool) -> Result<ClientOptionsPatch, ApiError> {
-  let wanted = client_options(options, alternative).map_err(ApiError::internal)?;
-  Ok(ClientOptionsPatch {
-    maximum_upload_speed: Some(wanted.maximum_upload_speed),
-    maximum_download_speed: Some(wanted.maximum_download_speed),
-    ..ClientOptionsPatch::default()
-  })
-}
-
 /// Puts the alternative speed limits in force, or the normal ones, `by` naming who asked: the
-/// client first, then kept, shown in the state and applied to the uploads' buckets. A client or
+/// global limits first, then kept, shown in the state and applied to the uploads' buckets. A
 /// database that refuses leaves the pair in force as it was.
 pub async fn switch(app: &AppState, alternative: bool, by: &str) -> Result<(), ApiError> {
   let network = &app.network;
   let _reconfiguring = network.reconfiguring().lock().await;
-  let client = network.client();
   let was = app.state.current().alternative_speed_limits;
   let options = app.config.current();
-  let (wanted, back) = (
-    limits(&options.values, alternative)?,
-    limits(&options.values, was)?,
-  );
-  client
-    .reconfigure_options(wanted)
-    .await
-    .map_err(ApiError::internal)?;
+  network.speeds().set(&options.values, alternative);
   let kept = app
     .transfers
     .write(move |conn| write(conn, alternative))
     .await;
   if let Err(e) = kept {
-    if let Err(refused) = client.reconfigure_options(back).await {
-      warn!(error = %refused, "client speed limits not put back after a failed switch");
-    }
+    network.speeds().set(&options.values, was);
     return Err(ApiError::internal(e));
   }
   app
@@ -91,14 +146,13 @@ mod tests {
 
   use crate::testing::{TestApp, app, request};
 
-  /// The client's global upload and download limits.
-  fn limits(app: &TestApp) -> (u32, u32) {
-    let options = app.state.network.client().options();
-    (options.maximum_upload_speed, options.maximum_download_speed)
+  /// The global upload and download limits in force.
+  fn limits(app: &TestApp) -> (Option<u32>, Option<u32>) {
+    app.state.network.speeds().limits()
   }
 
   #[tokio::test]
-  async fn the_switch_reaches_the_client_and_lasts_across_a_restart() {
+  async fn the_switch_reaches_the_global_limits_and_lasts_across_a_restart() {
     let app = app(
       "[web.authentication]\ntrusted_networks = [\"127.0.0.0/8\"]\n\
        [transfers.upload]\nspeed_limit = 64\nalt_speed_limit = 16\n\
@@ -106,24 +160,24 @@ mod tests {
       &[],
     )
     .await;
-    assert_eq!(limits(&app), (64, 0));
+    assert_eq!(limits(&app), (Some(64), None));
     let on = json!({ "alternative": true });
     let answer = app
       .send(request("PUT", "/api/v0/transfers/speed-limits", Some(on)))
       .await;
     assert_eq!(answer.status, 204, "{:?}", answer.body);
     assert!(app.state.state.current().alternative_speed_limits);
-    assert_eq!(limits(&app), (16, 8));
+    assert_eq!(limits(&app), (Some(16), Some(8)));
 
     let app = app.restarted(&[]).await;
     assert!(app.state.state.current().alternative_speed_limits);
-    assert_eq!(limits(&app), (16, 8));
+    assert_eq!(limits(&app), (Some(16), Some(8)));
     let off = json!({ "alternative": false });
     let answer = app
       .send(request("PUT", "/api/v0/transfers/speed-limits", Some(off)))
       .await;
     assert_eq!(answer.status, 204);
-    assert_eq!(limits(&app), (64, 0));
+    assert_eq!(limits(&app), (Some(64), None));
   }
 
   #[tokio::test]
@@ -174,5 +228,54 @@ mod tests {
       (&json!("alice"), &json!(16))
     );
     assert_eq!(speed().await, 16, "the summary read before is not kept");
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn a_download_takes_what_the_global_limit_grants_and_gives_back_what_it_did_not_move() {
+    use soulseek_client::{Transfer, TransferState};
+    use soulseek_proto::TransferDirection;
+    use tokio::time::Instant;
+    use tokio_util::sync::CancellationToken;
+
+    let options: crate::config::Options =
+      toml::from_str("[transfers.download]\nspeed_limit = 1\n").unwrap();
+    let (chunk, report) = super::Global::new(&options, false).download_pace();
+    let transfer = Transfer {
+      direction: TransferDirection::Download,
+      username: "alice".into(),
+      filename: "a.flac".into(),
+      token: 1,
+      remote_token: None,
+      state: TransferState::InProgress,
+      size: 1_000_000,
+      start_offset: 0,
+      bytes_transferred: 0,
+      bytes_remaining: 1_000_000,
+      percent_complete: 0.0,
+      average_speed: 0.0,
+      start_time: None,
+      end_time: None,
+      elapsed_time: None,
+      remaining_time: None,
+      ip_end_point: None,
+      error: None,
+    };
+    let never = CancellationToken::new();
+    let before = Instant::now();
+    assert_eq!(chunk(&transfer, 1000, never.clone()).await, 102, "1 KiB/s");
+    // 50 of them read
+    report(&transfer, 1000, 102, 50);
+    assert_eq!(
+      chunk(&transfer, 1000, never.clone()).await,
+      52,
+      "what came back"
+    );
+    assert_eq!(Instant::now(), before);
+    report(&transfer, 1000, 52, 52);
+    assert_eq!(chunk(&transfer, 1000, never).await, 102);
+    assert_eq!(
+      Instant::now() - before,
+      std::time::Duration::from_millis(100)
+    );
   }
 }

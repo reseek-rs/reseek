@@ -340,6 +340,7 @@ impl Downloads {
         warn!(error = %e, "download state not recorded");
       }
     });
+    let (governor, reporter) = self.network.speeds().download_pace();
     let (progress_sent, mut progress) = watch::channel((start, 0.0));
     let progress_updated: ProgressUpdated = Arc::new(move |_, snapshot: &Snapshot| {
       progress_sent.send_replace((snapshot.bytes_transferred, snapshot.average_speed));
@@ -352,6 +353,8 @@ impl Downloads {
       token: None,
       output: DownloadOutput::Stream(output(incomplete.to_path_buf(), mode, start)),
       options: TransferOptions {
+        governor: Some(governor),
+        reporter: Some(reporter),
         state_changed: Some(state_changed),
         progress_updated: Some(progress_updated),
         size_mismatch_resolver: (!pushed).then(peers_size),
