@@ -189,6 +189,104 @@ async fn one_address_holds_no_more_than_its_share_of_the_queue() {
 }
 
 #[tokio::test]
+async fn one_address_queues_its_share_of_users_and_more_once_they_leave() {
+  use soulseek_proto::server::{
+    GetPeerAddressResponse, UserStatistics, UserStats, UserStatus, WatchUserResponse, WatchedUser,
+  };
+  use soulseek_proto::{ServerRequest, ServerResponse, UserPresence};
+
+  // where the users' clients are: a socket that takes connections and never answers, so the one
+  // upload running waits for its answer and keeps the queue as it is
+  let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let port = silent.local_addr().unwrap().port();
+  let files = tempfile::tempdir().unwrap();
+  let extra = "[transfers.upload]\nslots = 1\n\
+               [soulseek.connection.timeout]\ntransfer_response = \"1h\"\n";
+  let app = crate::testing::soulseek::app(&config(files.path(), extra)).await;
+  let stats = UserStats {
+    average_speed: 1000,
+    upload_count: 10,
+    file_count: 1000,
+    directory_count: 100,
+  };
+  let server = crate::testing::soulseek::Server::start(move |request| match request {
+    ServerRequest::GetUserStats(asked) => vec![ServerResponse::GetUserStats(UserStatistics {
+      username: asked.username.clone(),
+      stats,
+    })],
+    ServerRequest::GetStatus(asked) => vec![ServerResponse::GetStatus(UserStatus {
+      username: asked.username.clone(),
+      presence: UserPresence::Online,
+      is_privileged: false,
+    })],
+    ServerRequest::WatchUser(asked) => vec![ServerResponse::WatchUser(WatchUserResponse {
+      username: asked.username.clone(),
+      user: Some(WatchedUser {
+        status: UserPresence::Online,
+        stats,
+        country_code: None,
+      }),
+    })],
+    ServerRequest::GetPeerAddress(asked) => {
+      vec![ServerResponse::GetPeerAddress(GetPeerAddressResponse {
+        username: asked.username.clone(),
+        ip: std::net::Ipv4Addr::LOCALHOST,
+        port: port.into(),
+        obfuscation: None,
+      })]
+    }
+    _ => Vec::new(),
+  })
+  .await;
+  server.login(&app).await;
+  // names one host makes up, all asking from one address
+  let here = from("198.51.100.7");
+  let ask = |username: String| {
+    let edges = edges(&app);
+    async move {
+      let file = RemoteFilename::from(SHARED);
+      match enqueue_download(&edges, &username, here, &file).await {
+        Ok(()) => None,
+        Err(ClientError::DownloadEnqueue(reason)) => Some(reason),
+        Err(other) => panic!("not a refusal: {other}"),
+      }
+    }
+  };
+  for n in 0..QUEUED_PER_ADDRESS {
+    assert_eq!(ask(format!("made-up{n}")).await, None, "made-up{n}");
+  }
+  assert_eq!(ask("one-more".into()).await.as_deref(), Some(QUEUE_FULL));
+
+  // they all leave the queue
+  let (status, listed) = app.call("GET", "/api/v0/transfers/uploads", None).await;
+  assert_eq!(status, 200);
+  for user in listed.as_array().unwrap() {
+    let username = user["username"].as_str().unwrap();
+    for directory in user["directories"].as_array().unwrap() {
+      for file in directory["files"].as_array().unwrap() {
+        let id = file["id"].as_str().unwrap();
+        let path = format!("/api/v0/transfers/uploads/{username}/{id}");
+        app.call("DELETE", &path, None).await;
+      }
+    }
+  }
+  let uploads = &app.state.uploads;
+  tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    while !uploads.queue.users().is_empty() {
+      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+  })
+  .await
+  .expect("the uploads never left the queue");
+  assert_eq!(
+    ask("one-more".into()).await,
+    None,
+    "the address holds no place now"
+  );
+  drop(silent);
+}
+
+#[tokio::test]
 async fn a_privileged_user_is_queued_past_the_limits() {
   let (_files, app) = shared_app("[transfers.upload.limits]\nqueued = { files = 1 }\n").await;
   let mut queued = Row::new(
