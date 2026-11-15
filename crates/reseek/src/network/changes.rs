@@ -217,7 +217,6 @@ mod tests {
       assert!(tokio::time::Instant::now() < deadline, "never applied");
       tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(client.options().maximum_concurrent_uploads, 3);
     assert!(!app.state.state.current().pending_reconnect);
   }
 

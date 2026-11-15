@@ -660,6 +660,28 @@ pub(super) mod tests {
   }
 
   #[test]
+  fn fewer_slots_let_the_running_uploads_finish_and_start_none_until_under_the_new_count() {
+    let (queue, _) = queue("[transfers.upload]\nslots = 3\n");
+    let running: Vec<Uuid> = ["a", "b", "c"]
+      .iter()
+      .map(|user| {
+        let (id, mut start) = ready(&queue, user);
+        assert!(started(&mut start));
+        id
+      })
+      .collect();
+    queue.configure(&options("[transfers.upload]\nslots = 1\n"));
+    let (_, mut waiting) = ready(&queue, "d");
+    assert!(!started(&mut waiting), "three run where one may");
+    queue.complete(running[0]);
+    assert!(!started(&mut waiting), "two still run");
+    queue.complete(running[1]);
+    assert!(!started(&mut waiting), "one still runs");
+    queue.complete(running[2]);
+    assert!(started(&mut waiting));
+  }
+
+  #[test]
   fn a_reconfigured_group_keeps_its_slots_and_slots_never_pass_the_global_ones() {
     let (queue, _) =
       queue("[transfers.upload]\nslots = 3\n[transfers.groups.default.upload]\nslots = 10\n");

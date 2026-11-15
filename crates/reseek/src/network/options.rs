@@ -48,7 +48,6 @@ pub fn client_options(options: &Options, alternative: bool) -> Result<ClientOpti
     enable_distributed_network: !soulseek.distributed_network.disabled,
     accept_distributed_children: !soulseek.distributed_network.disable_children,
     distributed_child_limit: soulseek.distributed_network.child_limit,
-    maximum_concurrent_uploads: transfers.upload.slots,
     // the client takes 0 as no limit
     maximum_upload_speed: transfers.upload_speed_limit(alternative).unwrap_or(0),
     maximum_download_speed: transfers.download_speed_limit(alternative).unwrap_or(0),
@@ -107,10 +106,6 @@ pub fn patch(
       to.accept_distributed_children,
     ),
     distributed_child_limit: changed(from.distributed_child_limit, to.distributed_child_limit),
-    maximum_concurrent_uploads: changed(
-      from.maximum_concurrent_uploads,
-      to.maximum_concurrent_uploads,
-    ),
     maximum_upload_speed: Some(to.maximum_upload_speed),
     maximum_download_speed: Some(to.maximum_download_speed),
     transfer_response_timeout: changed(
@@ -290,14 +285,9 @@ mod tests {
       (client.maximum_upload_speed, client.maximum_download_speed),
       (0, 0)
     );
-    assert_eq!(client.maximum_concurrent_uploads, 10);
-    let limited = client_options(
-      &options("[transfers.upload]\nspeed_limit = 100\nslots = 3\n"),
-      false,
-    )
-    .unwrap();
+    let limited =
+      client_options(&options("[transfers.upload]\nspeed_limit = 100\n"), false).unwrap();
     assert_eq!(limited.maximum_upload_speed, 100);
-    assert_eq!(limited.maximum_concurrent_uploads, 3);
   }
 
   /// A client started with the options of `previous` and patched to `current` runs with the
