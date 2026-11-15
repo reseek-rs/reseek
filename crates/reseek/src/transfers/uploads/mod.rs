@@ -289,7 +289,7 @@ impl Uploads {
   async fn cancel_unrun(&self, mut record: Record, remove: bool) -> Result<(), ApiError> {
     let id = record.id;
     let canceled = TransferStates::Completed(TransferOutcome::Cancelled);
-    let exception = ClientError::Canceled.to_string();
+    let exception = task::CANCELED.to_string();
     let unfinished = record
       .complete(TransferOutcome::Cancelled, Some(exception.clone()))
       .is_ok();

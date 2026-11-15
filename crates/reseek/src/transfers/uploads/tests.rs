@@ -855,6 +855,10 @@ async fn canceling_an_upload_no_task_runs_ends_it() {
     TransferStates::Completed(TransferOutcome::Cancelled)
   );
   assert!(ended.ended_at.is_some());
+  assert_eq!(
+    ended.exception.as_deref(),
+    Some("the operation was cancelled")
+  );
 }
 
 #[tokio::test]

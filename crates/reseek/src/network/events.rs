@@ -784,8 +784,8 @@ fn transfer_state(app: &AppState, previous: Option<TransferState>, transfer: &Tr
     direction,
     username = transfer.username,
     file = basename,
-    previous = previous.map(tracing::field::display),
-    state = %transfer.state,
+    previous = previous.map(|state| reported(state).as_str()),
+    state = reported(transfer.state).as_str(),
     bytes = transfer.bytes_transferred,
     size = transfer.size,
     speed = transfer.average_speed,
@@ -1029,8 +1029,18 @@ mod tests {
     observe_transfers(&app.state).await;
     assert_eq!(queued(), 2);
     // the client holds none of the downloads waiting here
-    transfer_state(&app.state, None, &queued_download().await);
+    let transfer = queued_download().await;
+    let (logs, _capturing) = crate::testing::captured_logs();
+    transfer_state(&app.state, None, &transfer);
     assert_eq!(queued(), 2);
+    let logged = logs.snapshot();
+    assert!(
+      logged
+        .iter()
+        .any(|line| line.message.contains("transfer state changed")
+          && line.message.contains("Queued, Remotely")),
+      "the state is logged by the name the daemon keeps: {logged:?}"
+    );
   }
 
   #[tokio::test]

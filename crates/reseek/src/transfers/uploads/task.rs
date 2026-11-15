@@ -35,6 +35,9 @@ use crate::transfers::{PROGRESS_EVERY, Record, STATES, removal, store};
 /// Why an upload whose file is gone when it starts ended.
 const FILE_GONE: &str = "File could not be found";
 
+/// Why an upload that was canceled ended.
+pub(super) const CANCELED: &str = "the operation was cancelled";
+
 /// Progress not written, which a failing database would repeat four times a second.
 static PROGRESS_UNWRITTEN: LogLimiter = LogLimiter::new();
 
@@ -66,10 +69,11 @@ fn outcome(error: &ClientError) -> TransferOutcome {
 }
 
 /// Why an upload that ended with `error` failed, as its record shows it: the peer's refusal as
-/// it sent it, why a relay agent's file did not come, else the error's text.
+/// it sent it, why a relay agent's file did not come, [`CANCELED`], else the error's text.
 fn reason(error: &ClientError) -> String {
   match error {
     ClientError::TransferRejected(reason) | ClientError::NotFound(reason) => reason.clone(),
+    ClientError::Canceled => CANCELED.to_string(),
     other => match input_error(other) {
       Some(input) => input.to_string(),
       None => other.to_string(),
@@ -457,5 +461,13 @@ mod tests {
     assert_eq!(outcome(&late), TransferOutcome::TimedOut);
     let other = ClientError::io("read", Error::other("disk"));
     assert_eq!(outcome(&other), TransferOutcome::Errored);
+  }
+
+  #[test]
+  fn a_canceled_upload_says_so_as_it_always_has() {
+    assert_eq!(
+      reason(&ClientError::Canceled),
+      "the operation was cancelled"
+    );
   }
 }

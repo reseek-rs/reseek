@@ -34,7 +34,7 @@ fn client_transfer(transfer: &soulseek_client::Transfer) -> serde_json::Value {
     "filename": transfer.filename.to_string(),
     "token": transfer.token,
     "remoteToken": transfer.remote_token,
-    "state": transfer.state.to_string(),
+    "state": crate::transfers::state::reported(transfer.state).as_str(),
     "size": transfer.size,
     "startOffset": transfer.start_offset,
     "bytesTransferred": transfer.bytes_transferred,
@@ -388,6 +388,24 @@ mod tests {
 
   use super::*;
   use crate::transfers::state::State;
+
+  #[tokio::test]
+  async fn the_clients_own_records_show_the_daemons_state_names() {
+    use soulseek_client::{TransferOutcome as Outcome, TransferState as Reported};
+
+    let mut transfer = crate::testing::soulseek::transfer_snapshot().await;
+    for (state, name) in [
+      (Reported::QueuedRemotely, "Queued, Remotely"),
+      (Reported::InProgress, "InProgress"),
+      (
+        Reported::Completed(Outcome::Canceled),
+        "Completed, Cancelled",
+      ),
+    ] {
+      transfer.state = state;
+      assert_eq!(client_transfer(&transfer)["state"], name);
+    }
+  }
 
   #[test]
   fn a_retry_keeps_each_downloads_destination_folder_and_search() {
