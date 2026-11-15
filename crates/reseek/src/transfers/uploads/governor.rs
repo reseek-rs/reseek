@@ -13,10 +13,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use reseek_shares::lock;
-use soulseek_client::{Governor as ChunkGovernor, Reporter, TokenBucket};
+use soulseek_client::{Governor as ChunkGovernor, Reporter};
 use tracing::debug;
 
 use crate::config::{DEFAULT_GROUP, Groups, Options, PRIVILEGED_GROUP};
+use crate::transfers::bucket::TokenBucket;
 
 /// Looks up the group an upload's user is in now.
 pub type CurrentGroup = Arc<dyn Fn() -> String + Send + Sync>;
@@ -38,7 +39,7 @@ pub struct Governor {
 /// `alternative`.
 fn buckets(options: &Options, alternative: bool) -> HashMap<String, Arc<TokenBucket>> {
   let groups = &options.transfers.groups;
-  // an unset limit is the client's no limit
+  // an unset limit is the bucket's no limit
   let bucket = |limit: Option<u32>| Arc::new(TokenBucket::for_speed(limit.unwrap_or(0)));
   let mut buckets = HashMap::from([(
     PRIVILEGED_GROUP.to_string(),
@@ -122,7 +123,7 @@ impl Governor {
       let last = granting.clone();
       Box::pin(async move {
         // the client sees a cancel and ends the upload
-        let Ok(granted) = bucket.get(want, &cancel).await else {
+        let Some(granted) = bucket.get(want, &cancel).await else {
           return 0;
         };
         *lock(&last) = Some((bucket, granted));

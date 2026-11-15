@@ -385,7 +385,7 @@ pub fn request(method: &str, uri: &str, body: Option<serde_json::Value>) -> Requ
 
 /// What `bucket` grants in a fresh 100 ms: on a paused clock moved past the next refill, so the
 /// limit in force then decides it, and `u32::MAX` for no limit.
-pub async fn grants(bucket: &soulseek_client::TokenBucket) -> u32 {
+pub async fn grants(bucket: &crate::transfers::bucket::TokenBucket) -> u32 {
   tokio::time::pause();
   tokio::time::advance(std::time::Duration::from_millis(100)).await;
   let granted = bucket.get(u32::MAX, &CancellationToken::new()).await;

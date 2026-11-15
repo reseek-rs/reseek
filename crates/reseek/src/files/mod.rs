@@ -37,7 +37,6 @@ use cascade::Watcher;
 use chrono::Utc;
 use futures_util::stream;
 use rusqlite::OptionalExtension;
-use soulseek_client::TokenBucket;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, warn};
@@ -51,6 +50,7 @@ use crate::paths::Paths;
 use crate::safety::{self, Os};
 use crate::services::{ContentRequest, FileService, FileTarget};
 use crate::sync::Slots;
+use crate::transfers::bucket::TokenBucket;
 use delete::Kind;
 pub use local::{LocalFile, LocalPath};
 pub use placing::{create_file, move_file};
@@ -78,9 +78,9 @@ impl ServeSpeed {
   async fn allowed(&self, wanted: usize) -> usize {
     let wanted = u32::try_from(wanted).unwrap_or(u32::MAX);
     match self.bucket.get(wanted, &self.shutdown).await {
-      Ok(granted) => granted as usize,
+      Some(granted) => granted as usize,
       // the daemon stops; what is left goes without a limit
-      Err(_) => wanted as usize,
+      None => wanted as usize,
     }
   }
 }
@@ -116,7 +116,7 @@ impl Files {
   ) -> Arc<Self> {
     let limit = config.current().values.web.files.serve_speed_limit;
     let speed = ServeSpeed {
-      // the client's bucket takes 0 as no limit
+      // the bucket takes 0 as no limit
       bucket: Arc::new(TokenBucket::for_speed(limit.unwrap_or(0))),
       shutdown: shutdown.clone(),
     };

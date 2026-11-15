@@ -5,9 +5,10 @@
 use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension};
-use soulseek_client::{Governor, Reporter, TokenBucket};
+use soulseek_client::{Governor, Reporter};
 use tracing::{debug, info};
 
+use super::bucket::TokenBucket;
 use crate::api::error::ApiError;
 use crate::app::AppState;
 use crate::config::Options;

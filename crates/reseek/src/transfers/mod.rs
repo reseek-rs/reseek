@@ -3,6 +3,7 @@
 //! retention. The engines are [`downloads`] and [`uploads`]; [`service::Transfers`] answers
 //! the API with both.
 
+pub mod bucket;
 pub mod categories;
 pub mod cleanup;
 pub mod downloads;
