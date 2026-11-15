@@ -18,7 +18,8 @@ use uuid::Uuid;
 use super::intake::{QUEUED_PER_ADDRESS, QUEUED_USERS};
 use super::{InFlight, OVERWHELMED, QUEUE_FULL};
 use crate::network::resolvers::tests::{edges, exposed, from};
-use crate::network::resolvers::{enqueue_download, place_in_queue};
+use crate::network::resolvers::{enqueue_download, place_in_queue, user_info};
+use crate::testing::soulseek::Server;
 use crate::testing::{TestApp, app};
 use crate::transfers::fixtures::{Row, insert};
 use crate::transfers::state::State;
@@ -45,14 +46,51 @@ async fn shared_app(extra: &str) -> (tempfile::TempDir, TestApp) {
   (files, app)
 }
 
+/// Where [`asked`] asks from, and where [`reported_app`]'s server says every user is.
+const REPORTED: &str = "198.51.100.7";
+
 /// What `username` asking for `filename` is told: `None` when it is queued.
 async fn asked(app: &TestApp, username: &str, filename: &str) -> Option<String> {
-  let peer = from("198.51.100.7");
+  asked_from(app, REPORTED, username, filename).await
+}
+
+/// [`asked`], the request coming from `ip`.
+async fn asked_from(app: &TestApp, ip: &str, username: &str, filename: &str) -> Option<String> {
+  let peer = from(ip);
   match enqueue_download(&edges(app), username, peer, &RemoteFilename::from(filename)).await {
     Ok(()) => None,
     Err(ClientError::DownloadEnqueue(reason)) => Some(reason),
     Err(other) => panic!("not a refusal: {other}"),
   }
+}
+
+/// [`shared_app`] logged in to a scripted server that says every user is online, not
+/// privileged, and at [`REPORTED`].
+async fn reported_app(extra: &str) -> (tempfile::TempDir, TestApp, Server) {
+  use soulseek_proto::server::{GetPeerAddressResponse, UserStatus};
+  use soulseek_proto::{ServerRequest, ServerResponse, UserPresence};
+
+  let files = tempfile::tempdir().unwrap();
+  let app = crate::testing::soulseek::app(&config(files.path(), extra)).await;
+  let server = Server::start(|request| match request {
+    ServerRequest::GetPeerAddress(asked) => {
+      vec![ServerResponse::GetPeerAddress(GetPeerAddressResponse {
+        username: asked.username.clone(),
+        ip: REPORTED.parse().unwrap(),
+        port: 2234,
+        obfuscation: None,
+      })]
+    }
+    ServerRequest::GetStatus(asked) => vec![ServerResponse::GetStatus(UserStatus {
+      username: asked.username.clone(),
+      presence: UserPresence::Online,
+      is_privileged: false,
+    })],
+    _ => Vec::new(),
+  })
+  .await;
+  server.login(&app).await;
+  (files, app, server)
 }
 
 /// The value of the metric `name` in `app`'s exposition.
@@ -288,7 +326,8 @@ async fn one_address_queues_its_share_of_users_and_more_once_they_leave() {
 
 #[tokio::test]
 async fn a_privileged_user_is_queued_past_the_limits() {
-  let (_files, app) = shared_app("[transfers.upload.limits]\nqueued = { files = 1 }\n").await;
+  let (_files, app, _server) =
+    reported_app("[transfers.upload.limits]\nqueued = { files = 1 }\n").await;
   let mut queued = Row::new(
     "vip",
     TransferDirection::Upload,
@@ -312,6 +351,51 @@ async fn a_privileged_user_is_queued_past_the_limits() {
     .collect();
   assert!(files.contains(&SHARED), "{files:?}");
   assert_eq!(metric(&app, "reseek_enqueue_requests_accepted"), "1");
+}
+
+#[tokio::test]
+async fn a_request_in_a_buddys_name_from_another_address_is_a_strangers() {
+  let (_files, app, _server) = reported_app(
+    "[transfers.upload]\nslots = 6\n\
+     [transfers.upload.limits]\nqueued = { files = 1 }\n\
+     [transfers.groups.default.upload]\nslots = 2\n\
+     [transfers.groups.buddies.upload]\nslots = 5\n\
+     [transfers.groups.buddies.upload.limits.queued]\nfiles = 0\n",
+  )
+  .await;
+  let (status, _) = app.call("PUT", "/api/v0/users/bob/buddy", None).await;
+  assert_eq!(status, 204);
+  let mut queued = Row::new(
+    "bob",
+    TransferDirection::Upload,
+    TransferStates::QueuedLocally,
+  );
+  queued.filename = "Music\\Album\\02.mp3".to_string();
+  insert(&app.state.transfers, vec![queued]).await;
+  let edges = edges(&app);
+  let stranger = "203.0.113.50";
+
+  // as a stranger, bob's name is held to everyone's limits, waits where everyone waits, and is
+  // told no place
+  assert_eq!(
+    asked_from(&app, stranger, "bob", SHARED).await.as_deref(),
+    Some("Too many files")
+  );
+  let info = user_info(&edges, "bob", from(stranger)).await;
+  assert_eq!(info.upload_slots, 2);
+  // from where the server says bob is, he is a buddy
+  assert_eq!(asked(&app, "bob", SHARED).await, None);
+  let info = user_info(&edges, "bob", from(REPORTED)).await;
+  assert_eq!(info.upload_slots, 5);
+  let file = RemoteFilename::from(SHARED);
+  assert_eq!(
+    place_in_queue(&edges, "bob", from(REPORTED), &file).await,
+    Some(1)
+  );
+  assert_eq!(
+    place_in_queue(&edges, "bob", from(stranger), &file).await,
+    None
+  );
 }
 
 #[tokio::test]
@@ -375,10 +459,14 @@ async fn a_peer_first_in_line_is_told_place_one() {
     .queue
     .enqueue(Uuid::new_v4(), "alice", SHARED);
   let peer = from("198.51.100.7");
-  let place =
-    |filename: &str| place_in_queue(&edges(&app), "alice", peer, &RemoteFilename::from(filename));
-  assert_eq!(place(SHARED), Some(1));
-  assert_eq!(place("Music\\Album\\02.mp3"), None);
+  let edges = edges(&app);
+  let place = |filename: &str| {
+    let filename = RemoteFilename::from(filename);
+    let edges = edges.clone();
+    async move { place_in_queue(&edges, "alice", peer, &filename).await }
+  };
+  assert_eq!(place(SHARED).await, Some(1));
+  assert_eq!(place("Music\\Album\\02.mp3").await, None);
 }
 
 #[tokio::test]

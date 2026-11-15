@@ -252,12 +252,13 @@ impl Uploads {
     lock(&self.intake.addresses).insert(username.to_string(), from);
   }
 
-  /// Decides the request of `username`, who sees the shares of the groups `sees`, for `filename`,
-  /// which passed the network's edge, and queues the upload when it is accepted. A refusal is
-  /// the reason the peer is told.
+  /// Decides the request of `username` from `from`, who sees the shares of the groups `sees`,
+  /// for `filename`, which passed the network's edge, and queues the upload when it is accepted.
+  /// A refusal is the reason the peer is told.
   pub async fn request(
     &self,
     username: &str,
+    from: IpAddr,
     filename: &str,
     sees: BTreeSet<String>,
   ) -> Result<(), ClientError> {
@@ -266,7 +267,7 @@ impl Uploads {
     let this = self.this();
     let (username, filename) = (username.to_owned(), filename.to_owned());
     let ran = self.tasks.spawn(
-      async move { this.decide_request(&username, &filename, &sees).await }.in_current_span(),
+      async move { this.decide_request(&username, from, &filename, &sees).await }.in_current_span(),
     );
     match ran.await {
       Ok(result) => result,
@@ -282,6 +283,7 @@ impl Uploads {
   async fn decide_request(
     &self,
     username: &str,
+    from: IpAddr,
     filename: &str,
     sees: &BTreeSet<String>,
   ) -> Result<(), ClientError> {
@@ -299,7 +301,7 @@ impl Uploads {
       return Ok(());
     }
     let started = Instant::now();
-    let decision = self.decide(username, filename, sees).await;
+    let decision = self.decide(username, Some(from), filename, sees).await;
     let decided = millis(started);
     enqueue.decision_latency.observe(decided);
     enqueue.decision_latency_current.update(decided);
@@ -422,7 +424,7 @@ impl Uploads {
     if self.sending_already(username, filename, false).await? {
       return Ok(Enqueued::Already);
     }
-    match self.decide(username, filename, sees).await {
+    match self.decide(username, None, filename, sees).await {
       Ok(located) => self.enqueue(username, filename, located, false).await,
       Err(Refusal::Peer(reason)) => Err(ClientError::DownloadEnqueue(reason.to_string())),
       Err(Refusal::Later) => Err(ClientError::DownloadUnavailable),
@@ -431,10 +433,12 @@ impl Uploads {
   }
 
   /// Whether `username` may have `filename`: shared with them, on disk, and within the limits
-  /// of their group unless they are privileged.
+  /// of their group unless they are privileged. A request `from` an address that does not
+  /// count as theirs is held to a stranger's limits; `None` is a file we send of our own accord.
   async fn decide(
     &self,
     username: &str,
+    from: Option<IpAddr>,
     filename: &str,
     sees: &BTreeSet<String>,
   ) -> Result<Located, Refusal> {
@@ -445,6 +449,12 @@ impl Uploads {
     };
     let client = self.client().map_err(Refusal::Failed)?;
     let placement = self.users.fetch_placement(&client, username, false).await;
+    let placement = match from {
+      Some(from) if !self.users.counts_as(username, &placement, from).await => {
+        self.users.stranger()
+      }
+      _ => placement,
+    };
     if placement.privileged {
       debug!(username, "Limits bypassed; the user is privileged");
       return Ok(located);

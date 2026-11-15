@@ -1,8 +1,9 @@
 //! Whether a request in a group member's name comes from the member. A peer can give any name
-//! when it connects, so the shares a member's groups see, and the files only some groups may
-//! send us, are for a request from the address the server last reported for the name, which the
-//! client keeps for up to a minute. A member behind another address, such as one on our own
-//! network, is treated as everyone, and users behind one public address cannot be told apart.
+//! when it connects, so the shares a member's groups see, the files only some groups may send
+//! us, and the limits an upload request is held to and the slots and place it is told of, are
+//! for a request from the address the server last reported for the name, which the client keeps
+//! for up to a minute. A member behind another address, such as one on our own network, is
+//! treated as everyone, and users behind one public address cannot be told apart.
 
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
@@ -15,6 +16,7 @@ use soulseek_client::ClientError;
 use tracing::{debug, warn};
 
 use super::Directory;
+use super::groups::{self, Facts, Placement};
 
 /// How often a request in one member's name from one other address is warned of.
 const WARN_EVERY: Duration = Duration::from_secs(60);
@@ -92,6 +94,19 @@ impl Directory {
     }
     let at = self.confirming_address(username, from).await?;
     Some((standing, at))
+  }
+
+  /// Whether a request in `username`'s name from `from` is decided by `placement`, theirs:
+  /// always when it puts them in no group, as it does anyone; else only from the address the
+  /// server reports for them.
+  pub async fn counts_as(&self, username: &str, placement: &Placement, from: IpAddr) -> bool {
+    placement.groups.is_empty() || self.confirms(username, from).await
+  }
+
+  /// The groups a request is decided by when it does not count as its user's: those of a user
+  /// nothing is known of.
+  pub fn stranger(&self) -> Placement {
+    groups::place(&self.config.current().values, &Facts::default(), false)
   }
 
   /// Whether a request in `username`'s name from `from` comes from the address the server

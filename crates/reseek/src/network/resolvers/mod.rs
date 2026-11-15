@@ -9,7 +9,7 @@
 mod browse;
 mod search;
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, OnceLock, Weak};
 
 use api_types::activity::ActivityKind;
@@ -139,7 +139,7 @@ pub fn resolvers(edges: Arc<Edges>) -> Resolvers {
     })),
     place_in_queue_resolver: Some(Arc::new(move |username, endpoint, filename| {
       let edges = place.clone();
-      Box::pin(async move { Ok(place_in_queue(&edges, &username, endpoint, &filename)) })
+      Box::pin(async move { Ok(place_in_queue(&edges, &username, endpoint, &filename).await) })
     })),
     receive_offer: Some(Arc::new(move |username, endpoint, filename, size| {
       let edges = receiving.clone();
@@ -214,7 +214,9 @@ pub async fn enqueue_download(
     return Err(ClientError::DownloadEnqueue(refusal));
   }
   let sees = edges.users.sees_from(username, endpoint.ip()).await;
-  uploads.request(username, filename.as_str(), sees).await?;
+  uploads
+    .request(username, endpoint.ip(), filename.as_str(), sees)
+    .await?;
   uploads.queued_from(username, endpoint.ip());
   edges.activity.queued(username, filename.as_str());
   Ok(())
@@ -271,23 +273,33 @@ pub async fn user_info(edges: &Edges, username: &str, endpoint: SocketAddr) -> U
     };
   }
   edges.activity.record(Some(username), ActivityKind::Profile);
-  profile(edges, username).await
+  profile(edges, username, endpoint.ip()).await
 }
 
 /// Our user info: our description and picture, who may send us files, and the slots of the
-/// group `username` would be queued in and the place they would take. Their group is asked of
-/// the server when nothing is known of them, so a leecher is known as one.
-async fn profile(edges: &Edges, username: &str) -> UserInfo {
+/// group `username` would be queued in and the place they would take, or a stranger's when the
+/// request from `from` does not count as theirs. Their group is asked of the server when nothing
+/// is known of them, so a leecher is known as one.
+async fn profile(edges: &Edges, username: &str, from: IpAddr) -> UserInfo {
   let options = edges.config.current();
   let local = crate::profile::local_info(&options.values).await;
-  if let Some(network) = edges.network.upgrade() {
-    let placement = edges
-      .users
-      .fetch_placement(network.client(), username, false)
-      .await;
-    debug!(username, queue = placement.queue, "user info asked for");
-  }
-  let forecast = forecast(edges, username);
+  let forecast = match edges.network.upgrade() {
+    Some(network) => {
+      let users = &edges.users;
+      let placement = users
+        .fetch_placement(network.client(), username, false)
+        .await;
+      let placement = if users.counts_as(username, &placement, from).await {
+        placement
+      } else {
+        users.stranger()
+      };
+      debug!(username, queue = placement.queue, "user info asked for");
+      edges.uploads().forecast_in(&placement.queue)
+    }
+    // the network goes only when the daemon stops
+    None => forecast(edges, username),
+  };
   UserInfo {
     description: local.description,
     picture: local.picture,
@@ -299,14 +311,22 @@ async fn profile(edges: &Edges, username: &str) -> UserInfo {
 }
 
 /// A peer asks for its place in our upload queue: a blocked user is not answered, nor a file
-/// the queue does not hold.
-pub fn place_in_queue(
+/// the queue does not hold, nor a request that does not count as the user's, since the queue
+/// holds nothing of a stranger's under their name.
+pub async fn place_in_queue(
   edges: &Edges,
   username: &str,
   endpoint: SocketAddr,
   filename: &RemoteFilename,
 ) -> Option<u32> {
   if blocked(edges, username, Some(endpoint), BlockScope::Uploads) {
+    return None;
+  }
+  let users = &edges.users;
+  if !users
+    .counts_as(username, &users.placement(username), endpoint.ip())
+    .await
+  {
     return None;
   }
   edges.uploads().place(username, filename.as_str())
@@ -379,7 +399,7 @@ pub(crate) mod tests {
       ),
       (0, i32::MAX as u32, false)
     );
-    assert_eq!(place_in_queue(&edges, "mallory", peer, &file), None);
+    assert_eq!(place_in_queue(&edges, "mallory", peer, &file).await, None);
 
     // an address the configuration blocks is blocked whoever connects from it
     let blocked_network = from("192.0.2.9");
