@@ -2188,6 +2188,29 @@ async fn alice_watched_sharing() -> (
 }
 
 #[tokio::test]
+async fn a_status_we_asked_for_leaves_the_push_to_the_asker() {
+  let app = app(CONFIG, &[]).await;
+  let users = &app.state.users;
+  users.set_notes("alice", "kind".into()).await.unwrap();
+  users.reported().update("alice", true, |_| {});
+  let mut stream = app
+    .stream_from(
+      "127.0.0.1:1",
+      request("GET", "/api/v0/live?topics=users", None),
+    )
+    .await;
+  stream.until("hello").await;
+  // the reply to our own ask that makes her privileged, which the asker pushes
+  users
+    .status_received("alice", UserPresence::Online, true, true)
+    .await;
+  users.set_notes("bob", "marker".into()).await.unwrap();
+  let pushed = pushed_before(&mut stream, "alice", "bob").await;
+  assert!(pushed.is_empty(), "{pushed:?}");
+  assert!(users.placement("alice").privileged, "kept all the same");
+}
+
+#[tokio::test]
 async fn statistics_that_move_a_watched_users_groups_push_them_once() {
   let (app, _server, mut stream) = alice_watched_sharing().await;
   let users = &app.state.users;

@@ -683,11 +683,13 @@ impl Directory {
     again: bool,
   ) -> Result<(), ClientError> {
     let completed = |groups: &GroupCache| lock(&groups.watches).get(username).copied();
+    // in line before the count is read, so a holder ending meanwhile sees us and keeps it
+    let waiting = self.groups.watching.wait(username);
     let before = completed(&self.groups);
     let turn = WatchTurn {
       groups: &self.groups,
       username,
-      turn: self.groups.watching.take(username).await,
+      turn: waiting.take().await,
     };
     if completed(&self.groups) != before || (!again && self.is_watched(username)) {
       return Ok(());
@@ -979,7 +981,7 @@ impl Directory {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use soulseek_proto::server::{WatchUserResponse, WatchedUser};
+  use soulseek_proto::server::{UserStatus, WatchUserResponse, WatchedUser};
   use soulseek_proto::{ServerRequest, ServerResponse};
 
   /// The server's answer to a watch of `username`, who exists when `exists`.
@@ -1003,6 +1005,11 @@ mod tests {
       ServerRequest::WatchUser(asked) if asked.username != "dave" => {
         vec![watched(&asked.username, asked.username != "nobody")]
       }
+      ServerRequest::GetStatus(asked) => vec![ServerResponse::GetStatus(UserStatus {
+        username: asked.username.clone(),
+        presence: soulseek_proto::UserPresence::Online,
+        is_privileged: false,
+      })],
       _ => Vec::new(),
     })
     .await;
