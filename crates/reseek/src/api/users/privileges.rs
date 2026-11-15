@@ -55,7 +55,7 @@ async fn own_privileges(
     .map_err(|e| {
       ApiError::upstream(
         "The server did not say how many privileges are left",
-        Some(e.to_string()),
+        Some(crate::network::error_text(&e)),
       )
     })?;
   Ok(Json(app.state.current().user.privileges.clone()))
@@ -93,7 +93,7 @@ async fn give_privileges(
   let left = client.get_privileges().await.map_err(|e| {
     ApiError::upstream(
       "The server did not say how many privileges are left",
-      Some(e.to_string()),
+      Some(crate::network::error_text(&e)),
     )
   })?;
   let days_left = left.as_secs() / DAY;
@@ -106,7 +106,12 @@ async fn give_privileges(
   client
     .grant_user_privileges(&username, gift.days)
     .await
-    .map_err(|e| ApiError::upstream("The privileges were not given", Some(e.to_string())))?;
+    .map_err(|e| {
+      ApiError::upstream(
+        "The privileges were not given",
+        Some(crate::network::error_text(&e)),
+      )
+    })?;
   info!(
     by = admin.principal.subject,
     username,

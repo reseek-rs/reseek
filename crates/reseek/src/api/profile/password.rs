@@ -64,7 +64,7 @@ async fn change_password(
     .map_err(|e| {
       ApiError::upstream(
         "The server did not change the password",
-        Some(e.to_string()),
+        Some(crate::network::error_text(&e)),
       )
     })?;
   app.network.watchdog().password_changed(&change.password);

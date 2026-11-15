@@ -59,7 +59,10 @@ fn one_line(text: &str) -> String {
 pub(super) fn unsent(error: ClientError) -> ApiError {
   match error {
     ClientError::InvalidOperation(detail) => ApiError::conflict("Not logged in", Some(detail)),
-    other => ApiError::upstream("Could not reach the server", Some(other.to_string())),
+    other => ApiError::upstream(
+      "Could not reach the server",
+      Some(crate::network::error_text(&other)),
+    ),
   }
 }
 

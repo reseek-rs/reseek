@@ -171,7 +171,7 @@ fn unreachable(username: &str, error: ClientError) -> ApiError {
     ClientError::InvalidOperation(message) => ApiError::unavailable(Some(message)),
     other => ApiError::upstream(
       format!("Could not reach {username}"),
-      Some(other.to_string()),
+      Some(crate::network::error_text(&other)),
     ),
   }
 }

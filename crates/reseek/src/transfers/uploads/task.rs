@@ -76,7 +76,7 @@ fn reason(error: &ClientError) -> String {
     ClientError::Canceled => CANCELED.to_string(),
     other => match input_error(other) {
       Some(input) => input.to_string(),
-      None => other.to_string(),
+      None => crate::network::error_text(other),
     },
   }
 }

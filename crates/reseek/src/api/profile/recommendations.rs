@@ -32,7 +32,7 @@ fn unanswered(what: &str, error: ClientError) -> ApiError {
     ClientError::InvalidOperation(detail) => ApiError::unavailable(Some(detail)),
     other => ApiError::upstream(
       format!("The server did not send {what}"),
-      Some(other.to_string()),
+      Some(crate::network::error_text(&other)),
     ),
   }
 }
