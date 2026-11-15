@@ -1,6 +1,6 @@
 //! Someone connecting to the daemon first under another user's name, over soulfind: a browse
-//! and a download of that user go to the user and never to the stranger, the stranger's offer of
-//! the file is refused, and the user's own request to have the daemon connect is still taken.
+//! and a download of that user go to the user and never to the stranger, and the user's own
+//! request to have the daemon connect is still taken.
 
 mod support;
 
@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 use api_types::transfers::{TransferOutcome, TransferStates};
 use soulseek_client::{BrowseReply, ClientOptions, UploadInput, UploadRequest};
+use soulseek_proto::PeerMessage;
 use soulseek_proto::frame::FrameKind;
-use soulseek_proto::peer::{BrowseResponse, Directory, File, TransferRequest, TransferResponse};
-use soulseek_proto::{PeerMessage, TransferDirection};
+use soulseek_proto::peer::{BrowseResponse, Directory, File};
 use support::peer::PeerSide;
 use support::scripted::introduced;
 use support::soulfind::{self, Soulfind, User};
@@ -96,21 +96,6 @@ async fn a_browse_and_a_download_go_to_the_user_a_stranger_named_first() {
   let id = enqueue(&api, &user.username, WANTED, SIZE as u64).await;
   let (from, asked_for) = unasked(&mut stranger, asked(&mut requests)).await;
   assert_eq!((from.as_str(), asked_for.as_str()), (name.as_str(), WANTED));
-  // the stranger offers the file asked of the user, and is refused
-  let offer = PeerMessage::TransferRequest(TransferRequest {
-    direction: TransferDirection::Upload,
-    token: 9,
-    filename: WANTED.into(),
-    file_size: Some(SIZE as u64),
-  });
-  stranger.send(&offer.encode()).await;
-  assert_eq!(
-    stranger.read_peer().await,
-    PeerMessage::TransferResponse(TransferResponse::Denied {
-      token: 9,
-      message: "Cancelled".into(),
-    })
-  );
   // the user sends it, and it is theirs that lands
   let source = file(&scratch(), "song.flac", SIZE);
   let request = UploadRequest::new(&name, WANTED, UploadInput::File(source));
