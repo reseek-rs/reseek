@@ -22,7 +22,7 @@ use crate::loaded::{Loaded, NotApplied};
 use crate::overrides::Lasts;
 use crate::schema::keep_secrets;
 use crate::{Apply, Error, Key, Root, lock, tree};
-use events::{FileEvents, SETTLE, Settle, quiet};
+use events::{FileEvents, SETTLE, Settle, Writing, quiet};
 use reload::{Read, pending};
 
 /// How long to wait before reading the files again after a reload failed, since an editor that
@@ -112,6 +112,9 @@ struct State<T> {
   /// why the last reading of the files failed, kept until one succeeds, so a change that does
   /// not read them, such as an override, still shows it
   failed: Option<Failed>,
+  /// a change was reported as not standing yet and has not loaded since, so files as last
+  /// attempted are still to be loaded
+  waiting: bool,
 }
 
 /// A reading of the files that failed, as the configuration in effect shows it.
@@ -200,6 +203,7 @@ impl<T: Root> Watcher<T> {
       reconnected: loaded.tree.clone(),
       attempted: loaded.files.clone(),
       failed: None,
+      waiting: false,
       layers,
     };
     Ok(Self {
@@ -240,7 +244,12 @@ impl<T: Root> Watcher<T> {
     });
     if files.is_some() {
       // a failure is logged and kept in the current state where it happens
-      drop(self.reload_files(true).instrument(span.clone()).await);
+      drop(
+        self
+          .reload_files(true, || false)
+          .instrument(span.clone())
+          .await,
+      );
     }
     let this = self.clone();
     tokio::spawn(this.run(files, events, cancel).instrument(span));
@@ -265,7 +274,7 @@ impl<T: Root> Watcher<T> {
   /// Reads the files again, as a change to them would: a failure is tried once more after a
   /// moment, then reported, and the values in effect stay. Returns what changed.
   pub async fn reload(&self) -> Result<Option<Arc<Change<T>>>, Error> {
-    self.reload_files(false).await
+    self.reload_files(false, || false).await
   }
 
   /// What the configuration would load with if the file `name` held `text`: its warnings, and
@@ -422,9 +431,9 @@ impl<T: Root> Watcher<T> {
   }
 
   /// Reloads the files once what they hold stands: quiet for `settle.debounce`, then, where the
-  /// system says when a writer closes a file, with no writer left, and elsewhere with the same
-  /// bytes on two reads `settle.again` apart. A file that does not stand within `settle.limit`
-  /// is reported and not applied; its next change starts the wait over. False when canceled.
+  /// events tell a file's writer, with no writer left, and elsewhere with the same bytes on two
+  /// reads `settle.again` apart. A file that does not stand within `settle.limit` is reported and
+  /// not applied; its next change starts the wait over. False when canceled.
   async fn reload_settled(
     &self,
     files: &mut FileEvents,
@@ -440,10 +449,10 @@ impl<T: Root> Watcher<T> {
         Err(_) => break,
       }
       files.watch_new_dirs();
-      let open = match files.writing() {
-        Some(open) => open,
-        None => match self.moving(settle.again, cancel).await {
-          Some(moving) if moving.is_empty() => Vec::new(),
+      match files.writing() {
+        Writing::Closed => {}
+        Writing::Unknown => match self.moving(settle.again, cancel).await {
+          Some(moving) if moving.is_empty() => files.stood(),
           Some(moving) => {
             debug!(
               files = moving.join(", "),
@@ -453,21 +462,27 @@ impl<T: Root> Watcher<T> {
           }
           None => return false,
         },
-      };
-      if open.is_empty() {
-        // a failure is logged and kept in the current state where it happens
-        drop(self.reload_files(true).await);
+        Writing::Open(open) => {
+          debug!(files = ?open, "configuration file still open to a writer");
+          // the writer's close is an event
+          tokio::select! {
+            () = cancel.cancelled() => return false,
+            () = events.notified() => {}
+            () = tokio::time::sleep_until(limit) => break,
+          }
+          continue;
+        }
+      }
+      // a failure is logged and kept in the current state where it happens
+      drop(self.reload_files(true, files.writer_open()).await);
+      if !matches!(files.writing(), Writing::Open(_)) {
         return true;
       }
-      debug!(files = ?open, "configuration file still open to a writer");
-      // the writer's close is an event
-      tokio::select! {
-        () = cancel.cancelled() => return false,
-        () = events.notified() => {}
-        () = tokio::time::sleep_until(limit) => break,
-      }
     }
-    let open = files.writing().unwrap_or_default();
+    let open = match files.writing() {
+      Writing::Open(open) => open,
+      Writing::Closed | Writing::Unknown => Vec::new(),
+    };
     // an error only means the runtime is stopping
     self
       .blocking(move |state, shared| state.unsettled(shared, &open))
@@ -499,9 +514,15 @@ impl<T: Root> Watcher<T> {
     Some(names)
   }
 
-  /// Reloads the files, once more after [`RETRY`] if that fails, then reports the failure.
-  /// With `only_if_changed`, files as the last attempt read them are not loaded again.
-  async fn reload_files(&self, only_if_changed: bool) -> Result<Option<Arc<Change<T>>>, Error> {
+  /// Reloads the files, once more after [`RETRY`] if that fails, then reports the failure; when
+  /// `writer_open` says a writer has a file open by then, the failure is not reported and the
+  /// files are not read again. With `only_if_changed`, files as the last attempt read them are
+  /// not loaded again.
+  async fn reload_files(
+    &self,
+    only_if_changed: bool,
+    writer_open: impl Fn() -> bool,
+  ) -> Result<Option<Arc<Change<T>>>, Error> {
     let first = self
       .blocking(move |state, shared| state.attempt(shared, only_if_changed))
       .await?;
@@ -512,6 +533,10 @@ impl<T: Root> Watcher<T> {
     };
     debug!(error = %failure.error, "configuration reload failed, trying again");
     tokio::time::sleep(RETRY).await;
+    if writer_open() {
+      debug!("configuration file opened by a writer, read again once it closes");
+      return Ok(None);
+    }
     self
       .blocking(move |state, shared| match state.attempt(shared, true) {
         Attempt::Unchanged => Err(state.report(shared, failure, Read::Files)),

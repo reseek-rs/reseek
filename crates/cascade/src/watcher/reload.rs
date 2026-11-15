@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use serde_json::Value;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use super::{Attempt, ByApply, Change, Failed, Shared, State};
 use crate::describe::Apply;
@@ -23,6 +23,7 @@ impl<T: Root> State<T> {
     // a file that cannot be read counts as changed, and loading it says why
     if let Ok(files) = self.layers.files_now()
       && only_if_changed
+      && !self.waiting
       && files == self.attempted
     {
       debug!("configuration files are as last read");
@@ -34,11 +35,11 @@ impl<T: Root> State<T> {
     }
   }
 
-  /// The files as they are on disk now, `None` when they are as the last attempt read them, or
-  /// cannot be read, which loading them says.
+  /// The files as they are on disk now, `None` when they are as the last attempt read them and
+  /// no change waits to be read, or cannot be read, which loading them says.
   pub(super) fn changed_files(&self) -> Option<Vec<LoadedFile>> {
     let files = self.layers.files_now().ok()?;
-    (files != self.attempted).then_some(files)
+    (self.waiting || files != self.attempted).then_some(files)
   }
 
   /// Reports the files changed since the last attempt, and those of `open` a writer still has,
@@ -59,6 +60,7 @@ impl<T: Root> State<T> {
       return;
     }
     self.report(shared, Error::Unsettled(names).into(), Read::Files);
+    self.waiting = true;
   }
 
   /// Loads the files and makes them the configuration in effect.
@@ -69,6 +71,7 @@ impl<T: Root> State<T> {
     }
     let loaded = self.layers.load_at(Utc::now())?;
     self.failed = None;
+    self.waiting = false;
     Ok(self.publish(shared, loaded))
   }
 
@@ -171,11 +174,13 @@ impl<T: Root> State<T> {
       .iter()
       .map(|f| f.path.display().to_string())
       .collect();
-    error!(
-      error = %message,
-      files = files.join(", "),
-      "configuration not loaded, the values in effect stay"
-    );
+    let files = files.join(", ");
+    if let Error::Unsettled(_) = failure.error {
+      // the files are applied once they stand, which needs no one to act
+      warn!(error = %message, files, "configuration not loaded yet, the values in effect stay");
+    } else {
+      error!(error = %message, files, "configuration not loaded, the values in effect stay");
+    }
     let previous = shared.current.borrow().clone();
     let not_applied = match &failure.tree {
       Some(tree) => {
