@@ -110,10 +110,17 @@ pub enum Error {
     #[source]
     source: std::io::Error,
   },
-  /// files that stayed open to a writer, or kept changing, for as long as the watcher waits for
-  /// a file to stand; by name
+  /// files that kept changing for as long as the watcher waits for a file to stand; by name
   #[error("{} still being written, read again once it stands", .0.join(", "))]
   Unsettled(Vec<String>),
+  /// files written to and not closed for as long as the watcher waits for a file to stand; by
+  /// name
+  #[error(
+    "{} still open to the program writing it, read again once it is closed; where the \
+     filesystem tells of changes but not of a writer closing a file, watch the files by polling",
+    .0.join(", ")
+  )]
+  Unclosed(Vec<String>),
   /// the runtime is shutting down, so the work could not run
   #[error("the configuration watcher has stopped")]
   Stopped,

@@ -35,15 +35,15 @@ impl<T: Root> State<T> {
     }
   }
 
-  /// The files as they are on disk now, `None` when they are as the last attempt read them and
-  /// no change waits to be read, or cannot be read, which loading them says.
+  /// The files as they are on disk now, `None` when they are as the last attempt read them, or
+  /// cannot be read, which loading them says.
   pub(super) fn changed_files(&self) -> Option<Vec<LoadedFile>> {
     let files = self.layers.files_now().ok()?;
-    (self.waiting || files != self.attempted).then_some(files)
+    (files != self.attempted).then_some(files)
   }
 
   /// Reports the files changed since the last attempt, and those of `open` a writer still has,
-  /// as not standing yet: the values in effect stay.
+  /// as not standing yet, as not closed when a writer has one: the values in effect stay.
   pub(super) fn unsettled(&mut self, shared: &Shared<T>, open: &[PathBuf]) {
     // a listing that fails names the files as last read
     let now = self
@@ -59,7 +59,12 @@ impl<T: Root> State<T> {
     if names.is_empty() {
       return;
     }
-    self.report(shared, Error::Unsettled(names).into(), Read::Files);
+    let error = if open.is_empty() {
+      Error::Unsettled(names)
+    } else {
+      Error::Unclosed(names)
+    };
+    self.report(shared, error.into(), Read::Files);
     self.waiting = true;
   }
 
@@ -175,7 +180,7 @@ impl<T: Root> State<T> {
       .map(|f| f.path.display().to_string())
       .collect();
     let files = files.join(", ");
-    if let Error::Unsettled(_) = failure.error {
+    if let Error::Unsettled(_) | Error::Unclosed(_) = failure.error {
       // the files are applied once they stand, which needs no one to act
       warn!(error = %message, files, "configuration not loaded yet, the values in effect stay");
     } else {
@@ -354,6 +359,31 @@ mod tests {
       watcher.current().not_applied["api_keys"].reason,
       "bad: not a good name"
     );
+  }
+
+  #[tokio::test]
+  async fn a_failed_reload_is_not_tried_again_while_a_writer_has_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[server]\nport = 2000\n").unwrap();
+    let watcher = watched(dir.path());
+    fs::write(&path, "[server\n").unwrap();
+    // asked once the wait before the second try is over: a writer opened the file meanwhile
+    // and has written part of it
+    let writer_open = || {
+      fs::write(&path, "[server]\nport = 3000\n").unwrap();
+      true
+    };
+    assert!(matches!(
+      watcher.reload_files(true, writer_open).await,
+      Ok(None)
+    ));
+    let current = watcher.current();
+    assert_eq!(
+      current.values.server.port, 2000,
+      "the part written is not read"
+    );
+    assert_eq!(current.load_error, None, "nor the first try reported");
   }
 
   #[tokio::test]

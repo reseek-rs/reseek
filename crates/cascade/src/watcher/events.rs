@@ -1,10 +1,10 @@
 //! Noticing that the configuration files changed: file notifications or polling, waiting for a
 //! burst of them to end, and telling when a writer still has a file open.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use notify::EventKind;
 use notify::event::{AccessKind, AccessMode, ModifyKind};
@@ -65,35 +65,19 @@ struct Seen {
   /// directories an event was about itself, such as one removed, renamed or made again, whose
   /// watch may have ended with it
   touched: Mutex<BTreeSet<PathBuf>>,
-  /// `None` where the system does not say when a writer closes a file
-  writers: Option<Mutex<Writers>>,
+  /// the files written to and not closed, renamed over or removed since; `None` where the
+  /// system does not say when a writer closes a file
+  writers: Option<Mutex<BTreeSet<PathBuf>>>,
 }
-
-/// The writers of the files, as the events tell them.
-#[derive(Default)]
-struct Writers {
-  /// when each file was last opened, by anyone, the watcher's own reads included
-  opened: BTreeMap<PathBuf, Instant>,
-  /// files a writer opened and wrote to and has not closed
-  open: BTreeSet<PathBuf>,
-  /// files written to by a writer whose opening was not seen, whose close may never come
-  unseen: BTreeSet<PathBuf>,
-}
-
-/// How soon after opening a file a writer that empties it as it opens it, as a shell redirect
-/// does, is seen writing to it. A write later than this is not known to come from that opening:
-/// the system does not say who opened a file, and the watcher's own reads open it too.
-const OPENED_TO_WRITTEN: Duration = Duration::from_millis(50);
 
 /// What the events say about the writers of the files.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Writing {
-  /// these files have a writer that has not closed them
+  /// these files were written to and their writer has not closed them
   Open(Vec<PathBuf>),
-  /// every writer seen closed its file
+  /// every file written to was closed since
   Closed,
-  /// the system does not say when a writer closes a file, or a file was written to by a writer
-  /// whose opening was not seen
+  /// the system does not say when a writer closes a file
   Unknown,
 }
 
@@ -122,7 +106,7 @@ impl FileEvents {
       dirs: dirs.clone(),
       events,
       touched: Mutex::new(BTreeSet::new()),
-      writers: closes.then(|| Mutex::new(Writers::default())),
+      writers: closes.then(|| Mutex::new(BTreeSet::new())),
     });
     let handler = {
       let seen = seen.clone();
@@ -161,13 +145,6 @@ impl FileEvents {
   pub(super) fn writer_open(&self) -> impl Fn() -> bool + use<> {
     let seen = self.seen.clone();
     move || matches!(seen.writing(), Writing::Open(_))
-  }
-
-  /// Forgets the writes of writers whose opening was not seen, once the files stood after them.
-  pub(super) fn stood(&self) {
-    if let Some(writers) = &self.seen.writers {
-      lock(writers).unseen.clear();
-    }
   }
 
   /// Watches each directory the files live in that exists and is not watched yet, or the
@@ -220,13 +197,11 @@ impl Seen {
     let Some(writers) = &self.writers else {
       return Writing::Unknown;
     };
-    let writers = lock(writers);
-    if !writers.open.is_empty() {
-      Writing::Open(writers.open.iter().cloned().collect())
-    } else if !writers.unseen.is_empty() {
-      Writing::Unknown
-    } else {
+    let open = lock(writers);
+    if open.is_empty() {
       Writing::Closed
+    } else {
+      Writing::Open(open.iter().cloned().collect())
     }
   }
 
@@ -236,7 +211,7 @@ impl Seen {
       && let Some(writers) = &self.writers
     {
       // events were lost, so which writers closed is not known; the files are read as they are
-      *lock(writers) = Writers::default();
+      lock(writers).clear();
     }
     let mut relevant = false;
     for path in &event.paths {
@@ -245,7 +220,7 @@ impl Seen {
         relevant = true;
       } else if named(&self.entries, path) {
         if let Some(writers) = &self.writers {
-          lock(writers).note(&event.kind, path);
+          note_writer(&mut lock(writers), &event.kind, path);
         }
         relevant = true;
       }
@@ -261,33 +236,21 @@ impl Seen {
   }
 }
 
-impl Writers {
-  /// Notes what `kind`, an event about the file at `path`, says about its writer.
-  fn note(&mut self, kind: &EventKind, path: &Path) {
-    match kind {
-      EventKind::Access(AccessKind::Open(_)) => {
-        self.opened.insert(path.to_path_buf(), Instant::now());
-      }
-      EventKind::Modify(ModifyKind::Data(_)) if !self.open.contains(path) => {
-        let just_opened = self
-          .opened
-          .get(path)
-          .is_some_and(|at| at.elapsed() <= OPENED_TO_WRITTEN);
-        if just_opened {
-          self.open.insert(path.to_path_buf());
-        } else {
-          self.unseen.insert(path.to_path_buf());
-        }
-      }
-      // the writer closed it, or the path now names another file, renamed there whole, or none
-      EventKind::Access(AccessKind::Close(AccessMode::Write))
-      | EventKind::Modify(ModifyKind::Name(_))
-      | EventKind::Remove(_) => {
-        self.open.remove(path);
-        self.unseen.remove(path);
-      }
-      _ => {}
+/// Notes in `open` what `kind`, an event about the file at `path`, says about its writer. The
+/// open that comes with a write says nothing more: it may be a reader's, the watcher's own
+/// included, and it comes after the emptying of a file opened to be rewritten on older kernels.
+fn note_writer(open: &mut BTreeSet<PathBuf>, kind: &EventKind, path: &Path) {
+  match kind {
+    EventKind::Modify(ModifyKind::Data(_)) => {
+      open.insert(path.to_path_buf());
     }
+    // the writer closed it, or the path now names another file, renamed there whole, or none
+    EventKind::Access(AccessKind::Close(AccessMode::Write))
+    | EventKind::Modify(ModifyKind::Name(_))
+    | EventKind::Remove(_) => {
+      open.remove(path);
+    }
+    _ => {}
   }
 }
 
@@ -372,23 +335,44 @@ mod tests {
     cancel.cancel();
   }
 
-  /// Starts watching a `config.toml` at port 2000 as `watch` says, then writes it the way a
-  /// shell redirect from a slow program does: truncated and part written, a `pause`, then the
-  /// rest. Gives the changes that followed.
-  async fn written_with_a_pause(watch: Watch, pause: Duration) -> Vec<(u16, String)> {
+  /// How a slow program writes a file: opened as `open` does, `first` written `before` after
+  /// the opening, a `pause`, then `rest`, and closed.
+  struct SlowWriter {
+    open: fn(&Path) -> fs::File,
+    before: Duration,
+    first: &'static str,
+    pause: Duration,
+    rest: &'static str,
+  }
+
+  /// A shell redirect into the file: emptied as it is opened.
+  fn emptied(path: &Path) -> fs::File {
+    fs::File::create(path).unwrap()
+  }
+
+  /// A shell append to the file.
+  fn appended(path: &Path) -> fs::File {
+    fs::OpenOptions::new().append(true).open(path).unwrap()
+  }
+
+  /// Starts watching, as `watch` says, a `config.toml` at port 2000 and an empty `config.d`,
+  /// then has `writer` write `name`. Gives the port, address and timeout in seconds of each
+  /// change that followed.
+  async fn slowly_written(watch: Watch, name: &str, writer: SlowWriter) -> Vec<(u16, String, u64)> {
     use std::io::Write;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("config.toml");
-    fs::write(&path, "[server]\nport = 2000\n").unwrap();
+    fs::write(dir.path().join("config.toml"), "[server]\nport = 2000\n").unwrap();
+    fs::create_dir(dir.path().join("config.d")).unwrap();
     let watcher = watched(dir.path());
     let mut changes = watcher.changes();
     let cancel = CancellationToken::new();
     watcher.start(watch, cancel.clone()).await;
 
-    let mut file = fs::File::create(&path).unwrap();
-    file.write_all(b"[server]\nport = 3000\n").unwrap();
-    tokio::time::sleep(pause).await;
-    file.write_all(b"address = \"whole\"\n").unwrap();
+    let mut file = (writer.open)(&dir.path().join(name));
+    tokio::time::sleep(writer.before).await;
+    file.write_all(writer.first.as_bytes()).unwrap();
+    tokio::time::sleep(writer.pause).await;
+    file.write_all(writer.rest.as_bytes()).unwrap();
     drop(file);
 
     let mut seen = vec![next_change(&mut changes).await];
@@ -400,29 +384,76 @@ mod tests {
       .iter()
       .map(|c| {
         let server = &c.current.values.server;
-        (server.port, server.address.clone())
+        (
+          server.port,
+          server.address.clone(),
+          server.timeout.as_secs(),
+        )
       })
       .collect()
   }
 
+  /// Rewrites `config.toml` as a shell redirect from a program that writes part, pauses, then
+  /// writes the rest.
+  fn rewritten(pause: Duration) -> SlowWriter {
+    SlowWriter {
+      open: emptied,
+      before: Duration::ZERO,
+      first: "[server]\nport = 3000\n",
+      pause,
+      rest: "address = \"whole\"\n",
+    }
+  }
+
+  /// What [`rewritten`] leaves, read once
+  fn whole() -> Vec<(u16, String, u64)> {
+    vec![(3000, "whole".to_string(), 5)]
+  }
+
   #[tokio::test]
   async fn a_file_written_with_a_pause_is_read_once_whole() {
-    let whole = [(3000, "whole".to_string())];
     // longer than the quiet, shorter than the quiet and the second read
     let pause = DEBOUNCE * 2;
     for watch in [Watch::Events, Watch::Poll(Duration::from_millis(50))] {
-      assert_eq!(written_with_a_pause(watch, pause).await, whole, "{watch:?}");
+      let read = slowly_written(watch, "config.toml", rewritten(pause)).await;
+      assert_eq!(read, whole(), "{watch:?}");
     }
   }
+
+  /// longer than the quiet and the second read
+  #[cfg(target_os = "linux")]
+  const LONG: Duration = Duration::from_millis(1500);
 
   #[cfg(target_os = "linux")]
   #[tokio::test]
   async fn a_writer_is_waited_for_until_it_closes_the_file() {
-    let pause = SETTLE.debounce + SETTLE.again * 2;
-    assert_eq!(
-      written_with_a_pause(Watch::Events, pause).await,
-      [(3000, "whole".to_string())]
-    );
+    let read = slowly_written(Watch::Events, "config.toml", rewritten(LONG)).await;
+    assert_eq!(read, whole());
+  }
+
+  #[cfg(target_os = "linux")]
+  #[tokio::test]
+  async fn a_new_drop_in_first_written_well_after_its_opening_is_read_once_whole() {
+    let writer = SlowWriter {
+      before: Duration::from_millis(450),
+      ..rewritten(LONG)
+    };
+    let read = slowly_written(Watch::Events, "config.d/10-a.toml", writer).await;
+    assert_eq!(read, whole());
+  }
+
+  #[cfg(target_os = "linux")]
+  #[tokio::test]
+  async fn a_slow_append_is_read_once_whole() {
+    let writer = SlowWriter {
+      open: appended,
+      before: Duration::from_millis(300),
+      first: "address = \"half\"\n",
+      pause: LONG,
+      rest: "timeout = \"9s\"\n",
+    };
+    let read = slowly_written(Watch::Events, "config.toml", writer).await;
+    assert_eq!(read, [(2000, "half".to_string(), 9)]);
   }
 
   /// The watcher over `dir` and its file events, watched as `poll` says
@@ -462,7 +493,11 @@ mod tests {
     assert_eq!(current.values.server.port, 2000);
     assert_eq!(
       current.load_error.as_deref(),
-      Some("config.toml still being written, read again once it stands")
+      Some(
+        "config.toml still open to the program writing it, read again once it is closed; where \
+         the filesystem tells of changes but not of a writer closing a file, watch the files by \
+         polling"
+      )
     );
 
     file.write_all(b"address = \"whole\"\n").unwrap();
@@ -597,13 +632,12 @@ mod tests {
     assert_eq!(watcher.current().load_error, None);
   }
 
-  /// A filesystem that tells of changes but not of the opening and closing that made them, as
-  /// some shared mounts do: the file is written where the watch does not see it, and only a
-  /// change is told.
+  /// On kernels before 6.8 a file opened to be rewritten is emptied before its opening is told.
+  /// The file is emptied where the watch does not see it, and the events are fed in that order.
   #[cfg(target_os = "linux")]
   #[tokio::test]
-  async fn a_write_whose_writer_is_not_seen_is_read_once_it_stands() {
-    use std::io::Write;
+  async fn a_file_emptied_before_its_opening_is_told_waits_for_its_writer() {
+    use notify::event::DataChange;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     fs::write(&path, "[server]\nport = 2000\n").unwrap();
@@ -613,73 +647,35 @@ mod tests {
     let (watcher, mut files, events) = settling(dir.path(), None);
     let cancel = CancellationToken::new();
 
-    let mut file = fs::OpenOptions::new()
-      .write(true)
-      .truncate(true)
-      .open(&link)
-      .unwrap();
-    file.write_all(b"[server]\nport = 3000\n").unwrap();
-    let modified = notify::Event::new(EventKind::Modify(ModifyKind::Data(
-      notify::event::DataChange::Any,
-    )))
-    .add_path(path.clone());
-    files.seen.note(&modified);
-    assert_eq!(files.writing(), Writing::Unknown);
+    let held = emptied(&link);
+    let told = |kind: EventKind| notify::Event::new(kind).add_path(path.clone());
+    files
+      .seen
+      .note(&told(EventKind::Modify(ModifyKind::Data(DataChange::Any))));
+    files
+      .seen
+      .note(&told(EventKind::Access(AccessKind::Open(AccessMode::Any))));
+    assert_eq!(files.writing(), Writing::Open(vec![path.clone()]));
     assert!(
       watcher
         .reload_settled(&mut files, &events, &cancel, SHORT)
         .await
     );
-    assert_eq!(watcher.current().values.server.port, 3000);
-    assert_eq!(watcher.current().load_error, None);
+    let current = watcher.current();
     assert_eq!(
-      files.writing(),
-      Writing::Closed,
-      "once read, the write is done with"
+      current.values.server.port, 2000,
+      "the empty file is not read"
     );
-    drop(file);
-  }
-
-  #[cfg(target_os = "linux")]
-  #[tokio::test]
-  async fn a_writer_that_opens_the_file_before_the_second_try_is_waited_for() {
-    use std::io::Write;
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("config.toml");
-    fs::write(&path, "[server]\nport = 2000\n").unwrap();
-    let (watcher, mut files, events) = settling(dir.path(), None);
-    let mut changes = watcher.changes();
-    let cancel = CancellationToken::new();
-
-    // a broken file, read after the quiet and tried again a moment later
-    fs::write(&path, "[server\n").unwrap();
-    let settled = tokio::spawn({
-      let (watcher, cancel) = (watcher.clone(), cancel.clone());
-      async move {
-        let settle = Settle {
-          limit: Duration::from_secs(5),
-          ..SETTLE
-        };
-        watcher
-          .reload_settled(&mut files, &events, &cancel, settle)
-          .await
-      }
-    });
-    // between the first try and the second
-    tokio::time::sleep(SETTLE.debounce + crate::watcher::RETRY / 2).await;
-    let mut file = fs::File::create(&path).unwrap();
-    file.write_all(b"[server]\nport = 3000\n").unwrap();
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    file.write_all(b"address = \"whole\"\n").unwrap();
-    drop(file);
-    assert!(settled.await.unwrap());
-
-    let mut read = Vec::new();
-    while let Ok(change) = changes.try_recv() {
-      let server = &change.current.values.server;
-      read.push((server.port, server.address.clone()));
-    }
-    assert_eq!(read, [(3000, "whole".to_string())]);
+    assert!(
+      current
+        .load_error
+        .as_deref()
+        .unwrap()
+        .starts_with("config.toml still open to the program writing it"),
+      "{:?}",
+      current.load_error
+    );
+    drop(held);
   }
 
   #[tokio::test]
