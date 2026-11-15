@@ -20,10 +20,12 @@
 
 <!-- cut in the middle: the head gives way and takes the ellipsis, the tail never shrinks. A tail
      wider than the whole box is cut before its extension, which stays. No whitespace inside the
-     spans, which keep it, so the text reads as the name it shows -->
+     spans, which keep it, so the text reads as the name it shows. The parts are boxes of their
+     own, which a control named by its text would read with spaces between, so the label says the
+     text whole -->
 {#snippet run(text: string)}{#if isolated}{#each pathParts(text) as part, i (i)}<bdi>{part}</bdi
       >{/each}{:else}{text}{/if}{/snippet}
-<span class={cn("flex min-w-0", className)} dir={path ? "ltr" : "auto"}
+<span class={cn("flex min-w-0", className)} dir={path ? "ltr" : "auto"} aria-label={text}
   >{#if head}<span class="min-w-0 overflow-hidden text-ellipsis whitespace-pre"
       >{@render run(head)}</span
     >{/if}<span class="flex max-w-full shrink-0 overflow-hidden"
