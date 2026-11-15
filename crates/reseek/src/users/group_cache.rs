@@ -42,7 +42,7 @@ const STALE: Duration = Duration::from_secs(4 * 3600);
 
 /// How many users the cache keeps that it may forget. A user we put in a group, one the server
 /// calls privileged, one it watches for us and one the upload queue holds are kept however
-/// many there are.
+/// many there are; the queue bounds how many users it holds.
 const KEPT: usize = 10_000;
 
 /// Lists the users the upload queue holds now, waiting or uploading.

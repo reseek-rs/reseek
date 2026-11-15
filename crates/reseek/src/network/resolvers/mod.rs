@@ -30,8 +30,8 @@ use crate::config::Options;
 use crate::shares::Shares;
 use crate::telemetry::Telemetry;
 use crate::transfers::downloads::Downloads;
-use crate::transfers::uploads::Uploads;
 pub use crate::transfers::uploads::{Forecast, NOT_SHARED, OVERWHELMED};
+use crate::transfers::uploads::{TOO_MANY_FILES, Uploads};
 use crate::users::{Directory as Users, upload_permitted};
 
 /// Requests with a `.` or `..` part, which a peer could send at any rate.
@@ -179,8 +179,9 @@ fn blocked(edges: &Edges, username: &str, endpoint: Option<SocketAddr>, scope: B
 }
 
 /// A peer asks us to queue an upload of `filename`: a name with a `.` or `..` part is refused,
-/// a request finding too many waiting to be decided is dropped, and a user blocked from uploads
-/// is told `blocking.refusal_message`; the upload engine decides the rest.
+/// a request finding too many waiting to be decided is dropped, one from a new user finding the
+/// queue holding as many users as it takes is refused, and a user blocked from uploads is told
+/// `blocking.refusal_message`; the upload engine decides the rest.
 pub async fn enqueue_download(
   edges: &Edges,
   username: &str,
@@ -196,6 +197,9 @@ pub async fn enqueue_download(
   }
   if uploads.overwhelmed(username) {
     return Err(ClientError::DownloadEnqueue(OVERWHELMED.into()));
+  }
+  if uploads.queue_full(username) {
+    return Err(ClientError::DownloadEnqueue(TOO_MANY_FILES.into()));
   }
   if blocked(edges, username, Some(endpoint), BlockScope::Uploads) {
     uploads.request_refused();

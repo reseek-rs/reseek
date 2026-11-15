@@ -15,6 +15,7 @@ use soulseek_proto::RemoteFilename;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use super::queue::QUEUED_USERS;
 use super::{InFlight, OVERWHELMED};
 use crate::network::resolvers::tests::{edges, exposed, from};
 use crate::network::resolvers::{enqueue_download, place_in_queue};
@@ -127,6 +128,31 @@ async fn every_refusal_a_peer_can_be_told_and_what_triggers_it() {
   assert_eq!(metric(&app, "reseek_enqueue_requests_received"), "7");
   assert_eq!(metric(&app, "reseek_enqueue_requests_rejected"), "7");
   assert_eq!(metric(&app, "reseek_enqueue_requests_dropped"), "1");
+}
+
+#[tokio::test]
+async fn a_new_user_finding_the_queue_holding_its_users_is_told_to_ask_later() {
+  let (_files, app) = shared_app("").await;
+  let uploads = &app.state.uploads;
+  for n in 0..QUEUED_USERS {
+    uploads
+      .queue
+      .enqueue(Uuid::new_v4(), &format!("user{n}"), "file");
+  }
+  assert_eq!(
+    asked(&app, "newcomer", SHARED).await.as_deref(),
+    Some("Too many files")
+  );
+  let cached = app.state.users.cached_users();
+  assert!(
+    cached.iter().all(|user| user.username != "newcomer"),
+    "the users cache took them in"
+  );
+  assert_eq!(
+    asked(&app, "user7", SHARED).await,
+    None,
+    "one of them queues more"
+  );
 }
 
 #[tokio::test]

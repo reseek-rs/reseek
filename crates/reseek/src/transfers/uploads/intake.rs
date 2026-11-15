@@ -22,6 +22,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, SemaphorePermit};
 use tracing::{Instrument, debug, info, trace, warn};
 
 use super::enqueue::Enqueued;
+use super::queue::QUEUED_USERS;
 use super::{Uploads, limits};
 use crate::shares::{LOCAL_HOST, Resolved};
 use crate::telemetry::millis;
@@ -194,6 +195,25 @@ impl Uploads {
         backlog_ms = backlog as u64,
         suppressed,
         "upload request dropped; too many wait to be decided"
+      );
+    }
+    true
+  }
+
+  /// Whether the queue holds as many users as it takes and `username` is not among them; a
+  /// request that finds it so is counted as refused. The peer is told it has too many files,
+  /// which clients take for a reason to ask again later.
+  pub fn queue_full(&self, username: &str) -> bool {
+    if self.queue.takes(username) {
+      return false;
+    }
+    self.telemetry.metrics().enqueue.requests_rejected.inc();
+    if let Some(suppressed) = REFUSED.allow() {
+      warn!(
+        username,
+        users = QUEUED_USERS,
+        suppressed,
+        "upload request refused; the queue holds as many users as it takes"
       );
     }
     true
