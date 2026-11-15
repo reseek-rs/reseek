@@ -354,6 +354,45 @@ async fn a_privileged_user_is_queued_past_the_limits() {
 }
 
 #[tokio::test]
+async fn a_name_in_no_group_is_answered_without_asking_where_it_is() {
+  use soulseek_proto::server::{UserStatistics, UserStats, UserStatus};
+  use soulseek_proto::{ServerRequest, ServerResponse, UserPresence};
+
+  let files = tempfile::tempdir().unwrap();
+  let app = crate::testing::soulseek::app(&config(files.path(), "")).await;
+  // everyone shares enough not to be a leecher, and nobody is privileged
+  let mut server = Server::start_scripting_statistics(|request| match request {
+    ServerRequest::GetUserStats(asked) => vec![ServerResponse::GetUserStats(UserStatistics {
+      username: asked.username.clone(),
+      stats: UserStats {
+        file_count: 10,
+        directory_count: 1,
+        ..UserStats::default()
+      },
+    })],
+    ServerRequest::GetStatus(asked) => vec![ServerResponse::GetStatus(UserStatus {
+      username: asked.username.clone(),
+      presence: UserPresence::Online,
+      is_privileged: false,
+    })],
+    _ => Vec::new(),
+  })
+  .await;
+  server.login(&app).await;
+  let info = user_info(&edges(&app), "nobody", from("203.0.113.50")).await;
+  assert_eq!(
+    info.upload_slots,
+    app.state.uploads.default_forecast().total_slots
+  );
+  let looked_up = server
+    .receives(std::time::Duration::from_millis(500), |request| {
+      matches!(request, ServerRequest::GetPeerAddress(_))
+    })
+    .await;
+  assert!(!looked_up, "a stranger's place is a stranger's anyway");
+}
+
+#[tokio::test]
 async fn a_request_in_a_buddys_name_from_another_address_is_a_strangers() {
   let (_files, app, _server) = reported_app(
     "[transfers.upload]\nslots = 6\n\
