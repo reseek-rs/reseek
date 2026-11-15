@@ -1158,18 +1158,32 @@ mod tests {
     assert_eq!(app.state.state.current().rooms, ["lobby"]);
   }
 
+  /// Waits until `logs` hold a line saying `said`.
+  async fn logged(logs: &crate::logging::LogBuffer, said: &str) {
+    tokio::time::timeout(Duration::from_secs(15), async {
+      while !logs
+        .snapshot()
+        .iter()
+        .any(|line| line.message.contains(said))
+      {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+      }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("never logged: {said}"));
+  }
+
   #[tokio::test]
-  async fn a_room_refused_after_a_reconnect_is_tried_again_after_the_first_wait() {
+  async fn a_room_refused_after_a_reconnect_waits_for_its_next_try() {
+    let (logs, _capturing) = crate::testing::captured_logs();
     let (_app, mut server, _refusing) = refused_after_a_reconnect().await;
     server.received(joins("lobby")).await;
-    let first = std::time::Instant::now();
-    // the shipped wait on the real clock, as the joins go over a socket
-    let within = REJOIN_AGAIN[0] + Duration::from_secs(5);
-    let again = server
-      .receives(within, |request| joins("lobby")(request).is_some())
-      .await;
-    assert!(again, "not tried again after the wait");
-    assert!(first.elapsed() >= REJOIN_AGAIN[0] - Duration::from_secs(1));
+    // the tries after the first, whose waits run as shipped in the tests on a paused clock
+    logged(
+      &logs,
+      "rooms not joined after the login; trying again after a wait",
+    )
+    .await;
   }
 
   /// What the server does with the joins and leaves of each room, as a test sets it.
@@ -1277,6 +1291,27 @@ mod tests {
       .await;
     assert!(!joined, "joined again after it was dropped");
     assert_eq!(standing(&app, "club").await, None);
+  }
+
+  #[tokio::test]
+  async fn a_read_cut_short_by_the_sessions_end_is_left_to_the_next_login() {
+    let (logs, _capturing) = crate::testing::captured_logs();
+    let (app, mut server, script) = in_rooms(&["lobby"]).await;
+    script.lock().unwrap().joins_held.push("lobby");
+    app.state.messaging.missed().await;
+    server.received(joins("lobby")).await;
+    server.drop_session(&app).await;
+    logged(&logs, "room not joined again; the session ended").await;
+    let refused = logs
+      .snapshot()
+      .into_iter()
+      .find(|line| line.message.contains("left for the user to join"));
+    assert!(refused.is_none(), "{refused:?}");
+    assert_eq!(
+      standing(&app, "lobby").await,
+      Some(false),
+      "not shown refused"
+    );
   }
 
   #[tokio::test]
