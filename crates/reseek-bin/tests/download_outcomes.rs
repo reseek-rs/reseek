@@ -46,7 +46,9 @@ async fn queued(side: &mut PeerSide, filename: &str) {
   );
 }
 
-/// Offers `filename` of `size` bytes under `token` and reads the daemon's acceptance.
+/// Offers `filename` of `size` bytes under `token` and reads the daemon's acceptance, past the
+/// question of the file's place in queue, which the daemon asks once the file is queued and may
+/// send before or after the acceptance.
 async fn offer(side: &mut PeerSide, filename: &str, token: u32, size: u64) {
   let request = PeerMessage::TransferRequest(TransferRequest {
     direction: Wire::Upload,
@@ -55,8 +57,20 @@ async fn offer(side: &mut PeerSide, filename: &str, token: u32, size: u64) {
     file_size: Some(size),
   });
   side.send(&request.encode()).await;
+  let answer = loop {
+    match side.read_peer().await {
+      PeerMessage::PlaceInQueueRequest(asked) => {
+        assert_eq!(
+          asked.filename.as_str(),
+          filename,
+          "a place asked of another file"
+        );
+      }
+      other => break other,
+    }
+  };
   assert_eq!(
-    side.read_peer().await,
+    answer,
     PeerMessage::TransferResponse(TransferResponse::Allowed {
       token,
       file_size: None,
