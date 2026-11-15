@@ -7,6 +7,7 @@ import { pins } from "#lib/chat/pins.svelte.js";
 import { Freeze, freezesWhileUsed } from "#lib/lists/interaction.svelte.js";
 import { session } from "#lib/session.svelte.js";
 import { conversation, joinedRoom } from "#lib/testing/fixtures.js";
+import { flush } from "#lib/testing/flush.js";
 import { active, press, ticked } from "#lib/testing/keys.js";
 import { fakeNetwork } from "#lib/testing/network.js";
 import { CHAT } from "#lib/ui/bindings.js";
@@ -292,6 +293,17 @@ describe("the chat list", () => {
     [...document.querySelectorAll("button")].find((b) => b.textContent === "Retry")!.click();
     await vi.waitFor(() => expect(document.querySelector("[role=alert]")).toBeNull());
     expect(document.querySelector('[data-line="user:alice"]')).not.toBeNull();
+  });
+
+  it("holds still while a row's menu is open", async () => {
+    start();
+    const at = { bubbles: true, cancelable: true, clientX: 5, clientY: 5 };
+    document
+      .querySelector('[data-line="user:bob"]')!
+      .dispatchEvent(new MouseEvent("contextmenu", at));
+    await flush();
+    expect(document.querySelector("[role=menu]")).not.toBeNull();
+    expect(chat.freeze.frozen).toBe(true);
   });
 
   it("opens a row's one menu from the menu key, a right-click or its button", async () => {
