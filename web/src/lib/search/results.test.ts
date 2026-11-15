@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Schemas } from "#lib/api/client.js";
+import { parseFilters } from "#lib/files/filters.js";
 import { live } from "#lib/live/live.svelte.js";
+import { sharedFile } from "#lib/testing/fixtures.js";
 import { flushFaked } from "#lib/testing/flush.js";
 import { connected } from "#lib/testing/live.js";
 
+import { pipeline } from "./results";
 import { Results, STREAM_MS } from "./results.svelte";
 
 const ID = "6f1c9a52-0d1e-4c43-9d55-3a1f0b6e7a10";
@@ -87,5 +90,34 @@ describe("a running search's results", () => {
     answers[0]([response("alice")]);
     await first;
     expect(shown()).toEqual(["0:alice", "0:bob"]);
+  });
+});
+
+describe("the results' order and filters", () => {
+  const queued = (username: string, queueLength: number | null) => ({
+    key: `user:${username}`,
+    response: {
+      ...response(username),
+      queueLength,
+      fileCount: 1,
+      files: [sharedFile(`${username}\\a.flac`)]
+    }
+  });
+  const shown = (options: { maxQueue?: number | null; sort?: "queueLength" | null }) =>
+    pipeline([queued("alice", 3), queued("bob", null), queued("carol", 1)], {
+      hidden: () => false,
+      filters: parseFilters(""),
+      hideLocked: false,
+      hideNoFreeSlots: false,
+      sort: null,
+      ...options
+    }).map((r) => r.response.username);
+
+  it("sorts a queue the user doesn't say as the longest", () => {
+    expect(shown({ sort: "queueLength" })).toEqual(["carol", "alice", "bob"]);
+  });
+
+  it("keeps a queue the user doesn't say under the longest queue allowed", () => {
+    expect(shown({ maxQueue: 2 })).toEqual(["bob", "carol"]);
   });
 });

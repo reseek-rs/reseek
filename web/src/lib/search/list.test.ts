@@ -23,3 +23,12 @@ describe("the results list's saved view", () => {
     expect(resultList.hidden).toEqual(["queue", "folder"]);
   });
 });
+
+describe("the results list's queue column", () => {
+  it("sorts a queue the user doesn't say as the longest", async () => {
+    const { RESULT_COLUMNS } = await import("./list");
+    const value = RESULT_COLUMNS.find((c) => c.id === "queue")!.value!;
+    const row = (queue: number | null) => ({ queue }) as never;
+    expect(value(row(null))).toBeGreaterThan(value(row(4_000_000_000)) as number);
+  });
+});
