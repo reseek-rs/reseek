@@ -56,8 +56,6 @@ pub fn client_options(options: &Options, alternative: bool) -> Result<ClientOpti
     deduplicate_search_requests: true,
     message_timeout: MESSAGE_TIMEOUT,
     transfer_response_timeout: soulseek.connection.timeout.transfer_response,
-    // the conversations engine acknowledges a message once it is stored
-    auto_acknowledge_private_messages: false,
     auto_acknowledge_privilege_notifications: true,
     accept_private_room_invitations: options.chat.accept_private_room_invitations,
     starting_token: None,
@@ -127,10 +125,6 @@ pub fn patch(
     deduplicate_search_requests: changed(
       from.deduplicate_search_requests,
       to.deduplicate_search_requests,
-    ),
-    auto_acknowledge_private_messages: changed(
-      from.auto_acknowledge_private_messages,
-      to.auto_acknowledge_private_messages,
     ),
     auto_acknowledge_privilege_notifications: changed(
       from.auto_acknowledge_privilege_notifications,
