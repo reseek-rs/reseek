@@ -1227,13 +1227,22 @@ async fn a_status_that_moves_a_watched_users_groups_pushes_them_once_with_their_
     )
     .await;
   stream.until("hello").await;
+  // the row took the watch's status before carol's touch is written, so every push the watch
+  // made comes before hers
+  users.touch("carol", Touch::Transfer).await;
+  pushed_before(&mut stream, "alice", "carol").await;
   // alice goes away holding privileges, which moves her into the privileged group
   server.send(vec![ServerResponse::GetStatus(UserStatus {
     username: "alice".into(),
     presence: soulseek_proto::UserPresence::Away,
     is_privileged: true,
   })]);
-  let pushed = next_pushed(&mut stream).await;
+  let pushed = loop {
+    let pushed = next_pushed(&mut stream).await;
+    if pushed["username"] == "alice" {
+      break pushed;
+    }
+  };
   assert_eq!(
     (&pushed["presence"], &pushed["isPrivileged"]),
     (&json!("Away"), &json!(true)),
