@@ -8,7 +8,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use api_types::transfers::{TransferOutcome, TransferStates};
-use soulseek_client::{BrowseReply, ClientOptions, UploadInput, UploadRequest};
+use soulseek_client::{BrowseReply, ClientOptions, PeerRequestOptions, UploadInput, UploadRequest};
 use soulseek_proto::PeerMessage;
 use soulseek_proto::frame::FrameKind;
 use soulseek_proto::peer::{BrowseResponse, Directory, File};
@@ -135,7 +135,11 @@ async fn the_users_request_to_connect_is_taken_while_a_stranger_holds_the_name()
   // it only by having the server ask it to connect
   let info = tokio::time::timeout(
     PATIENCE,
-    user.client.get_user_info(&name, &CancellationToken::new()),
+    user.client.get_user_info(
+      &name,
+      PeerRequestOptions::default(),
+      &CancellationToken::new(),
+    ),
   )
   .await
   .expect("the daemon answers the user");

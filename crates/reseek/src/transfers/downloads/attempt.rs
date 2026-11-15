@@ -13,8 +13,8 @@ use api_types::transfers::{TransferOutcome, TransferStates};
 use chrono::Utc;
 use soulseek_client::{
   ClientError, DownloadOutput, DownloadRequest, DownloadSink, LogLimiter, OutputFactory,
-  ProgressUpdated, RequestStyle, SizeMismatchResolver, StateChanged, Transfer as Snapshot,
-  TransferOptions,
+  PeerRequestOptions, ProgressUpdated, RequestStyle, SizeMismatchResolver, StateChanged,
+  Transfer as Snapshot, TransferOptions,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
@@ -562,7 +562,12 @@ impl Downloads {
     Box::pin(async move {
       // the question stops with the try or the window, whichever ends first
       let _stops = stopped.clone().drop_guard();
-      let place = client.get_download_place_in_queue(&username, filename, &stopped);
+      let place = client.get_download_place_in_queue(
+        &username,
+        filename,
+        PeerRequestOptions::default(),
+        &stopped,
+      );
       // a question that ended early still waits out the window, in which an offer may come; one
       // still out when the window ends may not have been written yet
       let settled_as = match tokio::time::timeout_at(settled, place).await {

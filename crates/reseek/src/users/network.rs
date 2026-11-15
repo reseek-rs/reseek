@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use axum::response::Response;
 use base64::Engine;
 use cascade::Watcher;
-use soulseek_client::{BrowseOptions, ClientError};
+use soulseek_client::{BrowseOptions, ClientError, PeerRequestOptions};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
@@ -141,7 +141,11 @@ impl Users {
     let fetched = self
       .network
       .client()
-      .get_user_info(username, &CancellationToken::new())
+      .get_user_info(
+        username,
+        PeerRequestOptions::default(),
+        &CancellationToken::new(),
+      )
       .await?;
     let shown = info(&fetched);
     let said = PeerInfo {
@@ -265,13 +269,15 @@ impl UserService for Users {
     let browse = browsing.browse;
     let browses = self.browses.clone();
     let options = BrowseOptions {
-      response_timeout: self
-        .config
-        .current()
-        .values
-        .soulseek
-        .browse
-        .response_timeout,
+      timeout: Some(
+        self
+          .config
+          .current()
+          .values
+          .soulseek
+          .browse
+          .response_timeout,
+      ),
       progress_updated: Some(Arc::new(
         move |progress: &soulseek_client::BrowseProgress| {
           browses.progressed(browse, progress);
@@ -312,8 +318,9 @@ impl UserService for Users {
       .get_folder_contents(
         username,
         directory,
-        None,
-        Some(FOLDER_TIMEOUT),
+        PeerRequestOptions {
+          timeout: Some(FOLDER_TIMEOUT),
+        },
         &CancellationToken::new(),
       )
       .await

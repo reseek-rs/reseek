@@ -7,7 +7,7 @@ use std::time::Duration;
 use api_types::transfers::TransferStates;
 use api_types::users::blocking::BlockScope;
 use reseek_shares::lock;
-use soulseek_client::ClientError;
+use soulseek_client::{ClientError, PeerRequestOptions};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -63,7 +63,12 @@ impl Downloads {
       .inactivity;
     let cancel = CancellationToken::new();
     let client = self.network.client();
-    let asked = client.get_download_place_in_queue(username, record.filename.clone(), &cancel);
+    let asked = client.get_download_place_in_queue(
+      username,
+      record.filename.clone(),
+      PeerRequestOptions::default(),
+      &cancel,
+    );
     let place = match tokio::time::timeout(timeout, asked).await {
       Ok(Ok(place)) => peer_count(place),
       Ok(Err(e)) => return Err(asked_failed(username, e)),

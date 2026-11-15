@@ -17,7 +17,8 @@ use api_types::options::OptionsPatch;
 use api_types::transfers::{Transfer, TransferOutcome, TransferStates, UploadsQuery};
 use serde_json::json;
 use soulseek_client::{
-  ClientError, ClientOptions, DownloadOutput, DownloadRequest, Event, SearchOptions, SearchScope,
+  ClientError, ClientOptions, DownloadOutput, DownloadRequest, Event, PeerRequestOptions,
+  SearchOptions, SearchScope,
 };
 use support::soulfind::{self, Soulfind, User};
 use support::transfers::{content, file, scratch};
@@ -159,7 +160,7 @@ async fn a_second_request_waits_its_place_and_starts_once_the_first_ends() {
   let cancel = CancellationToken::new();
   let place = second
     .client
-    .get_download_place_in_queue(&name, small_name, &cancel)
+    .get_download_place_in_queue(&name, small_name, PeerRequestOptions::default(), &cancel)
     .await
     .unwrap();
   assert_eq!(
@@ -186,7 +187,11 @@ async fn a_second_request_waits_its_place_and_starts_once_the_first_ends() {
 
   // a newcomer is told where a request of theirs would land; asking for the user info finds
   // their group, which the search response then reads
-  let info = third.client.get_user_info(&name, &cancel).await.unwrap();
+  let info = third
+    .client
+    .get_user_info(&name, PeerRequestOptions::default(), &cancel)
+    .await
+    .unwrap();
   assert_eq!(
     (
       info.upload_slots,

@@ -6,7 +6,9 @@ mod support;
 
 use std::time::Duration;
 
-use soulseek_client::{BrowseOptions, ClientOptions, SearchOptions, SearchScope};
+use soulseek_client::{
+  BrowseOptions, ClientOptions, PeerRequestOptions, SearchOptions, SearchScope,
+};
 use support::soulfind;
 use support::{PATIENCE, daemon, free_port, logged_in, signed_in, until};
 use tokio_util::sync::CancellationToken;
@@ -91,7 +93,12 @@ async fn another_user_searches_browses_and_asks_the_daemon() {
 
   let folder = other
     .client
-    .get_folder_contents(&name, "Music\\Abbey Road", None, None, &cancel)
+    .get_folder_contents(
+      &name,
+      "Music\\Abbey Road",
+      PeerRequestOptions::default(),
+      &cancel,
+    )
     .await
     .unwrap();
   assert_eq!(folder.len(), 1);
@@ -102,7 +109,11 @@ async fn another_user_searches_browses_and_asks_the_daemon() {
     .collect();
   assert_eq!(names, ["01 - Come Together.mp3", "02 - Something.mp3"]);
 
-  let info = other.client.get_user_info(&name, &cancel).await.unwrap();
+  let info = other
+    .client
+    .get_user_info(&name, PeerRequestOptions::default(), &cancel)
+    .await
+    .unwrap();
   assert_eq!(info.description, "A reseek user.");
   assert_eq!(
     (
@@ -130,7 +141,11 @@ async fn another_user_searches_browses_and_asks_the_daemon() {
   .unwrap();
   api.set_profile_picture(png, "image/png").await.unwrap();
   let sent = api.profile_picture().await.unwrap();
-  let info = other.client.get_user_info(&name, &cancel).await.unwrap();
+  let info = other
+    .client
+    .get_user_info(&name, PeerRequestOptions::default(), &cancel)
+    .await
+    .unwrap();
   assert_eq!(info.description, "Jazz, mostly.");
   let picture = info.picture.expect("the new picture is sent");
   assert_eq!(picture, sent);
