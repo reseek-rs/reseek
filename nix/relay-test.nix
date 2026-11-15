@@ -486,7 +486,12 @@ pkgs.testers.runNixOSTest {
         # the peer asks again while the controller and then the agent are away, the agent's file
         # known from the index kept across the restart, and resumes once the agent is back
         done = finished(peer, users["controller"], restart_id, seconds=300)
-        assert done["attempts"] > 1, f"the download was not cut by the restart: {done}"
+        # cut and resumed part way, whether the controller offered it again at once or after a
+        # wait to retry
+        peer.succeed(
+            "journalctl -u reseek | grep -F '05 restart.flac'"
+            " | grep -E 'download started size=[0-9]+ start=[1-9]'"
+        )
         got = sha256(peer, done["localPath"])
         sent = sha256(agent, f"/srv/music/{restart}")
         assert got == sent, f"{restart} arrived as {got}, the agent has {sent}"
