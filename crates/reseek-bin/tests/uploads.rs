@@ -18,7 +18,7 @@ use api_types::transfers::{Transfer, TransferOutcome, TransferStates, UploadsQue
 use serde_json::json;
 use soulseek_client::{
   ClientError, ClientOptions, DownloadOutput, DownloadRequest, Event, PeerRequestOptions,
-  SearchOptions, SearchScope,
+  SearchOptions, SearchRequest, SearchScope,
 };
 use support::soulfind::{self, Soulfind, User};
 use support::transfers::{content, file, scratch};
@@ -208,10 +208,7 @@ async fn a_second_request_waits_its_place_and_starts_once_the_first_ends() {
   let (_, responses) = third
     .client
     .search(
-      "small",
-      SearchScope::User(vec![name.clone()]),
-      None,
-      options,
+      SearchRequest::new("small", SearchScope::User(vec![name.clone()]), options).unwrap(),
       &cancel,
     )
     .await

@@ -7,7 +7,7 @@ mod support;
 use std::time::Duration;
 
 use soulseek_client::{
-  BrowseOptions, ClientOptions, PeerRequestOptions, SearchOptions, SearchScope,
+  BrowseOptions, ClientOptions, PeerRequestOptions, SearchOptions, SearchRequest, SearchScope,
 };
 use support::soulfind;
 use support::{PATIENCE, daemon, free_port, logged_in, signed_in, until};
@@ -54,10 +54,12 @@ async fn another_user_searches_browses_and_asks_the_daemon() {
   let (search, responses) = tokio::time::timeout(
     PATIENCE,
     other.client.search(
-      "abbey -something",
-      SearchScope::User(vec![name.clone()]),
-      None,
-      options,
+      SearchRequest::new(
+        "abbey -something",
+        SearchScope::User(vec![name.clone()]),
+        options,
+      )
+      .unwrap(),
       &cancel,
     ),
   )

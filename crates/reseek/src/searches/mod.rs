@@ -413,7 +413,12 @@ impl SearchService for Searches {
         let (live, users) = (this.live.clone(), this.users.clone());
         let search = async {
           // a search the client would refuse is refused before it waits for a slot
-          client.check_search(&text, &scope, &options)?;
+          let request = soulseek_client::SearchRequest::new(&text, scope, options)?;
+          if !client.state().is_logged_in() {
+            return Err(ClientError::InvalidOperation(format!(
+              "Search for {text} needs a logged-in session"
+            )));
+          }
           running.queued();
           let _slot = tokio::select! {
             biased;
@@ -423,10 +428,7 @@ impl SearchService for Searches {
           };
           client
             .search_with(
-              &text,
-              scope,
-              Some(reserved),
-              options,
+              request.with_token(reserved),
               move |response| taker.response_taken(response, &live, &users),
               &running.cancel,
             )
