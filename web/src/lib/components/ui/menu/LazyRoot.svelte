@@ -22,6 +22,8 @@
   setAnchor(() => anchor);
 
   const opener = $derived({
+    // a row's menu button takes a press while another menu holds the page, see app.css
+    "data-row-menu": "",
     "aria-haspopup": "menu",
     "aria-expanded": open,
     "onclick": (e: MouseEvent) => {

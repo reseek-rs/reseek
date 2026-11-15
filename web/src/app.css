@@ -344,6 +344,12 @@
     background: var(--color-selection);
   }
 
+  /* an open menu holds the page, its presses only closing the menu, but a row's menu button
+     takes its press through: one tap closes the open menu and opens the row's */
+  [data-row-menu] {
+    pointer-events: auto;
+  }
+
   /* the app reads as controls, not a page of text: the arrow by default, and the I-beam only
      where text is typed or meant to be copied (pre, code, and `cursor-text` where a screen says so) */
   body {
