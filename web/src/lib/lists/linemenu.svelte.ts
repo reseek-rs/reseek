@@ -60,11 +60,14 @@ export class LineMenu<L> {
     $effect(() => () => this.#released());
   }
 
-  /** the open line's element, or the list's container where the line isn't drawn */
+  /**
+   * the open line's element, not a pinned copy of it, or the list's container where the line
+   * isn't drawn
+   */
   #lineElement(): HTMLElement | null {
     const key = this.#at?.key;
     // compared rather than selected, as a key may hold characters a selector can't
-    const lines = this.#node?.querySelectorAll<HTMLElement>("[data-line]") ?? [];
+    const lines = this.#node?.querySelectorAll<HTMLElement>("[data-line]:not([data-pinned])") ?? [];
     return [...lines].find((line) => line.dataset.line === key) ?? this.#node;
   }
 

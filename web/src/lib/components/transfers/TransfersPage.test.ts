@@ -484,6 +484,40 @@ describe("the transfers table", () => {
       expect(document.body.textContent).toContain("25 selected");
     });
 
+    it("hold the table under a card or a menu opened from the pinned header", async () => {
+      Object.assign(views.download, { layout: "tree", groupBy: "user" });
+      listing = Array.from({ length: 30 }, (_, n) =>
+        transfer({ username: "alice", filename: `x\\${String(n).padStart(2, "0")}.flac` })
+      );
+      await start();
+      // held five rows down, whatever the table asks of it later
+      Object.defineProperty(grid(), "scrollTop", {
+        get: () => 36 * 5,
+        set: () => {},
+        configurable: true
+      });
+      grid().dispatchEvent(new Event("scroll"));
+      flushSync();
+      const pinned = () =>
+        document.querySelector<HTMLElement>('[data-pinned][data-line="user:alice"]')!;
+      // the name's card, from the keys
+      press(pinned().querySelector("a")!, " ");
+      await flushFaked();
+      expect(
+        document.querySelector('[role="dialog"][aria-label="Profile of alice"]')
+      ).not.toBeNull();
+      expect(downloads.list.freeze.frozen).toBe(true);
+      press(document.querySelector('[role="dialog"]')!, "Escape");
+      await flushFaked();
+      expect(downloads.list.freeze.frozen).toBe(false);
+      // the header's menu, from a right-click
+      const at = { bubbles: true, cancelable: true, clientX: 5, clientY: 5 };
+      pinned().querySelector("[role=rowheader]")!.dispatchEvent(new MouseEvent("contextmenu", at));
+      await flushFaked();
+      expect(document.querySelector("[role=menu]")).not.toBeNull();
+      expect(downloads.list.freeze.frozen).toBe(true);
+    });
+
     it("show no transfer in the inspector once the filter takes it out of the table", async () => {
       const a = transfer({ filename: "x\\a.flac" });
       listing = [a];

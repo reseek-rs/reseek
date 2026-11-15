@@ -7,7 +7,7 @@
   import * as Menu from "#lib/components/ui/menu/menu.js";
   import { Arrivals } from "#lib/lists/arrivals.svelte.js";
   import { LINE_REM } from "#lib/lists/density.js";
-  import { type Freeze, freezesWhileUsed } from "#lib/lists/interaction.svelte.js";
+  import { type Freeze, freezesWhileUsed, heldBy } from "#lib/lists/interaction.svelte.js";
   import { LineMenu } from "#lib/lists/linemenu.svelte.js";
   import { type AllTick, ListControl } from "#lib/lists/list.svelte.js";
   import { ListWindow } from "#lib/lists/virtual.svelte.js";
@@ -374,7 +374,8 @@
 {/snippet}
 
 <!-- every line has the same height, so the window never measures one and the pinned folder lines
-     stack by it -->
+     stack by it. A card or menu opened from a pinned line, which is outside the lines, holds the
+     list as one opened from the lines does -->
 <div
   class={[
     "@container relative overflow-auto rounded-card border bg-surface text-sm outline-none focus-visible:ring-2 focus-visible:ring-accent",
@@ -394,7 +395,8 @@
   bind:clientWidth={boxWidth}
   {@attach view.attach}
   {@attach list.attach}
-  {@attach lineMenu.attach}>
+  {@attach lineMenu.attach}
+  {@attach freeze && heldBy(freeze)}>
   <!-- the pinned folder lines are drawn under the column header, which a pushed one goes under,
        and over the lines. Each copies a line the keys and assistive technology reach in the lines:
        it is hidden from assistive technology, Tab skips its controls, and focus that comes to one
