@@ -3,6 +3,7 @@
 //! while someone holds or waits for its turn.
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use reseek_shares::lock;
@@ -20,6 +21,11 @@ impl Turns {
   /// Waits for `name`'s turn and holds it until the returned turn is dropped.
   pub async fn take(&self, name: &str) -> Turn {
     self.wait(name).take().await
+  }
+
+  /// Whether someone holds or waits for `name`'s turn.
+  pub fn held(&self, name: &str) -> bool {
+    lock(&self.map).contains_key(name)
   }
 
   /// Gets in line for `name`'s turn: from here whoever holds it sees someone waiting. The turn
@@ -48,13 +54,24 @@ pub struct Waiting {
   mutex: Arc<tokio::sync::Mutex<()>>,
 }
 
+/// A place being taken: the wait for the lock, then the place, dropped in that order, so a
+/// take given up drops the lock's reference before the place looks whether it was the last.
+struct Taking {
+  lock: Pin<Box<dyn Future<Output = OwnedMutexGuard<()>> + Send>>,
+  place: Waiting,
+}
+
 impl Waiting {
   /// Waits for the turn and holds it until the returned turn is dropped.
   pub async fn take(self) -> Turn {
-    let guard = self.mutex.clone().lock_owned().await;
+    let mut taking = Taking {
+      lock: Box::pin(self.mutex.clone().lock_owned()),
+      place: self,
+    };
+    let guard = (&mut taking.lock).await;
     Turn {
-      map: self.map.clone(),
-      name: self.name.clone(),
+      map: taking.place.map.clone(),
+      name: taking.place.name.clone(),
       guard: Some(guard),
     }
   }
@@ -103,6 +120,7 @@ impl Drop for Turn {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::task::Poll;
   use std::time::Duration;
 
   #[tokio::test]
@@ -137,5 +155,19 @@ mod tests {
     drop(held);
     drop(turns.wait("bob"));
     assert!(lock(&turns.map).is_empty());
+  }
+
+  #[tokio::test]
+  async fn a_take_given_up_leaves_no_entry() {
+    let turns = Turns::default();
+    let held = turns.take("alice").await;
+    let taking = turns.take("alice");
+    tokio::pin!(taking);
+    let pending = std::future::poll_fn(|cx| Poll::Ready(taking.as_mut().poll(cx).is_pending()));
+    assert!(pending.await);
+    assert!(!held.alone());
+    drop(held);
+    taking.set(turns.take("bob"));
+    assert!(!turns.held("alice"));
   }
 }

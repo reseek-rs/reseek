@@ -34,7 +34,7 @@ use super::groups::{self, Facts, Placement};
 use super::store::Stored;
 use super::{Directory, Touch};
 use crate::config::Options;
-use crate::turns::{Turn, Turns};
+use crate::turns::{Turn, Turns, Waiting};
 
 /// How old a user's statistics may be when their group is worked out before they are asked
 /// for again.
@@ -305,18 +305,37 @@ impl Drop for Asking<'_> {
   }
 }
 
-/// One user's watch turn, which counts the watches completed under it for the callers waiting
-/// for it, and drops the user's count once nobody does.
+/// A caller's place for one user's watch, in line and then holding the turn. It counts the
+/// watches completed under it for the callers waiting, and once it ends, taken or not, drops the
+/// user's count when nobody else holds or waits.
 struct WatchTurn<'a> {
   groups: &'a GroupCache,
   username: &'a str,
-  turn: Turn,
+  waiting: Option<Waiting>,
+  turn: Option<Turn>,
 }
 
-impl WatchTurn<'_> {
+impl<'a> WatchTurn<'a> {
+  /// In line for `username`'s watch.
+  fn line_up(groups: &'a GroupCache, username: &'a str) -> Self {
+    Self {
+      groups,
+      username,
+      waiting: Some(groups.watching.wait(username)),
+      turn: None,
+    }
+  }
+
+  /// Waits for the turn.
+  async fn take(&mut self) {
+    if let Some(waiting) = self.waiting.take() {
+      self.turn = Some(waiting.take().await);
+    }
+  }
+
   /// The watch made under this turn completed: counted when someone waits for the turn.
   fn completed(&self) {
-    if !self.turn.alone() {
+    if self.turn.as_ref().is_some_and(|turn| !turn.alone()) {
       *lock(&self.groups.watches)
         .entry(self.username.to_string())
         .or_default() += 1;
@@ -326,7 +345,8 @@ impl WatchTurn<'_> {
 
 impl Drop for WatchTurn<'_> {
   fn drop(&mut self) {
-    if self.turn.alone() {
+    drop((self.turn.take(), self.waiting.take()));
+    if !self.groups.watching.held(self.username) {
       lock(&self.groups.watches).remove(self.username);
     }
   }
@@ -684,13 +704,9 @@ impl Directory {
   ) -> Result<(), ClientError> {
     let completed = |groups: &GroupCache| lock(&groups.watches).get(username).copied();
     // in line before the count is read, so a holder ending meanwhile sees us and keeps it
-    let waiting = self.groups.watching.wait(username);
+    let mut turn = WatchTurn::line_up(&self.groups, username);
     let before = completed(&self.groups);
-    let turn = WatchTurn {
-      groups: &self.groups,
-      username,
-      turn: waiting.take().await,
-    };
+    turn.take().await;
     if completed(&self.groups) != before || (!again && self.is_watched(username)) {
       return Ok(());
     }
@@ -994,6 +1010,47 @@ mod tests {
         country_code: Some(String::new()),
       }),
     })
+  }
+
+  #[tokio::test]
+  async fn a_watch_given_up_in_line_drops_the_count_it_waited_for() {
+    let app = crate::testing::soulseek::app("").await;
+    let users = &app.state.users;
+    // erin's watch is answered only when the test says
+    let mut server = crate::testing::soulseek::Server::start(|request| match request {
+      ServerRequest::GetStatus(asked) => vec![ServerResponse::GetStatus(UserStatus {
+        username: asked.username.clone(),
+        presence: soulseek_proto::UserPresence::Online,
+        is_privileged: false,
+      })],
+      _ => Vec::new(),
+    })
+    .await;
+    server.login(&app).await;
+    let client = app.state.network.client();
+    let mut first = Box::pin(users.watch_again(client, "erin"));
+    let mut second = Box::pin(users.watch_again(client, "erin"));
+    let asked = |request: &ServerRequest| {
+      matches!(request, ServerRequest::WatchUser(asked) if asked.username == "erin").then_some(())
+    };
+    tokio::select! {
+      _ = &mut first => panic!("watched before the server answered"),
+      () = server.received(asked) => {}
+    }
+    // the second gets in line behind the first
+    let pending =
+      std::future::poll_fn(|cx| std::task::Poll::Ready(second.as_mut().poll(cx).is_pending()));
+    assert!(pending.await);
+    server.send(vec![watched("erin", true)]);
+    first.await.unwrap();
+    assert_eq!(
+      lock(&users.groups.watches).get("erin"),
+      Some(&1),
+      "counted for the one in line"
+    );
+    // given up before its turn comes
+    drop(second);
+    assert!(lock(&users.groups.watches).is_empty());
   }
 
   #[tokio::test]
