@@ -29,11 +29,6 @@ pub use position::Forecast;
 use crate::config::enums::QueueStrategy;
 use crate::config::{DEFAULT_GROUP, GroupUpload, Groups, Options, PRIVILEGED_GROUP};
 
-/// How many users may have uploads in the queue at once. A user past them is refused until one
-/// leaves, which bounds the queue over every user, and with it the users cache, which keeps
-/// every user the queue holds.
-pub const QUEUED_USERS: usize = 10_000;
-
 /// Looks up the group a user is in, without waiting.
 pub type GroupOf = Box<dyn Fn(&str) -> String + Send + Sync>;
 
@@ -347,13 +342,6 @@ impl UploadQueue {
       .collect()
   }
 
-  /// Whether the queue takes another upload of `username`: they have one in it already, or
-  /// fewer than [`QUEUED_USERS`] users do.
-  pub fn takes(&self, username: &str) -> bool {
-    let state = self.lock();
-    state.users.len() < QUEUED_USERS || state.users.iter().any(|u| u.username == username)
-  }
-
   /// The users with an upload in the queue.
   pub fn users(&self) -> Vec<String> {
     self
@@ -502,22 +490,6 @@ pub(super) mod tests {
 
   pub fn started(start: &mut oneshot::Receiver<()>) -> bool {
     start.try_recv().is_ok()
-  }
-
-  #[test]
-  fn a_user_past_the_users_the_queue_holds_waits_until_one_leaves() {
-    let (queue, _) = queue("");
-    let ids: Vec<Uuid> = (0..QUEUED_USERS)
-      .map(|n| {
-        let id = Uuid::new_v4();
-        queue.enqueue(id, &format!("user{n}"), "file");
-        id
-      })
-      .collect();
-    assert!(!queue.takes("newcomer"));
-    assert!(queue.takes("user7"), "one of them queues more");
-    queue.complete(ids[0]);
-    assert!(queue.takes("newcomer"), "user0 left");
   }
 
   #[test]

@@ -9,7 +9,8 @@
 //! now whether it has it, being away, loading its shares or slow to answer, is failed instead,
 //! so the peer asks again.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -22,7 +23,6 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, SemaphorePermit};
 use tracing::{Instrument, debug, info, trace, warn};
 
 use super::enqueue::Enqueued;
-use super::queue::QUEUED_USERS;
 use super::{Uploads, limits};
 use crate::shares::{LOCAL_HOST, Resolved};
 use crate::telemetry::millis;
@@ -32,6 +32,19 @@ pub const OVERWHELMED: &str = "Overwhelmed with requests; try again later.";
 
 /// What a peer is told for a file we do not share to them.
 pub const NOT_SHARED: &str = "File not shared.";
+
+/// What a peer is told when the queue takes no new user now. Clients show a reason they do not
+/// know as the request's end and do not ask again on their own.
+pub const QUEUE_FULL: &str = "Queue full";
+
+/// How many users may have uploads in the queue at once. A new user past them is refused until
+/// one leaves, which bounds the queue over every user, and with it the users cache, which keeps
+/// every user the queue holds.
+pub const QUEUED_USERS: usize = 10_000;
+
+/// How many of the users in the queue may have asked from one address. A peer names itself as it
+/// likes, so without it one host could hold every place under names it makes up.
+pub const QUEUED_PER_ADDRESS: usize = 100;
 
 /// The longest the requests waiting may take, at the pace of the last ones, in milliseconds.
 const BACKLOG_MILLIS: f64 = 180_000.0;
@@ -54,6 +67,8 @@ pub(super) struct Intake {
   deciding: Semaphore,
   /// requests waiting for either
   pub(super) waiting: AtomicUsize,
+  /// the address each user whose request was queued asked from, kept while the queue holds them
+  addresses: Mutex<HashMap<String, IpAddr>>,
   /// the moving average of the time accepted requests took, in milliseconds, as `f64` bits
   pub(super) latency: AtomicU64,
 }
@@ -64,6 +79,7 @@ impl Default for Intake {
       turns: Mutex::new(HashMap::new()),
       deciding: Semaphore::new(DECIDING),
       waiting: AtomicUsize::new(0),
+      addresses: Mutex::new(HashMap::new()),
       latency: AtomicU64::new(0f64.to_bits()),
     }
   }
@@ -200,23 +216,40 @@ impl Uploads {
     true
   }
 
-  /// Whether the queue holds as many users as it takes and `username` is not among them; a
-  /// request that finds it so is counted as refused. The peer is told it has too many files,
-  /// which clients take for a reason to ask again later.
-  pub fn queue_full(&self, username: &str) -> bool {
-    if self.queue.takes(username) {
+  /// Whether the queue takes no upload of `username`, asking from `from`, now: they have none
+  /// in it, and it holds [`QUEUED_USERS`] users already, or [`QUEUED_PER_ADDRESS`] who asked
+  /// from that address. A refusal is counted.
+  pub fn queue_full(&self, username: &str, from: IpAddr) -> bool {
+    let queued: HashSet<String> = self.queue.users().into_iter().collect();
+    if queued.contains(username) {
+      return false;
+    }
+    let from_there = {
+      let mut addresses = lock(&self.intake.addresses);
+      addresses.retain(|user, _| queued.contains(user));
+      addresses.values().filter(|&&ip| ip == from).count()
+    };
+    if queued.len() < QUEUED_USERS && from_there < QUEUED_PER_ADDRESS {
       return false;
     }
     self.telemetry.metrics().enqueue.requests_rejected.inc();
     if let Some(suppressed) = REFUSED.allow() {
       warn!(
         username,
-        users = QUEUED_USERS,
+        %from,
+        users = queued.len(),
+        from_there,
         suppressed,
-        "upload request refused; the queue holds as many users as it takes"
+        "upload request refused; the queue takes no new user now"
       );
     }
     true
+  }
+
+  /// The request of `username`, asking from `from`, was queued: they count against that address
+  /// while the queue holds them.
+  pub fn queued_from(&self, username: &str, from: IpAddr) {
+    lock(&self.intake.addresses).insert(username.to_string(), from);
   }
 
   /// Decides the request of `username`, who sees the shares of the groups `sees`, for `filename`,

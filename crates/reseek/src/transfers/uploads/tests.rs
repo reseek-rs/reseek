@@ -15,8 +15,8 @@ use soulseek_proto::RemoteFilename;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::queue::QUEUED_USERS;
-use super::{InFlight, OVERWHELMED};
+use super::intake::{QUEUED_PER_ADDRESS, QUEUED_USERS};
+use super::{InFlight, OVERWHELMED, QUEUE_FULL};
 use crate::network::resolvers::tests::{edges, exposed, from};
 use crate::network::resolvers::{enqueue_download, place_in_queue};
 use crate::testing::{TestApp, app};
@@ -131,17 +131,19 @@ async fn every_refusal_a_peer_can_be_told_and_what_triggers_it() {
 }
 
 #[tokio::test]
-async fn a_new_user_finding_the_queue_holding_its_users_is_told_to_ask_later() {
+async fn a_new_user_finding_the_queue_holding_its_users_is_refused_for_good() {
   let (_files, app) = shared_app("").await;
+  // asked() asks from 198.51.100.7; these came from all over
+  let elsewhere = |n: usize| std::net::IpAddr::from([203, 0, (n / 256) as u8, (n % 256) as u8]);
   let uploads = &app.state.uploads;
   for n in 0..QUEUED_USERS {
-    uploads
-      .queue
-      .enqueue(Uuid::new_v4(), &format!("user{n}"), "file");
+    let username = format!("user{n}");
+    uploads.queue.enqueue(Uuid::new_v4(), &username, "file");
+    uploads.queued_from(&username, elsewhere(n));
   }
   assert_eq!(
     asked(&app, "newcomer", SHARED).await.as_deref(),
-    Some("Too many files")
+    Some(QUEUE_FULL)
   );
   let cached = app.state.users.cached_users();
   assert!(
@@ -153,6 +155,37 @@ async fn a_new_user_finding_the_queue_holding_its_users_is_told_to_ask_later() {
     None,
     "one of them queues more"
   );
+}
+
+#[tokio::test]
+async fn one_address_holds_no_more_than_its_share_of_the_queue() {
+  let (_files, app) = shared_app("").await;
+  // names one host made up, all asking from where asked() asks
+  let here = from("198.51.100.7").ip();
+  let uploads = &app.state.uploads;
+  for n in 0..QUEUED_PER_ADDRESS {
+    let username = format!("made-up{n}");
+    uploads.queue.enqueue(Uuid::new_v4(), &username, "file");
+    uploads.queued_from(&username, here);
+  }
+  assert_eq!(
+    asked(&app, "another", SHARED).await.as_deref(),
+    Some(QUEUE_FULL)
+  );
+  assert_eq!(
+    asked(&app, "made-up3", SHARED).await,
+    None,
+    "one of them queues more"
+  );
+  let other = from("203.0.113.9");
+  let queued = enqueue_download(
+    &edges(&app),
+    "elsewhere",
+    other,
+    &RemoteFilename::from(SHARED),
+  )
+  .await;
+  assert!(queued.is_ok(), "{queued:?}");
 }
 
 #[tokio::test]

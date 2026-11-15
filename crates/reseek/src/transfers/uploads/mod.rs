@@ -46,8 +46,7 @@ use crate::telemetry::Telemetry;
 use crate::users::Directory;
 use governor::Governor;
 use intake::Intake;
-pub use intake::{NOT_SHARED, OVERWHELMED};
-pub use limits::TOO_MANY_FILES;
+pub use intake::{NOT_SHARED, OVERWHELMED, QUEUE_FULL};
 pub use queue::Forecast;
 use queue::UploadQueue;
 
