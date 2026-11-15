@@ -201,7 +201,7 @@ impl Messaging {
       if let Err(e) = client.leave_room(name).await {
         debug!(room = name, error = %e, "room joined after it was left not left again");
       }
-      return Err(ClientError::Canceled);
+      return Err(ClientError::Cancelled);
     };
     self.rooms_changed();
     // the server's list taken before we created a private room does not list it as ours
@@ -418,7 +418,7 @@ impl Messaging {
       match self.join_now(&room, false, false).await {
         Ok(Some(_)) => info!(room, "room joined"),
         Ok(None) => debug!(room, "room joined already"),
-        Err(ClientError::Canceled) => debug!(room, "room left while it was being joined"),
+        Err(ClientError::Cancelled) => debug!(room, "room left while it was being joined"),
         Err(e) if self.session_over(session) => {
           debug!(room, error = %e, "room not joined; the session ended");
           break;
@@ -497,7 +497,7 @@ impl Messaging {
         room = name,
         "room joined again after client events were lost"
       ),
-      Err(ClientError::Canceled) => debug!(room = name, "room left while it was being joined"),
+      Err(ClientError::Cancelled) => debug!(room = name, "room left while it was being joined"),
       Err(e) if self.session_over(session) => {
         debug!(room = name, error = %e, "room not joined again; the session ended");
       }
@@ -538,7 +538,7 @@ impl Messaging {
         match this.join_now(&room, false, false).await {
           Ok(Some(_)) => info!(room, "room joined"),
           Ok(None) => debug!(room, "room joined already"),
-          Err(ClientError::Canceled) => debug!(room, "room left while it was being joined"),
+          Err(ClientError::Cancelled) => debug!(room, "room left while it was being joined"),
           Err(e) => warn!(room, error = %e, "room not joined"),
         }
       }

@@ -444,7 +444,7 @@ mod tests {
       // the lookup can end now, so a connect the disconnect missed goes on and fails by itself
       drop(release);
       let ended = connecting.await;
-      assert!(matches!(ended, Err(ClientError::Canceled)), "{ended:?}");
+      assert!(matches!(ended, Err(ClientError::Cancelled)), "{ended:?}");
       assert_eq!(client.state(), ClientState::Disconnected);
       holder.await.unwrap();
     });

@@ -41,7 +41,7 @@ fn client_transfer(transfer: &soulseek_client::Transfer) -> serde_json::Value {
     "averageSpeed": transfer.average_speed,
     "startTime": time(transfer.start_time),
     "endTime": time(transfer.end_time),
-    "ipEndPoint": transfer.ip_end_point.map(|e| e.to_string()),
+    "ipEndPoint": transfer.ip_endpoint.map(|e| e.to_string()),
     "exception": transfer.error.as_ref().map(ToString::to_string),
   })
 }

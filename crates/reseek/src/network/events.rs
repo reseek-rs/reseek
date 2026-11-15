@@ -643,7 +643,7 @@ fn disconnected(app: &AppState, message: &str, error: Option<&ClientError>, reac
       );
     }
     // a restart or a disconnect asked for canceled the attempt
-    Some(ClientError::Canceled) => debug!("connection attempt canceled"),
+    Some(ClientError::Cancelled) => debug!("connection attempt canceled"),
     Some(ClientError::LoginRejected(reason)) => {
       error!(
         reason,
@@ -690,7 +690,7 @@ fn error_kind(error: &ClientError) -> &'static str {
     ClientError::InvalidArgument(_) => "InvalidArgument",
     ClientError::InvalidOperation(_) => "InvalidOperation",
     ClientError::Timeout(_) => "Timeout",
-    ClientError::Canceled => "Cancelled",
+    ClientError::Cancelled => "Cancelled",
     ClientError::Address(_) => "Address",
     ClientError::Listen { .. } => "Listen",
     ClientError::Connect { .. } => "Connect",
@@ -1008,7 +1008,7 @@ mod tests {
       end_time: None,
       elapsed_time: None,
       remaining_time: None,
-      ip_end_point: None,
+      ip_endpoint: None,
       error: None,
     }
   }

@@ -466,7 +466,7 @@ impl Watchdog {
       .await
     {
       Ok(()) => Attempt::Connected,
-      Err(ClientError::Canceled) => {
+      Err(ClientError::Cancelled) => {
         debug!("Reconnection attempt canceled");
         Attempt::Canceled
       }

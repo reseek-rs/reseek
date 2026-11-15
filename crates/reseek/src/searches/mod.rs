@@ -414,8 +414,8 @@ impl SearchService for Searches {
           running.queued();
           let _slot = tokio::select! {
             biased;
-            () = running.cancel.cancelled() => return Err(ClientError::Canceled),
-            () = session.cancelled() => return Err(ClientError::Canceled),
+            () = running.cancel.cancelled() => return Err(ClientError::Cancelled),
+            () = session.cancelled() => return Err(ClientError::Cancelled),
             slot = slots.acquire_owned() => slot.expect("the slots are never closed"),
           };
           client

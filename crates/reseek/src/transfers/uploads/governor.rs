@@ -183,7 +183,7 @@ mod tests {
       end_time: None,
       elapsed_time: None,
       remaining_time: None,
-      ip_end_point: None,
+      ip_endpoint: None,
       error: None,
     }
   }

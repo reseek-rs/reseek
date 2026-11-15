@@ -131,7 +131,7 @@ pub(super) fn failure(error: &ClientError) -> Failure {
     retryable: true,
   };
   match error {
-    ClientError::Canceled => Failure::canceled(),
+    ClientError::Cancelled => Failure::canceled(),
     ClientError::Timeout(message) => retry(TransferOutcome::TimedOut, message.clone()),
     ClientError::TransferRejected(reason) => Failure {
       outcome: TransferOutcome::Rejected,
@@ -799,7 +799,7 @@ mod tests {
       end_time: None,
       elapsed_time: None,
       remaining_time: None,
-      ip_end_point: None,
+      ip_endpoint: None,
       error: None,
     }
   }
