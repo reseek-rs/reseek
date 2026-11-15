@@ -253,6 +253,13 @@ impl Searches {
         }
       }
     };
+    // a canceled search, by us or by a disconnect, is told apart by the cancel we made
+    let result = result.and_then(|ended| match ended {
+      ClientState::Completed(soulseek_client::SearchOutcome::Canceled) => {
+        Err(ClientError::Canceled)
+      }
+      ended => Ok(ended),
+    });
     if let Err(error) = &result
       && running.refused(error.clone())
     {
@@ -481,6 +488,27 @@ mod tests {
       SearchState::Completed(SearchOutcome::TimedOut)
     );
     assert_eq!(stored.responses, Some(Vec::new()));
+  }
+
+  #[tokio::test]
+  async fn a_search_a_disconnect_ended_is_errored() {
+    let app = app("", &[]).await;
+    let searches = app.state.searches.clone();
+    let record = record();
+    let (id, written) = (record.id, record.clone());
+    searches
+      .db
+      .write(move |conn| store::insert(conn, &written))
+      .await
+      .unwrap();
+    let (accepted, _acceptance) = oneshot::channel();
+    let running = Arc::new(Running::new(record, accepted));
+    running.state_changed(ClientState::InProgress);
+    // the client ends a search it was not asked to cancel as canceled when the session ends
+    let ended = ClientState::Completed(soulseek_client::SearchOutcome::Canceled);
+    searches.follow(running, async move { Ok(ended) }).await;
+    let stored = searches.get(id, false).await.unwrap();
+    assert_eq!(stored.state, SearchState::Completed(SearchOutcome::Errored));
   }
 
   #[tokio::test]
