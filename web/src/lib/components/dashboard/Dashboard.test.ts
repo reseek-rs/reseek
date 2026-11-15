@@ -141,4 +141,38 @@ describe("the dashboard", () => {
     await flush();
     expect(summaries()).toBe(loaded + 1);
   });
+
+  it("reloads only once a name's card in the statistics has closed", async () => {
+    app.state = {
+      server: { isConnected: true, listen: { port: 2234, reachable: "unknown" } },
+      user: { username: "me" },
+      shares: { files: 0, directories: 0, scanning: false, scanPending: false }
+    } as never;
+    const alice = { username: "alice", count: 3, totalBytes: 300, averageSpeed: 100 };
+    const net = fakeNetwork((url) => {
+      if (url.pathname.endsWith("/summary")) return { Download: {}, Upload: {}, distinctUsers: 0 };
+      if (url.pathname.endsWith("/leaderboard")) return [alice];
+      return url.pathname.endsWith("/histogram") ? {} : [];
+    });
+    component = mount(Dashboard, { target: document.body });
+    await flush();
+    const reads = () => net.requests.filter((r) => r.url.pathname.endsWith("/leaderboard")).length;
+    const name = document.querySelector<HTMLElement>('table a[href*="alice"]')!;
+    name.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+    await flush();
+    expect(document.querySelector('[role="dialog"][aria-label="Profile of alice"]')).not.toBeNull();
+    const asked = reads();
+    // the tab comes back into view, which reloads the reports a moment later
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await flush();
+    expect(reads()).toBe(asked);
+    document
+      .querySelector('[role="dialog"]')!
+      .dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+      );
+    await flush();
+    expect(reads()).toBe(asked + 2);
+  });
 });

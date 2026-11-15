@@ -48,4 +48,43 @@ describe("the public room feed", () => {
     unmount(feed);
     expect(live.topics).not.toContain("public_rooms");
   });
+
+  it("stays where it is while a name's card in it is open, and follows the newest after", async () => {
+    app.state = { server: { isConnected: true }, user: { username: "me" } } as never;
+    const net = connected(() => undefined, "Administrator");
+    const feed = mount(PublicFeed, { target: document.body, props: {} });
+    await flush();
+    let said = 0;
+    const say = async () => {
+      said += 1;
+      net.frame("rooms.public_message", {
+        roomName: "indie",
+        username: "alice",
+        message: `message ${said}`,
+        receivedAt: "2026-11-05T10:00:00Z"
+      });
+      await flush();
+    };
+    await say();
+    const log = document.querySelector<HTMLElement>('[role="log"]')!;
+    // the times the feed was taken to its newest message
+    let followed = 0;
+    Object.defineProperty(log, "scrollTop", { get: () => 0, set: () => (followed += 1) });
+    log
+      .querySelector("a[href]:not([href*='rooms'])")!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+    await flush();
+    expect(document.querySelector('[role="dialog"][aria-label="Profile of alice"]')).not.toBeNull();
+    await say();
+    expect(followed).toBe(0);
+    document
+      .querySelector('[role="dialog"]')!
+      .dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+      );
+    await flush();
+    await say();
+    expect(followed).toBeGreaterThan(0);
+    unmount(feed);
+  });
 });
