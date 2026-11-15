@@ -251,8 +251,8 @@
       role="group"
       aria-label="Message actions"
       class={[
-        "absolute -top-3 right-3 z-10 items-center rounded-control border bg-overlay p-0.5 shadow-raised group-focus-within/message:flex group-focus-within/message:opacity-100 group-hover/message:flex group-hover/message:opacity-100 group-data-menu-open/message:flex group-data-menu-open/message:opacity-100",
-        near ? "flex opacity-0" : "hidden"
+        "absolute -top-3 right-3 z-10 items-center rounded-control border bg-overlay p-0.5 shadow-raised group-focus-within/message:pointer-events-auto group-focus-within/message:flex group-focus-within/message:opacity-100 group-hover/message:pointer-events-auto group-hover/message:flex group-hover/message:opacity-100 group-data-menu-open/message:pointer-events-auto group-data-menu-open/message:flex group-data-menu-open/message:opacity-100",
+        near ? "pointer-events-none flex opacity-0" : "hidden"
       ]}>
       {#each actions as action (action.label)}
         <!-- awake beside the message focus is in too, so the keys landing on an action don't
