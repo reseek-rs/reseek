@@ -638,7 +638,7 @@ mod tests {
     let setting = app.state.auth.setters.begin(Some(changer)).await;
     // another change ends a wait while the setter's change is being made, so that settle waits
     // for its turn
-    reload(&app, &VIEWER).await;
+    reload(&app, VIEWER).await;
     pass(SETTLE).await;
     reload(
       &app,
