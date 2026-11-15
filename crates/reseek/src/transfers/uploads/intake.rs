@@ -315,7 +315,7 @@ impl Uploads {
             filename, reason, suppressed, "upload request refused"
           );
         }
-        return Err(ClientError::DownloadEnqueue(reason.to_string()));
+        return Err(ClientError::UploadRefused(reason.to_string()));
       }
       Err(Refusal::Later) => {
         enqueue.requests_rejected.inc();
@@ -325,7 +325,7 @@ impl Uploads {
             filename, suppressed, "upload request failed; the agent holding the file is away"
           );
         }
-        return Err(ClientError::DownloadUnavailable);
+        return Err(ClientError::UploadUnavailable);
       }
       Err(Refusal::Failed(error)) => return Err(error),
     };
@@ -403,7 +403,7 @@ impl Uploads {
           sent.failed.push(EnqueueFailure {
             filename,
             message: match e {
-              ClientError::DownloadEnqueue(reason) => reason,
+              ClientError::UploadRefused(reason) => reason,
               other => other.to_string(),
             },
           });
@@ -426,8 +426,8 @@ impl Uploads {
     }
     match self.decide(username, None, filename, sees).await {
       Ok(located) => self.enqueue(username, filename, located, false).await,
-      Err(Refusal::Peer(reason)) => Err(ClientError::DownloadEnqueue(reason.to_string())),
-      Err(Refusal::Later) => Err(ClientError::DownloadUnavailable),
+      Err(Refusal::Peer(reason)) => Err(ClientError::UploadRefused(reason.to_string())),
+      Err(Refusal::Later) => Err(ClientError::UploadUnavailable),
       Err(Refusal::Failed(error)) => Err(error),
     }
   }

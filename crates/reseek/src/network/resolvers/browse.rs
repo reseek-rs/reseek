@@ -505,7 +505,7 @@ mod tests {
     let file = RemoteFilename::from("Music\\Album\\01.mp3");
     let queued = super::super::enqueue_download(&edges, "alice", peer, &file).await;
     assert!(
-      matches!(&queued, Err(soulseek_client::ClientError::DownloadEnqueue(r)) if r == super::super::NOT_SHARED),
+      matches!(&queued, Err(soulseek_client::ClientError::UploadRefused(r)) if r == super::super::NOT_SHARED),
       "{queued:?}"
     );
   }

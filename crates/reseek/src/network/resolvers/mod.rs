@@ -117,31 +117,31 @@ pub fn resolvers(edges: Arc<Edges>) -> Resolvers {
   let info = edges.clone();
   let place = edges;
   Resolvers {
-    enqueue_download: Some(Arc::new(move |username, endpoint, filename| {
+    upload_request: Some(Arc::new(move |username, endpoint, filename| {
       let edges = enqueue.clone();
       Box::pin(async move { enqueue_download(&edges, &username, endpoint, &filename).await })
     })),
-    browse_response_resolver: Some(Arc::new(move |username, endpoint| {
+    browse_response: Some(Arc::new(move |username, endpoint| {
       let edges = browsing.clone();
       Box::pin(async move { Ok(browse(&edges, &username, endpoint).await) })
     })),
-    directory_contents_resolver: Some(Arc::new(move |username, endpoint, _token, directory| {
+    folder_contents: Some(Arc::new(move |username, endpoint, _token, directory| {
       let edges = folder.clone();
       Box::pin(async move { Ok(directory_contents(&edges, &username, endpoint, &directory).await) })
     })),
-    search_response_resolver: Some(Arc::new(move |username, token, query| {
+    search_response: Some(Arc::new(move |username, token, query| {
       let edges = searching.clone();
       Box::pin(async move { Ok(search(&edges, &username, token, &query).await) })
     })),
-    user_info_resolver: Some(Arc::new(move |username, endpoint| {
+    user_info: Some(Arc::new(move |username, endpoint| {
       let edges = info.clone();
       Box::pin(async move { Ok(user_info(&edges, &username, endpoint).await) })
     })),
-    place_in_queue_resolver: Some(Arc::new(move |username, endpoint, filename| {
+    place_in_queue: Some(Arc::new(move |username, endpoint, filename| {
       let edges = place.clone();
       Box::pin(async move { Ok(place_in_queue(&edges, &username, endpoint, &filename).await) })
     })),
-    receive_offer: Some(Arc::new(move |username, endpoint, filename, size| {
+    unasked_offer: Some(Arc::new(move |username, endpoint, filename, size| {
       let edges = receiving.clone();
       Box::pin(async move { receive_offer(&edges, &username, endpoint, &filename, size).await })
     })),
@@ -194,13 +194,13 @@ pub async fn enqueue_download(
   if traverses(filename.as_str()) {
     suspicious(username, "enqueue", filename.as_str());
     uploads.request_refused();
-    return Err(ClientError::DownloadEnqueue(NOT_SHARED.into()));
+    return Err(ClientError::UploadRefused(NOT_SHARED.into()));
   }
   if uploads.overwhelmed(username) {
-    return Err(ClientError::DownloadEnqueue(OVERWHELMED.into()));
+    return Err(ClientError::UploadRefused(OVERWHELMED.into()));
   }
   if uploads.queue_full(username, endpoint.ip()) {
-    return Err(ClientError::DownloadEnqueue(QUEUE_FULL.into()));
+    return Err(ClientError::UploadRefused(QUEUE_FULL.into()));
   }
   if blocked(edges, username, Some(endpoint), BlockScope::Uploads) {
     uploads.request_refused();
@@ -211,7 +211,7 @@ pub async fn enqueue_download(
       .blocking
       .refusal_message
       .clone();
-    return Err(ClientError::DownloadEnqueue(refusal));
+    return Err(ClientError::UploadRefused(refusal));
   }
   let sees = edges.users.sees_from(username, endpoint.ip()).await;
   uploads
@@ -361,7 +361,7 @@ pub(crate) mod tests {
   }
 
   fn refused(result: Result<(), ClientError>) -> bool {
-    matches!(result, Err(ClientError::DownloadEnqueue(reason)) if reason == NOT_SHARED)
+    matches!(result, Err(ClientError::UploadRefused(reason)) if reason == NOT_SHARED)
   }
 
   fn empty_share(reply: soulseek_client::BrowseReply) -> bool {
@@ -466,7 +466,7 @@ pub(crate) mod tests {
     let edges = edges(&app);
     let file = name("@@music\\a.mp3");
     let banned =
-      |result| matches!(result, Err(ClientError::DownloadEnqueue(reason)) if reason == "Banned");
+      |result| matches!(result, Err(ClientError::UploadRefused(reason)) if reason == "Banned");
     assert!(banned(
       enqueue_download(&edges, "eve", from("198.51.100.9"), &file).await
     ));

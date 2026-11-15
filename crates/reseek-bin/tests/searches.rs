@@ -45,7 +45,7 @@ async fn responder(server: &Arc<Soulfind>) -> User {
     ..ClientOptions::default()
   };
   let answering = username.clone();
-  options.resolvers.search_response_resolver = Some(Arc::new(move |_, token, _| {
+  options.resolvers.search_response = Some(Arc::new(move |_, token, _| {
     let response = SearchResponse {
       username: answering.clone(),
       token,

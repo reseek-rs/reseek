@@ -817,7 +817,7 @@ async fn a_file_its_agent_is_slow_to_find_has_the_peer_ask_again() {
 
   let slow = asked(&app).await;
   assert!(
-    matches!(slow, Err(soulseek_client::ClientError::DownloadUnavailable)),
+    matches!(slow, Err(soulseek_client::ClientError::UploadUnavailable)),
     "{slow:?}"
   );
 
@@ -844,7 +844,7 @@ async fn a_file_its_agent_is_slow_to_find_has_the_peer_ask_again() {
     asking.await
   };
   assert!(
-    matches!(&refused, Err(soulseek_client::ClientError::DownloadEnqueue(reason)) if reason == "File not shared."),
+    matches!(&refused, Err(soulseek_client::ClientError::UploadRefused(reason)) if reason == "File not shared."),
     "{refused:?}"
   );
 }

@@ -47,7 +47,7 @@ async fn user(server: &Arc<Soulfind>) -> (User, Asked) {
     }],
     locked_directories: Vec::new(),
   };
-  options.resolvers.browse_response_resolver = Some(Arc::new(move |_, _| {
+  options.resolvers.browse_response = Some(Arc::new(move |_, _| {
     let shared = shared.clone();
     Box::pin(async move { Ok(BrowseReply::Response(shared)) })
   }));

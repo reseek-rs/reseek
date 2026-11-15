@@ -93,7 +93,7 @@ async fn a_profile_names_its_picture_by_a_url_that_serves_it_at_once() {
     ..ClientOptions::default()
   };
   let sent = picture.clone();
-  options.resolvers.user_info_resolver = Some(Arc::new(move |_, _| {
+  options.resolvers.user_info = Some(Arc::new(move |_, _| {
     let picture = sent.lock().unwrap().clone();
     Box::pin(async move {
       Ok(UserInfo {
@@ -181,11 +181,11 @@ async fn a_user_is_browsed_with_progress_asked_about_and_watched() {
     ..ClientOptions::default()
   };
   let shared = listing(200);
-  options.resolvers.browse_response_resolver = Some(Arc::new(move |_, _| {
+  options.resolvers.browse_response = Some(Arc::new(move |_, _| {
     let shared = shared.clone();
     Box::pin(async move { Ok(BrowseReply::Response(shared)) })
   }));
-  options.resolvers.user_info_resolver = Some(Arc::new(|_, _| {
+  options.resolvers.user_info = Some(Arc::new(|_, _| {
     Box::pin(async {
       Ok(UserInfo {
         description: "hello from the peer".into(),

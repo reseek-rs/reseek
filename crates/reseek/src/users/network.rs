@@ -309,7 +309,7 @@ impl UserService for Users {
     let directories = self
       .network
       .client()
-      .get_directory_contents(
+      .get_folder_contents(
         username,
         directory,
         None,

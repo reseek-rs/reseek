@@ -91,7 +91,7 @@ async fn another_user_searches_browses_and_asks_the_daemon() {
 
   let folder = other
     .client
-    .get_directory_contents(&name, "Music\\Abbey Road", None, None, &cancel)
+    .get_folder_contents(&name, "Music\\Abbey Road", None, None, &cancel)
     .await
     .unwrap();
   assert_eq!(folder.len(), 1);

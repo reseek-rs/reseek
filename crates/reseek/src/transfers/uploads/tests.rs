@@ -59,7 +59,7 @@ async fn asked_from(app: &TestApp, ip: &str, username: &str, filename: &str) -> 
   let peer = from(ip);
   match enqueue_download(&edges(app), username, peer, &RemoteFilename::from(filename)).await {
     Ok(()) => None,
-    Err(ClientError::DownloadEnqueue(reason)) => Some(reason),
+    Err(ClientError::UploadRefused(reason)) => Some(reason),
     Err(other) => panic!("not a refusal: {other}"),
   }
 }
@@ -285,7 +285,7 @@ async fn one_address_queues_its_share_of_users_and_more_once_they_leave() {
       let file = RemoteFilename::from(SHARED);
       match enqueue_download(&edges, &username, here, &file).await {
         Ok(()) => None,
-        Err(ClientError::DownloadEnqueue(reason)) => Some(reason),
+        Err(ClientError::UploadRefused(reason)) => Some(reason),
         Err(other) => panic!("not a refusal: {other}"),
       }
     }
