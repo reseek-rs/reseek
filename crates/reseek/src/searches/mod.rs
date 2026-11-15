@@ -736,6 +736,57 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn a_search_waiting_for_a_slot_is_cancelled_at_once_and_never_sent() {
+    use crate::testing::soulseek::{self, Server};
+    use soulseek_proto::ServerRequest;
+
+    let config = format!("{TRUSTED}[soulseek.search]\nmax_concurrent = 1\n");
+    let app = soulseek::app(&config).await;
+    let mut server = Server::silent().await;
+    server.login(&app).await;
+    let start = async |text: &str| {
+      let id = Uuid::new_v4();
+      let body = json!({ "id": id, "searchText": text, "searchTimeout": 60_000 });
+      let started = app
+        .send(request("POST", "/api/v0/searches", Some(body)))
+        .await;
+      assert_eq!(started.status, 200, "{:?}", started.body);
+      id
+    };
+    let sent = |request: &ServerRequest| match request {
+      ServerRequest::FileSearch(search) => Some(search.query.clone()),
+      _ => None,
+    };
+    start("first one").await;
+    assert_eq!(server.received(sent).await, "first one");
+    let waiting = start("second one").await;
+    let before = tokio::time::Instant::now();
+    let cancel = request("PUT", &format!("/api/v0/searches/{waiting}"), None);
+    assert_eq!(app.send(cancel).await.status, 200);
+    assert!(
+      before.elapsed() < ENDING,
+      "the cancel waited the search out"
+    );
+    // the end is written once the search's task has seen the cancel
+    let state = async || {
+      app
+        .send(request("GET", &format!("/api/v0/searches/{waiting}"), None))
+        .await
+        .json()["state"]
+        .clone()
+    };
+    let ended = tokio::time::timeout(ENDING, async {
+      while state().await != "Completed, Cancelled" {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+      }
+    })
+    .await;
+    assert!(ended.is_ok(), "{}", state().await);
+    let any_sent = |request: &ServerRequest| matches!(request, ServerRequest::FileSearch(_));
+    assert!(!server.receives(Duration::from_millis(300), any_sent).await);
+  }
+
+  #[tokio::test]
   async fn the_list_answers_with_the_other_searches_when_one_row_holds_an_unknown_state() {
     let app = app(TRUSTED, &[]).await;
     let known = "00000000-0000-4000-8000-0000000000aa";
