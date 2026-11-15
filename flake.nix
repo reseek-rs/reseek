@@ -166,14 +166,14 @@
             env.RUST_BACKTRACE = "1";
           };
 
+          # no mold: cargo fuzz sets RUSTFLAGS, which takes the place of the linker flag that
+          # .cargo/config.toml gives
           fuzz = pkgs.mkShell {
             packages = [
               nightly
               pkgs.cargo-fuzz
               pkgs.just
-            ]
-            # the linker .cargo/config.toml names, which `just fuzz-seed` links with
-            ++ lib.optional pkgs.stdenv.hostPlatform.isLinux pkgs.mold;
+            ];
           };
         }
       );
