@@ -214,7 +214,7 @@ impl Messaging {
       .write(move |conn| {
         conn.execute(
           "UPDATE sessions SET logged_in_at = ?2, last_seen_at = ?2 \
-           WHERE id = ?1 AND after_loss = 1 AND ended_at IS NULL",
+           WHERE id = ?1 AND ended_at IS NULL",
           params![row, now],
         )
       })
@@ -367,6 +367,43 @@ mod tests {
       (older.len(), newer.len()),
       (0, 1),
       "a gap starting where the ranges meet is the newer one's"
+    );
+  }
+
+  #[tokio::test]
+  async fn a_session_that_ended_before_its_rooms_were_read_again_keeps_its_times() {
+    let app = crate::testing::app("", &[]).await;
+    let messaging = &app.state.messaging;
+    let began = Utc::now() - chrono::Duration::minutes(10);
+    let ended = began + chrono::Duration::minutes(5);
+    let rows = messaging
+      .database()
+      .write(move |conn| {
+        let mut rows = Vec::new();
+        for ended_at in [Some(timestamp(ended)), None] {
+          conn.execute(
+            "INSERT INTO sessions (logged_in_at, last_seen_at, ended_at, after_loss) \
+             VALUES (?1, ?1, ?2, 1)",
+            params![timestamp(began), ended_at],
+          )?;
+          rows.push(conn.last_insert_rowid());
+        }
+        Ok(rows)
+      })
+      .await
+      .unwrap();
+    for &row in &rows {
+      messaging.rooms_read_again(row).await;
+    }
+    let sessions = messaging.database().read(sessions).await.unwrap();
+    assert_eq!(
+      timestamp(sessions[0].logged_in_at),
+      timestamp(began),
+      "ended, kept"
+    );
+    assert!(
+      sessions[1].logged_in_at > began,
+      "running, moved past the joins"
     );
   }
 
