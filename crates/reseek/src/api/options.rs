@@ -18,7 +18,7 @@ use axum::Extension;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use cascade::{Change, Lasts, Loaded};
+use cascade::{Lasts, Loaded};
 use chrono::Utc;
 use serde_json::Value;
 use tracing::{info, warn};
@@ -176,7 +176,7 @@ async fn patch_options(
       }
       other => ApiError::from(other),
     })?;
-  setting.made(revision_of(change.as_deref()));
+  setting.made(change.as_deref());
   info!(
     by = admin.principal.subject,
     keys = keys.join(", "),
@@ -213,7 +213,7 @@ async fn delete_override(
   let read = query.revision.as_deref();
   let setting = app.auth.setters.begin(setter(session)).await;
   let change = app.config.remove_override(&key, read).await?;
-  setting.made(revision_of(change.as_deref()));
+  setting.made(change.as_deref());
   info!(
     by = admin.principal.subject,
     key, "runtime override removed"
@@ -329,7 +329,7 @@ async fn patch_file(
       patch.unset,
     )
     .await?;
-  setting.made(revision_of(written.change.as_deref()));
+  setting.made(written.change.as_deref());
   info!(
     by = admin.principal.subject,
     file = name,
@@ -371,7 +371,7 @@ async fn put_file(
     .config
     .replace_file(&name, replace.revision.as_deref(), replace.text)
     .await?;
-  setting.made(revision_of(written.change.as_deref()));
+  setting.made(written.change.as_deref());
   info!(
     by = admin.principal.subject,
     file = name,
@@ -444,11 +444,6 @@ fn setter(session: Option<Extension<RequestSession>>) -> Option<Setter> {
     session: session.id,
     subject: session.subject,
   })
-}
-
-/// The revision a change gave the configuration, `None` when it changed nothing.
-fn revision_of(change: Option<&Change<Options>>) -> Option<&str> {
-  change.map(|change| change.current.revision.as_str())
 }
 
 fn is_authentication(key: &str) -> bool {

@@ -1,15 +1,15 @@
 //! A new password for a local account ends that account's sessions, all but the one that set
-//! it: which accounts a configuration change gave a new password, and which browser session made
-//! each change through the API.
+//! it, once the configuration with it stands: which accounts a change gave a new password, and
+//! which browser sessions set one through the API.
 
-use std::collections::HashMap;
 use std::sync::Mutex;
 
+use cascade::Change;
 use reseek_shares::lock;
 use tokio::sync::MutexGuard;
 
 use super::local::subject_of;
-use crate::config::{Authentication, LocalUser};
+use crate::config::{Authentication, LocalUser, Options};
 
 /// What a password is checked against: its hash when one is set, else the password itself.
 #[derive(PartialEq)]
@@ -70,15 +70,15 @@ pub struct Setter {
   pub subject: String,
 }
 
-/// The configuration changes browser sessions made through the API, so the sessions a new
-/// password ends keep the one that set it.
+/// The browser sessions that set a new password through the API since the configuration last
+/// stood, so the sessions a new password ends keep the one that set it.
 #[derive(Default)]
 pub struct Setters {
-  /// held from before a session makes a change until the change is recorded, so the change is
-  /// not acted on before it is
+  /// held from before a session makes a change until the change is recorded, so the
+  /// configuration is not taken to stand while a change is half recorded
   turn: tokio::sync::Mutex<()>,
-  /// the session that made each change, by the revision the change gave the configuration
-  made: Mutex<HashMap<String, Setter>>,
+  /// the sessions that set a new password, oldest first
+  made: Mutex<Vec<Setter>>,
 }
 
 impl Setters {
@@ -92,17 +92,11 @@ impl Setters {
     }
   }
 
-  /// The session that made the change that gave the configuration `revision`, once a change
-  /// being made is recorded; `None` for a change no session made through the API.
-  pub async fn made_by(&self, revision: &str) -> Option<Setter> {
+  /// The sessions that set a new password since the last time this returned them, taken once
+  /// no change is being made and `stands` holds; `None`, keeping them, when it does not.
+  pub async fn take_if(&self, stands: impl FnOnce() -> bool) -> Option<Vec<Setter>> {
     let _turn = self.turn.lock().await;
-    lock(&self.made).remove(revision)
-  }
-
-  /// Every session recorded as having made a change not asked about yet, for changes missed.
-  pub async fn take_all(&self) -> Vec<Setter> {
-    let _turn = self.turn.lock().await;
-    lock(&self.made).drain().map(|(_, setter)| setter).collect()
+    stands().then(|| std::mem::take(&mut *lock(&self.made)))
   }
 }
 
@@ -114,10 +108,15 @@ pub struct Setting<'a> {
 }
 
 impl Setting<'_> {
-  /// Records that the change gave the configuration `revision`; `None` when it changed nothing.
-  pub fn made(self, revision: Option<&str>) {
-    if let (Some(setter), Some(revision)) = (self.setter, revision) {
-      lock(&self.setters.made).insert(revision.to_string(), setter);
+  /// Records the change made, `None` when it changed nothing, when it gave a local account a
+  /// new password.
+  pub fn made(self, change: Option<&Change<Options>>) {
+    let (Some(setter), Some(change)) = (self.setter, change) else {
+      return;
+    };
+    let (previous, current) = (&change.previous.values, &change.current.values);
+    if !changed(&previous.web.authentication, &current.web.authentication).is_empty() {
+      lock(&self.setters.made).push(setter);
     }
   }
 }

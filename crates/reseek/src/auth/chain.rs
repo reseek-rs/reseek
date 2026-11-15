@@ -12,7 +12,7 @@ use std::net::IpAddr;
 use api_types::auth::{Principal, Role, Via};
 use api_types::events::{Event, SessionCreated, SessionRevokeReason, SessionRevoked};
 use axum::http::{HeaderMap, HeaderValue, Uri, header};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use soulseek_client::LogLimiter;
 use tracing::{Instrument, debug, info, warn};
 
@@ -498,11 +498,12 @@ pub async fn end_sessions_without_role(app: &AppState) -> Result<(), ApiError> {
   end_sessions(app, ids, None, SessionRevokeReason::Configuration).await
 }
 
-/// Ends the active sessions of the local accounts `subjects`, whose passwords changed, but the
-/// one of `kept` that set it, if any.
+/// Ends the active sessions of the local accounts `subjects`, whose passwords changed at
+/// `changed_at`, that began before then, but those of `kept`, which set it.
 pub async fn end_sessions_for_new_passwords(
   app: &AppState,
   subjects: &[String],
+  changed_at: DateTime<Utc>,
   kept: &[Setter],
 ) -> Result<(), ApiError> {
   let idle = idle(app);
@@ -514,6 +515,7 @@ pub async fn end_sessions_for_new_passwords(
     ids.extend(
       active
         .into_iter()
+        .filter(|session| session.created_at < changed_at)
         .map(|session| session.id)
         .filter(|id| !kept.iter().any(|setter| &setter.session == id)),
     );
