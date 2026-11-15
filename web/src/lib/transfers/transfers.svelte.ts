@@ -193,8 +193,10 @@ export class Transfers {
     );
   };
 
-  /** Asks the peer for a queued download's place, and shows it on the row at once */
-  /** null when the peer doesn't know the place */
+  /**
+   * Asks the peer for a queued download's place, and shows it on the row at once; null when the
+   * peer doesn't know it
+   */
   placeInQueue = async (t: Transfer): Promise<Outcome<number | null>> => {
     // a frame for the row while the peer is asked is newer than the answer
     const turn = this.list.readingRow();
