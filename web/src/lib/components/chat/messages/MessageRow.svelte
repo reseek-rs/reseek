@@ -186,7 +186,7 @@
   <div class="min-w-0">
     {#if head}
       <div class="flex items-baseline gap-2 leading-5">
-        <Username name={m.author} card class="text-sm font-semibold" />
+        <Username name={m.author} card class="text-sm" />
         {#if m.self}<span class="shrink-0 text-xs text-fg-muted">you</span>{/if}
         <Tooltip text={formatDate(m.timestamp)} dense dormant={!awake}>
           {#snippet child({ props })}
