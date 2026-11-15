@@ -498,30 +498,27 @@ pub async fn end_sessions_without_role(app: &AppState) -> Result<(), ApiError> {
   end_sessions(app, ids, None, SessionRevokeReason::Configuration).await
 }
 
-/// Ends the active sessions of the local accounts `subjects`, whose passwords changed at
-/// `changed_at`, that began before then, but those of `kept`, which set it.
-pub async fn end_sessions_for_new_passwords(
+/// Ends the active sessions of the local account `account`, whose password last changed at
+/// `changed_at`, that began before then, but the one of `kept` that set it.
+pub async fn end_sessions_for_new_password(
   app: &AppState,
-  subjects: &[String],
+  account: &str,
   changed_at: DateTime<Utc>,
   kept: &[Setter],
 ) -> Result<(), ApiError> {
-  let idle = idle(app);
-  let mut ids = Vec::new();
-  for subject in subjects {
-    let active = sessions::active(&app.auth.db, Some(subject.clone()), idle)
-      .await
-      .map_err(ApiError::internal)?;
-    ids.extend(
-      active
-        .into_iter()
-        .filter(|session| session.created_at < changed_at)
-        .map(|session| session.id)
-        .filter(|id| !kept.iter().any(|setter| &setter.session == id)),
-    );
-  }
-  let by = match kept {
-    [setter] => Some(setter.subject.clone()),
+  let ids = sessions::active(&app.auth.db, Some(account.to_string()), idle(app))
+    .await
+    .map_err(ApiError::internal)?
+    .into_iter()
+    .filter(|session| session.created_at < changed_at)
+    .map(|session| session.id)
+    .filter(|id| !kept.iter().any(|setter| setter.set(id, account)))
+    .collect();
+  let mut setters = kept
+    .iter()
+    .filter(|setter| setter.accounts.iter().any(|a| a == account));
+  let by = match (setters.next(), setters.next()) {
+    (Some(setter), None) => Some(setter.changer.subject.clone()),
     _ => None,
   };
   end_sessions(app, ids, by, SessionRevokeReason::Password).await

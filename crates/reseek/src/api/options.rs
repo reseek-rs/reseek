@@ -18,7 +18,7 @@ use axum::Extension;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use cascade::{Lasts, Loaded};
+use cascade::{Change, Lasts, Loaded};
 use chrono::Utc;
 use serde_json::Value;
 use tracing::{info, warn};
@@ -27,7 +27,7 @@ use utoipa_axum::routes;
 
 use super::error::ApiError;
 use crate::app::AppState;
-use crate::auth::passwords::Setter;
+use crate::auth::passwords::{Changer, Setting};
 use crate::auth::sessions::lifetime;
 use crate::auth::{Administrator, AnyRole, Authorized, RequestSession, require_interactive};
 use crate::config::{Options, redact, view};
@@ -176,7 +176,7 @@ async fn patch_options(
       }
       other => ApiError::from(other),
     })?;
-  setting.made(change.as_deref());
+  made(setting, change.as_deref());
   info!(
     by = admin.principal.subject,
     keys = keys.join(", "),
@@ -213,7 +213,7 @@ async fn delete_override(
   let read = query.revision.as_deref();
   let setting = app.auth.setters.begin(setter(session)).await;
   let change = app.config.remove_override(&key, read).await?;
-  setting.made(change.as_deref());
+  made(setting, change.as_deref());
   info!(
     by = admin.principal.subject,
     key, "runtime override removed"
@@ -329,7 +329,7 @@ async fn patch_file(
       patch.unset,
     )
     .await?;
-  setting.made(written.change.as_deref());
+  made(setting, written.change.as_deref());
   info!(
     by = admin.principal.subject,
     file = name,
@@ -371,7 +371,7 @@ async fn put_file(
     .config
     .replace_file(&name, replace.revision.as_deref(), replace.text)
     .await?;
-  setting.made(written.change.as_deref());
+  made(setting, written.change.as_deref());
   info!(
     by = admin.principal.subject,
     file = name,
@@ -439,11 +439,21 @@ fn with_urls(
 
 /// The browser session a change is made from, which a new password it sets for its own account
 /// does not end.
-fn setter(session: Option<Extension<RequestSession>>) -> Option<Setter> {
-  session.map(|Extension(RequestSession(session))| Setter {
+fn setter(session: Option<Extension<RequestSession>>) -> Option<Changer> {
+  session.map(|Extension(RequestSession(session))| Changer {
     session: session.id,
     subject: session.subject,
   })
+}
+
+/// Records `change`, `None` when nothing changed, in `setting`.
+fn made(setting: Setting<'_>, change: Option<&Change<Options>>) {
+  if let Some(change) = change {
+    setting.made(
+      &change.previous.values.web.authentication,
+      &change.current.values.web.authentication,
+    );
+  }
 }
 
 fn is_authentication(key: &str) -> bool {

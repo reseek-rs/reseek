@@ -4,12 +4,11 @@
 
 use std::sync::Mutex;
 
-use cascade::Change;
 use reseek_shares::lock;
 use tokio::sync::MutexGuard;
 
 use super::local::subject_of;
-use crate::config::{Authentication, LocalUser, Options};
+use crate::config::{Authentication, LocalUser};
 
 /// What a password is checked against: its hash when one is set, else the password itself.
 #[derive(PartialEq)]
@@ -61,13 +60,29 @@ pub fn changed(previous: &Authentication, current: &Authentication) -> Vec<Strin
   subjects
 }
 
-/// A browser session that changed the configuration: its id, and the subject it is for.
+/// A browser session making a change to the configuration: its id, and the subject it is for.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Setter {
+pub struct Changer {
   /// the session's id
   pub session: String,
   /// who the session is for
   pub subject: String,
+}
+
+/// A browser session that gave local accounts a new password.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Setter {
+  /// the session
+  pub changer: Changer,
+  /// the subjects of the accounts it gave one
+  pub accounts: Vec<String>,
+}
+
+impl Setter {
+  /// Whether this is the session `session`, which set the password of `account`.
+  pub fn set(&self, session: &str, account: &str) -> bool {
+    self.changer.session == session && self.accounts.iter().any(|a| a == account)
+  }
 }
 
 /// The browser sessions that set a new password through the API since the configuration last
@@ -82,12 +97,12 @@ pub struct Setters {
 }
 
 impl Setters {
-  /// Takes the turn for a change `setter` is about to make, `None` for one no browser session
+  /// Takes the turn for a change `changer` is about to make, `None` for one no browser session
   /// makes; the change is recorded through [`Setting::made`].
-  pub async fn begin(&self, setter: Option<Setter>) -> Setting<'_> {
+  pub async fn begin(&self, changer: Option<Changer>) -> Setting<'_> {
     Setting {
       setters: self,
-      setter,
+      changer,
       _turn: self.turn.lock().await,
     }
   }
@@ -103,20 +118,20 @@ impl Setters {
 /// The turn of a change being made.
 pub struct Setting<'a> {
   setters: &'a Setters,
-  setter: Option<Setter>,
+  changer: Option<Changer>,
   _turn: MutexGuard<'a, ()>,
 }
 
 impl Setting<'_> {
-  /// Records the change made, `None` when it changed nothing, when it gave a local account a
-  /// new password.
-  pub fn made(self, change: Option<&Change<Options>>) {
-    let (Some(setter), Some(change)) = (self.setter, change) else {
+  /// Records the change made from `previous` to `current` authentication options, when it gave
+  /// a local account a new password.
+  pub fn made(self, previous: &Authentication, current: &Authentication) {
+    let Some(changer) = self.changer else {
       return;
     };
-    let (previous, current) = (&change.previous.values, &change.current.values);
-    if !changed(&previous.web.authentication, &current.web.authentication).is_empty() {
-      lock(&self.setters.made).push(setter);
+    let accounts = changed(previous, current);
+    if !accounts.is_empty() {
+      lock(&self.setters.made).push(Setter { changer, accounts });
     }
   }
 }
@@ -152,5 +167,58 @@ mod tests {
     after.username = "admin".into();
     after.local.users.clear();
     assert!(changed(&before, &after).is_empty());
+  }
+
+  fn changer(session: &str) -> Changer {
+    Changer {
+      session: session.into(),
+      subject: "local:reseek".into(),
+    }
+  }
+
+  #[tokio::test]
+  async fn the_setters_are_taken_once_no_change_is_being_made_and_the_options_stand() {
+    use futures_util::FutureExt;
+
+    let before = Authentication::default();
+    let after = Authentication {
+      password: "new".into(),
+      ..Authentication::default()
+    };
+    let setters = Setters::default();
+    let setting = setters.begin(Some(changer("a"))).await;
+    let mut taking = Box::pin(setters.take_if(|| true));
+    assert!(
+      (&mut taking).now_or_never().is_none(),
+      "a change is being made"
+    );
+    setting.made(&before, &after);
+    let taken = taking.await.unwrap();
+    assert_eq!(taken.len(), 1);
+    assert!(taken[0].set("a", "local:reseek"));
+    assert!(
+      !taken[0].set("a", "local:viewer"),
+      "only the account it set"
+    );
+    assert!(!taken[0].set("b", "local:reseek"));
+
+    setters
+      .begin(Some(changer("b")))
+      .await
+      .made(&before, &after);
+    // a change to nothing that gives a new password is no setter
+    setters
+      .begin(Some(changer("c")))
+      .await
+      .made(&before, &before);
+    assert_eq!(
+      setters.take_if(|| false).await,
+      None,
+      "kept while it does not stand"
+    );
+    let taken = setters.take_if(|| true).await.unwrap();
+    assert_eq!(taken.len(), 1);
+    assert!(taken[0].set("b", "local:reseek"));
+    assert_eq!(setters.take_if(|| true).await, Some(Vec::new()));
   }
 }

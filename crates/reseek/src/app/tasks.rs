@@ -5,11 +5,12 @@
 //! scheduler runs the rest: ending the sessions that expired and deleting old ended sessions and
 //! tokens.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use api_types::events::{Event, SessionRevokeReason, SessionRevoked};
 use api_types::live::LiveFrame;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use soulseek_client::LogLimiter;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{Instrument, debug, info, info_span, warn};
@@ -70,8 +71,9 @@ async fn settle_sessions(app: AppState) {
   let mut standing = loads.borrow_and_update().values.web.authentication.clone();
   // the options as they last stood, which a new password is told from
   let mut stood_as = standing.clone();
-  // when they first changed since then; a session begun after that may have the new password
-  let mut changed_at = None;
+  // when each local account's password last changed since then; a session of the account begun
+  // after that may have the new password
+  let mut changed_at: HashMap<String, DateTime<Utc>> = HashMap::new();
   let mut since = tokio::time::Instant::now();
   let mut settled = false;
   loop {
@@ -91,8 +93,11 @@ async fn settle_sessions(app: AppState) {
         }
         let loaded = loads.borrow_and_update();
         if loaded.values.web.authentication != standing {
+          let now = Utc::now();
+          for account in passwords::changed(&standing, &loaded.values.web.authentication) {
+            changed_at.insert(account, now);
+          }
           standing = loaded.values.web.authentication.clone();
-          changed_at.get_or_insert_with(Utc::now);
           since = tokio::time::Instant::now();
           settled = false;
         }
@@ -108,17 +113,16 @@ async fn settle_sessions(app: AppState) {
         if let Err(e) = crate::auth::end_sessions_without_role(&app).await {
           warn!(error = ?e, "the sessions of users with no role now were not ended");
         }
-        let subjects = passwords::changed(&stood_as, &standing);
-        if let Some(before) = changed_at.take()
-          && !subjects.is_empty()
-        {
-          info!(
-            subjects = subjects.join(", "),
-            "local account passwords changed; their other sessions end"
-          );
-          let ended = crate::auth::end_sessions_for_new_passwords(&app, &subjects, before, &setters);
+        // a password changed and changed back, as in a file read half written, is no new one
+        let accounts = passwords::changed(&stood_as, &standing);
+        for (account, at) in changed_at.drain() {
+          if !accounts.contains(&account) {
+            continue;
+          }
+          info!(account, "local account password changed; its other sessions end");
+          let ended = crate::auth::end_sessions_for_new_password(&app, &account, at, &setters);
           if let Err(e) = ended.await {
-            warn!(error = ?e, "the sessions of accounts with a new password were not ended");
+            warn!(error = ?e, account, "the sessions of an account with a new password were not ended");
           }
         }
         stood_as = standing.clone();
@@ -406,6 +410,18 @@ mod tests {
     set_cookie(&answer.headers, "reseek_session").unwrap()
   }
 
+  /// A change of the built-in account's password to `password`, made from the session of
+  /// `cookie`.
+  fn new_password(cookie: &str, password: &str) -> axum::http::Request<axum::body::Body> {
+    let change = json!({ "set": { "web.authentication.password": password } });
+    let change = with(
+      request("PATCH", "/api/v0/options", Some(change)),
+      "cookie",
+      cookie,
+    );
+    with(change, "origin", "http://localhost")
+  }
+
   #[tokio::test(start_paused = true)]
   async fn a_new_password_that_stands_ends_the_accounts_other_sessions() {
     let config = |viewer: &str, host: usize| {
@@ -419,15 +435,7 @@ mod tests {
     let other = admin(&app, "reseek").await;
     let viewer = signed_in(&app).await;
 
-    let change = json!({ "set": { "web.authentication.password": "n3w" } });
-    let change = with(
-      request("PATCH", "/api/v0/options", Some(change)),
-      "cookie",
-      &setter,
-    );
-    let changed = app
-      .send_from(OUTSIDE, with(change, "origin", "http://localhost"))
-      .await;
+    let changed = app.send_from(OUTSIDE, new_password(&setter, "n3w")).await;
     assert_eq!(changed.status, 200, "{:?}", changed.body);
     let newer = admin(&app, "n3w").await;
     // many changes meanwhile, none to the authentication options
@@ -449,6 +457,43 @@ mod tests {
     reload(&app, &config("seen", 0)).await;
     pass(SETTLE).await;
     until_ended(&app, &viewer).await;
+    assert_eq!(status(&app, &setter).await, 200);
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn a_session_begun_with_the_old_password_ends_whatever_changed_before() {
+    let config = |extra: &str| format!("remote_configuration = true\n{extra}");
+    let app = app(&config(""), &[]).await;
+    let setter = admin(&app, "reseek").await;
+    // another change to the authentication options first, in the same wait
+    reload(
+      &app,
+      &config("[web.authentication.local.users.viewer]\npassword = \"look\"\n"),
+    )
+    .await;
+    pass(Duration::from_secs(2)).await;
+    let leaked = admin(&app, "reseek").await;
+    pass(Duration::from_secs(2)).await;
+    let changed = app.send_from(OUTSIDE, new_password(&setter, "n3w")).await;
+    assert_eq!(changed.status, 200, "{:?}", changed.body);
+    pass(SETTLE).await;
+    until_ended(&app, &leaked).await;
+    assert_eq!(status(&app, &setter).await, 200);
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn a_session_begun_with_a_password_changed_again_ends() {
+    let app = app("remote_configuration = true\n", &[]).await;
+    let setter = admin(&app, "reseek").await;
+    let changed = app.send_from(OUTSIDE, new_password(&setter, "mid")).await;
+    assert_eq!(changed.status, 200, "{:?}", changed.body);
+    pass(Duration::from_secs(2)).await;
+    let between = admin(&app, "mid").await;
+    pass(Duration::from_secs(2)).await;
+    let changed = app.send_from(OUTSIDE, new_password(&setter, "new")).await;
+    assert_eq!(changed.status, 200, "{:?}", changed.body);
+    pass(SETTLE).await;
+    until_ended(&app, &between).await;
     assert_eq!(status(&app, &setter).await, 200);
   }
 
