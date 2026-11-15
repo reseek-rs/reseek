@@ -26,6 +26,7 @@
   import Badge from "#lib/components/ui/Badge.svelte";
   import Button from "#lib/components/ui/Button.svelte";
   import * as Menu from "#lib/components/ui/menu/menu.js";
+  import { ROW_MENU } from "#lib/components/ui/menu/switch.js";
   import MiddleTruncate from "#lib/components/ui/MiddleTruncate.svelte";
   import Notice from "#lib/components/ui/Notice.svelte";
   import Tooltip from "#lib/components/ui/Tooltip.svelte";
@@ -424,6 +425,7 @@
             size="icon-sm"
             class="row-menu"
             aria-label={`Menu for ${chatName(t)}`}
+            {...{ [ROW_MENU]: "" }}
             aria-haspopup="menu"
             aria-expanded={lineMenu.line?.key === line.key}
             onclick={(e) => {

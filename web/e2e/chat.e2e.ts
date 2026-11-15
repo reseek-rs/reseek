@@ -254,6 +254,56 @@ test("a right-click opens a message's menu at the pointer, as on every list", as
   expect(top - at.y).toBeLessThan(8);
 });
 
+test("a click on a chat's menu button opens it with focus while a message's is open", async ({
+  page
+}) => {
+  await fakeChat(page);
+  await visit(page, "/chat");
+  await open(page, "/chat/rooms/indie");
+  const log = page.getByRole("log");
+  await expect(log.getByText("anyone have the new boards of canada rip?")).toBeVisible();
+  // the newest message's menu from the keys, which give the message focus back on its close
+  await log.focus();
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("Enter");
+  const opened = page.locator("[role=menu][data-state=open]");
+  await expect(opened).toHaveCount(1);
+  const button = page.getByRole("button", { name: /^Menu for / }).first();
+  // press and release at once, inside the closing menu's own wait
+  await button.click({ force: true });
+  await expect(opened).toHaveCount(1);
+  await expect(opened).not.toContainText("Copy text");
+  await expect(opened).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(opened.locator("[data-highlighted]")).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(opened).toHaveCount(0);
+  await expect(button).toBeFocused();
+});
+
+test("a click on a chat's menu button opens it with focus while another chat's is open", async ({
+  page
+}) => {
+  await fakeChat(page);
+  await visit(page, "/chat");
+  await open(page, "/chat/rooms/indie");
+  const buttons = page.getByRole("button", { name: /^Menu for / });
+  await buttons.nth(1).click({ force: true });
+  const opened = page.locator("[role=menu][data-state=open]");
+  await expect(opened).toHaveCount(1);
+  const first = await opened.textContent();
+  // one list's menu, from another of its rows, pressed and released at once
+  await buttons.first().click({ force: true });
+  await expect(opened).toHaveCount(1);
+  await expect(opened).not.toHaveText(first!);
+  await expect(opened).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(opened.locator("[data-highlighted]")).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(opened).toHaveCount(0);
+  await expect(buttons.first()).toBeFocused();
+});
+
 test("a message takes the page's own hover tint", async ({ page }) => {
   await fakeChat(page);
   await visit(page, "/chat");

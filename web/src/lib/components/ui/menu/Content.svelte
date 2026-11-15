@@ -5,8 +5,15 @@
   import { safeArea } from "#lib/ui/safearea.svelte.js";
 
   import { anchorOf } from "./anchor";
+  import { switchOnPress } from "./switch";
 
-  let { sideOffset = 4, class: className, ...rest }: DropdownMenu.ContentProps = $props();
+  let {
+    sideOffset = 4,
+    class: className,
+    onInteractOutside,
+    onCloseAutoFocus,
+    ...rest
+  }: DropdownMenu.ContentProps = $props();
 
   // in a LazyRoot there is no trigger of the menu's own: it hangs from the button that opened
   // it, which gets focus back on close
@@ -22,10 +29,16 @@
       className
     )}
     customAnchor={anchor?.()}
+    onInteractOutside={(e) => {
+      onInteractOutside?.(e);
+      if (!e.defaultPrevented) switchOnPress(e, anchor?.());
+    }}
     onCloseAutoFocus={(e) => {
-      if (!anchor) return;
-      e.preventDefault();
-      anchor()?.focus({ preventScroll: true });
+      if (onCloseAutoFocus) onCloseAutoFocus(e);
+      else if (anchor) {
+        e.preventDefault();
+        anchor()?.focus({ preventScroll: true });
+      }
     }}
     {...rest} />
 </DropdownMenu.Portal>

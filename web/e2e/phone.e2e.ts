@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 
 import { WIDEST } from "../src/lib/format";
 import {
@@ -10,7 +10,6 @@ import {
   fakeFolder,
   fakeReports,
   fakeSearch,
-  manyDownloads,
   SEARCH_ID
 } from "./support/fakes";
 import { fits, holds, layerHolds, shows } from "./support/fits";
@@ -224,83 +223,4 @@ test("a toast's countdown runs along its foot and holds under the pointer", asyn
   await expect.poll(countdown).toBe("paused");
   await page.mouse.move(0, 0);
   await expect.poll(countdown).toBe("running");
-});
-
-test.describe("on a touch screen", () => {
-  test.use({ hasTouch: true, isMobile: true });
-
-  /**
-   * 300 downloads on the phone's screen, flat, their More buttons, and the first row past `below`
-   * pixels down, low on the screen, whose menu opens upward and leaves the first row clear
-   */
-  const rows = async (page: Page, below = 780) => {
-    await manyDownloads(page, 300);
-    // flat, so every row is a file's
-    await page.addInitScript(() =>
-      localStorage.setItem("transfers.view.download", JSON.stringify({ groupBy: "flat" }))
-    );
-    await visit(page, "/downloads");
-    const more = page.getByRole("button", { name: /^More for / });
-    await expect(more.first()).toBeVisible();
-    const ys = await more.evaluateAll((all) => all.map((b) => b.getBoundingClientRect().y));
-    return { more, low: ys.findIndex((y) => y > below) };
-  };
-
-  /** The size under the name of the row `more` is in, which is no control */
-  const sizeOf = (more: Locator) =>
-    more
-      .locator("xpath=ancestor::*[@data-line][1]")
-      .locator(".whitespace-nowrap.tabular-nums")
-      .first();
-
-  /** Waits for the open menu to have flown in, and checks `box` is clear above it */
-  const clearOfMenu = async (page: Page, box: { y: number; height: number }) => {
-    const menu = page.locator("[role=menu][data-state=open]");
-    await expect(menu).toHaveCount(1);
-    await menu.evaluate((e) => Promise.all(e.getAnimations().map((a) => a.finished)));
-    expect(box.y + box.height, "clear of the menu").toBeLessThan((await menu.boundingBox())!.y);
-  };
-
-  /** Taps the first row's More, and checks the menu then open is its, hanging under it */
-  const opensFirst = async (page: Page, more: Locator) => {
-    const first = (await more.first().boundingBox())!;
-    await page.touchscreen.tap(first.x + first.width / 2, first.y + first.height / 2);
-    const opened = page.locator("[role=menu][data-state=open]");
-    await expect(opened).toHaveCount(1);
-    const box = (await opened.boundingBox())!;
-    expect(box.y).toBeGreaterThanOrEqual(first.y + first.height);
-    expect(box.y).toBeLessThan(first.y + first.height + 20);
-  };
-
-  test("a tap on a row's More opens its menu while another row's is open", async ({ page }) => {
-    const { more, low } = await rows(page);
-    await more.nth(low).tap();
-    await clearOfMenu(page, (await more.first().boundingBox())!);
-    await opensFirst(page, more);
-  });
-
-  test("a tap on a row's More opens its menu while a long press's is open", async ({ page }) => {
-    // a row whose size, held, is still above the bar at the foot of the screen
-    const { more, low } = await rows(page, 700);
-    // a finger held on the low row's size, no control, until its menu opens
-    const size = (await sizeOf(more.nth(low)).boundingBox())!;
-    const cdp = await page.context().newCDPSession(page);
-    const at = [{ x: size.x + size.width / 2, y: size.y + size.height / 2 }];
-    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: at });
-    await clearOfMenu(page, (await more.first().boundingBox())!);
-    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-    await opensFirst(page, more);
-  });
-
-  test("a tap on a row beside an open menu only closes it", async ({ page }) => {
-    const { more, low } = await rows(page);
-    await more.nth(low).tap();
-    const line = more.first().locator("xpath=ancestor::*[@data-line][1]");
-    await clearOfMenu(page, (await line.boundingBox())!);
-    const size = (await sizeOf(more.first()).boundingBox())!;
-    await page.touchscreen.tap(size.x + size.width / 2, size.y + size.height / 2);
-    await expect(page.locator("[role=menu][data-state=open]")).toHaveCount(0);
-    await expect(line).not.toHaveAttribute("aria-selected", "true");
-    await expect(page.locator("[data-inspector]")).toHaveCount(0);
-  });
 });

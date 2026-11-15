@@ -3,6 +3,7 @@
   import type { Snippet } from "svelte";
 
   import { setAnchor } from "./anchor";
+  import { ROW_MENU } from "./switch";
 
   // a menu that is only built once it is first opened: a long list's rows each have one, and
   // building a menu for every row as it scrolls into view costs more than the rest of the row.
@@ -22,8 +23,8 @@
   setAnchor(() => anchor);
 
   const opener = $derived({
-    // a row's menu button takes a press while another menu holds the page, see app.css
-    "data-row-menu": "",
+    // a press on it while another menu is open goes on to it, see `switchOnPress`
+    [ROW_MENU]: "",
     "aria-haspopup": "menu",
     "aria-expanded": open,
     "onclick": (e: MouseEvent) => {
