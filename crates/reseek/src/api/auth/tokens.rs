@@ -659,6 +659,67 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn a_token_is_refused_while_its_owners_way_of_signing_in_is_off() {
+    let config = |enabled: bool| {
+      format!(
+        "{TRUSTED}[web.authentication.local]\nenabled = {enabled}\n\
+         [web.authentication.local.users.viewer]\npassword = \"look\"\nrole = \"readwrite\"\n"
+      )
+    };
+    let app = app(&config(true), &[]).await;
+    let login = app
+      .send_from(
+        OUTSIDE,
+        request(
+          "POST",
+          "/api/v0/session",
+          Some(json!({ "username": "viewer", "password": "look" })),
+        ),
+      )
+      .await;
+    let cookie = crate::testing::set_cookie(&login.headers, "reseek_session").unwrap();
+    let made = app
+      .send_from(
+        OUTSIDE,
+        with(
+          with(
+            request(
+              "POST",
+              "/api/v0/tokens",
+              Some(json!({ "name": "script", "role": "ReadOnly" })),
+            ),
+            "cookie",
+            &cookie,
+          ),
+          "origin",
+          "http://localhost",
+        ),
+      )
+      .await;
+    assert_eq!(made.status, 201, "{:?}", made.body);
+    let secret = made.json()["secret"].as_str().unwrap().to_string();
+    let reload = async |text: String| {
+      std::fs::write(app.dir.path().join("config.toml"), text).unwrap();
+      app.state.config.reload().await.unwrap();
+    };
+    let me = async || {
+      app
+        .send_from(
+          OUTSIDE,
+          bearer(request("GET", "/api/v0/session", None), &secret),
+        )
+        .await
+    };
+    assert_eq!(me().await.status, 200);
+    reload(config(false)).await;
+    let refused = me().await;
+    assert_eq!(refused.status, 401, "its owner can sign in no way now");
+    assert_eq!(refused.json()["error"], "token_owner_without_role");
+    reload(config(true)).await;
+    assert_eq!(me().await.status, 200);
+  }
+
+  #[tokio::test]
   async fn the_list_shows_the_role_a_token_acts_with() {
     let viewer = |role: &str| {
       format!(
