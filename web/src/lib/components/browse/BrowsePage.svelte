@@ -226,6 +226,15 @@
     return { on, of: node.unlocked, files: () => itemsUnder(node).filter((f) => !f.locked) };
   };
 
+  // a folder's line keeps its mark only while it reads ticked whole: whatever unticks a file
+  // under it, or a filter that shows more of it, takes the mark, so ticking its files again does
+  // not bring it back
+  $effect(() => {
+    for (const path of [...browser.linesTicked]) {
+      if (!lineTicked(browser.tree.byPath, tickOf, path)) browser.linesTicked.delete(path);
+    }
+  });
+
   /** The top folder a path is under: the listing's folder at the top of its branch */
   const topOf = (at: string) =>
     ancestors(at, browser.tree, browser.separator)[0] ?? getFileName(at);
@@ -409,11 +418,10 @@
               download(
                 chosen,
                 (path) => lineTicked(browser.tree.byPath, tickOf, path),
-                (path) =>
-                  browser.linesTicked.has(path) && lineTicked(browser.tree.byPath, tickOf, path)
+                (path) => browser.linesTicked.has(path)
               )
           : undefined}
-        onclear={browser.untickAll} />
+        onclear={() => browser.selected.clear()} />
     {/if}
   {/if}
 </div>

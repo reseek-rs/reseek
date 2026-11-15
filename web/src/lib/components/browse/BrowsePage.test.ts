@@ -227,6 +227,83 @@ describe("browse progress", () => {
     }
   });
 
+  it("forgets a folder line's tick once anything unticks a file under it", async () => {
+    const net = fakeNetwork((url) => {
+      if (url.pathname.endsWith("/transfers/downloads/jobs")) return { id: "j", groups: [] };
+      if (!url.pathname.endsWith("/users/alice/browse")) return undefined;
+      const dir = (name: string, files: string[] = []) => ({
+        name,
+        fileCount: files.length,
+        files: files.map((f) => sharedFile(f))
+      });
+      const directories = [
+        dir("@@abcde"),
+        dir("@@abcde\\Artist"),
+        dir("@@abcde\\Artist\\Album", ["1.flac", "2.flac"]),
+        dir("@@abcde\\Other", ["x.flac"])
+      ];
+      return {
+        directories,
+        directoryCount: directories.length,
+        lockedDirectories: [],
+        lockedDirectoryCount: 0
+      };
+    });
+    session.principal = { name: "me", role: "Administrator" } as never;
+    app.state = { server: { isConnected: true }, user: { username: "me" } } as never;
+    component = mount(BrowsePage, { target: document.body, props: { user: "alice", path: null } });
+    await flushFaked();
+    await flushFaked();
+    for (;;) {
+      const closed = document.querySelector<HTMLElement>("[aria-label^='Open ']");
+      if (!closed) break;
+      closed.click();
+      flushSync();
+    }
+    const click = (label: string) => {
+      document.querySelector<HTMLElement>(`[aria-label="${label}"]`)!.click();
+      flushSync();
+    };
+    const button = (text: string) =>
+      [...document.querySelectorAll("button")].find((b) => b.textContent?.trim() === text)!;
+    /** downloads the selection, clears it and gives the folder the job was asked in */
+    const download = async () => {
+      button("Download").click();
+      await flushFaked();
+      button("Clear").click();
+      flushSync();
+      const jobs = net.requests.filter((r) => r.url.pathname.endsWith("/transfers/downloads/jobs"));
+      const body = jobs.at(-1)!.body as { groups: { folder: string | null }[] };
+      return body.groups.map((g) => g.folder);
+    };
+    const album = "@@abcde\\Artist\\Album";
+
+    // the artist's line, then the album's after a Clear
+    click("Select every file in Artist");
+    expect(await download()).toEqual(["@@abcde\\Artist"]);
+    click("Select every file in Album");
+    expect(await download(), "after a Clear").toEqual([album]);
+
+    // the album unticked by its line and ticked again
+    click("Select every file in Artist");
+    click("Select every file in Album");
+    click("Select every file in Album");
+    expect(await download(), "the album's line unticked").toEqual([album]);
+
+    // the album's files unticked one by one and ticked again
+    click("Select every file in Artist");
+    for (const file of ["1.flac", "2.flac", "1.flac", "2.flac"]) click(`Select ${file}`);
+    expect(await download(), "the files unticked").toEqual([album]);
+
+    // everything unticked through Select all, then the album
+    click("Select every file in Artist");
+    click("Select all");
+    click("Select all");
+    expect(browser.selected.size, "Select all unticks").toBe(0);
+    click("Select every file in Album");
+    expect(await download(), "Select all").toEqual([album]);
+  });
+
   it("leaves the next user's tree where it is when the one before answers late", async () => {
     let answerAlice!: (listing: Schemas["BrowseResponse"]) => void;
     const folders = (...names: string[]): Schemas["BrowseResponse"] => ({
