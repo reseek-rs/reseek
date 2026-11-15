@@ -11,6 +11,9 @@
 //! then with each profile, named after its file; profiles whose measure thresholds are the same
 //! share one measuring, so a sweep of the reading thresholds decodes each file once. Every file
 //! is read in full unless `--max-full-minutes` says how long a file read in full may be.
+//!
+//! A file that cannot be opened is named on stderr and the others are still read; the exit
+//! status is then 1. A file that opens but does not decode is an inconclusive reading.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -24,7 +27,8 @@ use serde::{Deserialize, Serialize};
 
 const USAGE: &str =
   "usage: analyze [--profile FILE]... [--max-full-minutes N --sampled-windows N] FILE...
-       analyze --defaults";
+       analyze --defaults
+exits 1 when a FILE cannot be opened, after reading the others, and 2 on a usage error";
 
 /// What a file is measured and read with.
 #[derive(Default, Serialize, Deserialize)]
@@ -67,7 +71,8 @@ struct Reach {
 
 fn main() -> ExitCode {
   match run() {
-    Ok(()) => ExitCode::SUCCESS,
+    Ok(true) => ExitCode::SUCCESS,
+    Ok(false) => ExitCode::from(1),
     Err(message) => {
       eprintln!("analyze: {message}");
       ExitCode::from(2)
@@ -75,7 +80,8 @@ fn main() -> ExitCode {
   }
 }
 
-fn run() -> Result<(), String> {
+/// Reads every file named; false when one could not be opened.
+fn run() -> Result<bool, String> {
   let mut profiles = vec![("default".to_string(), Thresholds::default())];
   let mut files = Vec::new();
   let mut max_full_minutes: Option<f64> = None;
@@ -86,7 +92,7 @@ fn run() -> Result<(), String> {
     match arg.as_str() {
       "--defaults" => {
         println!("{}", json(&Thresholds::default())?);
-        return Ok(());
+        return Ok(true);
       }
       "--profile" => {
         let path = PathBuf::from(value("--profile")?);
@@ -108,7 +114,7 @@ fn run() -> Result<(), String> {
       }
       "-h" | "--help" => {
         println!("{USAGE}");
-        return Ok(());
+        return Ok(true);
       }
       flag if flag.starts_with("--") => return Err(format!("unknown option {flag}\n{USAGE}")),
       _ => files.push(PathBuf::from(arg)),
@@ -132,8 +138,23 @@ fn run() -> Result<(), String> {
       ));
     }
   };
+  let mut opened = true;
   for file in &files {
+    if let Err(e) = openable(file) {
+      eprintln!("analyze: {}: {e}", file.display());
+      opened = false;
+      continue;
+    }
     println!("{}", analyzed(file, &profiles, &reach));
+  }
+  Ok(opened)
+}
+
+/// Whether the file at `path` can be opened for reading.
+fn openable(path: &Path) -> std::io::Result<()> {
+  let file = std::fs::File::open(path)?;
+  if file.metadata()?.is_dir() {
+    return Err(std::io::Error::other("it is a directory"));
   }
   Ok(())
 }
