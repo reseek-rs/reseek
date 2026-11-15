@@ -37,7 +37,6 @@ pub fn client_options(options: &Options) -> Result<ClientOptions, String> {
     .parse()
     .map_err(|e| format!("soulseek.listen_ip_address: {e}"))?;
   let sets = ConnectionSets::of(soulseek)?;
-  let keepalive = &soulseek.server_keepalive;
   let limits = &soulseek.limits;
   Ok(ClientOptions {
     enable_listener: true,
@@ -55,12 +54,6 @@ pub fn client_options(options: &Options) -> Result<ClientOptions, String> {
     transfer_connection_options: sets.transfer,
     incoming_connection_options: sets.peer,
     distributed_connection_options: sets.distributed,
-    server_keepalive: KeepAlive {
-      enabled: keepalive.enabled,
-      idle: keepalive.idle,
-      interval: keepalive.interval,
-      probes: keepalive.probes,
-    },
     limits: ClientLimits {
       max_message_size: u32::try_from(limits.max_message_size.as_u64())
         .map_err(|_| "soulseek.limits.max_message_size: more than 4 GiB".to_string())?,
@@ -121,7 +114,6 @@ pub fn patch(previous: &Options, current: &Options) -> Result<ClientOptionsPatch
       from.distributed_connection_options,
       to.distributed_connection_options,
     ),
-    server_keepalive: changed(from.server_keepalive, to.server_keepalive),
     limits: changed(from.limits, to.limits),
     resolvers: soulseek_client::Resolvers::default(),
   })
@@ -145,7 +137,7 @@ struct ConnectionSets {
 
 impl ConnectionSets {
   /// Peer connections take the base options; the server connection never times out for
-  /// inactivity (the client's keep-alive notices a dead one) and has the MTU's segment size;
+  /// inactivity, has `server_keepalive`, which notices a dead one, and the MTU's segment size;
   /// transfers have their own buffers and timeout; distributed connections have the configured
   /// write queue and a keep-alive from the inactivity timeout, since a parent may be quiet.
   fn of(soulseek: &Soulseek) -> Result<Self, String> {
@@ -164,10 +156,17 @@ impl ConnectionSets {
     };
     // keep-alive takes whole seconds
     let seconds = Duration::from_secs(timeout.inactivity.as_secs());
+    let keepalive = &soulseek.server_keepalive;
     Ok(Self {
       server: ConnectionOptions {
         inactivity_timeout: None,
         max_segment_size: connection.mtu.map(|mtu| mtu - HEADERS),
+        keepalive: KeepAlive {
+          enabled: keepalive.enabled,
+          idle: keepalive.idle,
+          interval: keepalive.interval,
+          probes: keepalive.probes,
+        },
         ..base.clone()
       },
       transfer: ConnectionOptions {
