@@ -216,9 +216,8 @@ soulfind:
 
 # the fuzz recipes need nightly cargo and cargo-fuzz: run them inside `nix develop .#fuzz`
 
-[doc("write the round-trip vectors into fuzz/corpus/<target> as seeds")]
+[doc("copy the seed inputs into fuzz/corpus/<target>")]
 fuzz-seed:
-    cargo test -p soulseek-proto --lib -- --ignored --exact testing::write_fuzz_corpus
     mkdir -p fuzz/corpus/wav_stream
     cp crates/audio-analysis/src/fixtures/tone.m4a fuzz/corpus/wav_stream/
 
