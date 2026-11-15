@@ -48,7 +48,6 @@ pub fn client_options(options: &Options) -> Result<ClientOptions, String> {
     deduplicate_search_requests: true,
     message_timeout: MESSAGE_TIMEOUT,
     transfer_response_timeout: soulseek.connection.timeout.transfer_response,
-    starting_token: None,
     server_connection_options: sets.server,
     peer_connection_options: sets.peer.clone(),
     transfer_connection_options: sets.transfer,

@@ -4254,6 +4254,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
  "socket2",
+ "soulseek-client",
  "soulseek-proto",
  "thiserror 2.0.21",
  "tokio",
