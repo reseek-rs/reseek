@@ -42,8 +42,8 @@ impl<T: Root> State<T> {
     (files != self.attempted).then_some(files)
   }
 
-  /// Reports the files changed since the last attempt, and those of `open` a writer still has,
-  /// as not standing yet, as not closed when a writer has one: the values in effect stay.
+  /// Reports the files of `open` as not closed by their writer, or when there are none, the
+  /// files changed since the last attempt as not standing yet: the values in effect stay.
   pub(super) fn unsettled(&mut self, shared: &Shared<T>, open: &[PathBuf]) {
     // a listing that fails names the files as last read
     let now = self
@@ -52,7 +52,13 @@ impl<T: Root> State<T> {
       .unwrap_or_else(|_| self.attempted.clone());
     let names: Vec<String> = now
       .into_iter()
-      .filter(|f| !self.attempted.contains(f) || open.contains(&f.path))
+      .filter(|f| {
+        if open.is_empty() {
+          !self.attempted.contains(f)
+        } else {
+          open.contains(&f.path)
+        }
+      })
       .map(|f| f.name)
       .collect();
     // back as last read, so nothing waits to be applied

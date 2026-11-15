@@ -432,8 +432,8 @@ impl<T: Root> Watcher<T> {
 
   /// Reloads the files once what they hold stands: quiet for `settle.debounce`, then, where the
   /// system says when a writer closes a file, with no writer left, and elsewhere with the same
-  /// bytes on two reads `settle.again` apart. A file that does not stand within `settle.limit` is reported and
-  /// not applied; its next change starts the wait over. False when canceled.
+  /// bytes on two reads `settle.again` apart. A file that does not stand within `settle.limit`
+  /// is reported and not applied; its next change starts the wait over. False when canceled.
   async fn reload_settled(
     &self,
     files: &mut FileEvents,

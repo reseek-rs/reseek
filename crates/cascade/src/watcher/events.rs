@@ -479,11 +479,15 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     fs::write(&path, "[server]\nport = 2000\n").unwrap();
+    fs::create_dir(dir.path().join("config.d")).unwrap();
     let (watcher, mut files, events) = settling(dir.path(), None);
     let cancel = CancellationToken::new();
 
     let mut file = fs::File::create(&path).unwrap();
     file.write_all(b"[server]\nport = 3000\n").unwrap();
+    // changed and closed meanwhile, so not one the report names
+    let drop_in = dir.path().join("config.d/10-a.toml");
+    fs::write(&drop_in, "[shares]\ndirectories = [\"/music\"]\n").unwrap();
     assert!(
       watcher
         .reload_settled(&mut files, &events, &cancel, SHORT)
