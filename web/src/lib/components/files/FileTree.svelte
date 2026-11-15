@@ -7,7 +7,7 @@
   import * as Menu from "#lib/components/ui/menu/menu.js";
   import { Arrivals } from "#lib/lists/arrivals.svelte.js";
   import { LINE_REM } from "#lib/lists/density.js";
-  import { type Freeze, freezesWhileUsed, heldBy } from "#lib/lists/interaction.svelte.js";
+  import { type Freeze, freezesWhileUsed } from "#lib/lists/interaction.svelte.js";
   import { LineMenu } from "#lib/lists/linemenu.svelte.js";
   import { type AllTick, ListControl } from "#lib/lists/list.svelte.js";
   import { ListWindow } from "#lib/lists/virtual.svelte.js";
@@ -374,8 +374,8 @@
 {/snippet}
 
 <!-- every line has the same height, so the window never measures one and the pinned folder lines
-     stack by it. A card or menu opened from a pinned line, which is outside the lines, holds the
-     list as one opened from the lines does -->
+     stack by it. A press, a selection, or a card or menu opened anywhere in it, a pinned line
+     outside the lines included, holds the list -->
 <div
   class={[
     "@container relative overflow-auto rounded-card border bg-surface text-sm outline-none focus-visible:ring-2 focus-visible:ring-accent",
@@ -396,7 +396,7 @@
   {@attach view.attach}
   {@attach list.attach}
   {@attach lineMenu.attach}
-  {@attach freeze && heldBy(freeze)}>
+  {@attach freeze && freezesWhileUsed(freeze)}>
   <!-- the pinned folder lines are drawn under the column header, which a pushed one goes under,
        and over the lines. Each copies a line the keys and assistive technology reach in the lines:
        it is hidden from assistive technology, Tab skips its controls, and focus that comes to one
@@ -438,12 +438,7 @@
       </div>
     {/each}
   </div>
-  <div
-    class="relative"
-    style:height={`${view.total}px`}
-    style:min-width={least}
-    role="rowgroup"
-    {@attach freeze && freezesWhileUsed(freeze)}>
+  <div class="relative" style:height={`${view.total}px`} style:min-width={least} role="rowgroup">
     {#each view.drawn as { line, index, start } (line.key)}
       {#if line.kind === "folder"}
         <div

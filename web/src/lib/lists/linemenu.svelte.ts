@@ -1,4 +1,3 @@
-import { untrack } from "svelte";
 import { on } from "svelte/events";
 
 import { LIST } from "#lib/ui/bindings.js";
@@ -56,19 +55,8 @@ export class LineMenu<L> {
     // the hold follows whether a menu is open, not the line, which is a new object each time the
     // lines are made again
     const open = $derived(this.line !== null);
-    $effect(() => (open ? holdListOf(untrack(() => this.#lineElement())) : undefined));
+    $effect(() => (open ? holdListOf(this.#node) : undefined));
     $effect(() => () => this.#released());
-  }
-
-  /**
-   * the open line's element, not a pinned copy of it, or the list's container where the line
-   * isn't drawn
-   */
-  #lineElement(): HTMLElement | null {
-    const key = this.#at?.key;
-    // compared rather than selected, as a key may hold characters a selector can't
-    const lines = this.#node?.querySelectorAll<HTMLElement>("[data-line]:not([data-pinned])") ?? [];
-    return [...lines].find((line) => line.dataset.line === key) ?? this.#node;
   }
 
   /** where the open menu hangs */
