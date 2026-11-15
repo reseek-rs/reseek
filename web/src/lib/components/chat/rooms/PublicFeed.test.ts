@@ -69,7 +69,12 @@ describe("the public room feed", () => {
     const log = document.querySelector<HTMLElement>('[role="log"]')!;
     // the times the feed was taken to its newest message
     let followed = 0;
-    Object.defineProperty(log, "scrollTop", { get: () => 0, set: () => (followed += 1) });
+    Object.defineProperty(log, "scrollTop", {
+      get: () => 0,
+      set: () => {
+        followed += 1;
+      }
+    });
     log
       .querySelector("a[href]:not([href*='rooms'])")!
       .dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
