@@ -188,9 +188,6 @@ impl Uploads {
       Ok(Written::Inserted(superseded)) => superseded,
       Ok(Written::Running(ids)) => {
         lock(&self.in_flight).remove(&id);
-        if asked {
-          self.asked_for(&ids);
-        }
         info!(
           username,
           filename,
