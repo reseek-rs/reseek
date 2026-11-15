@@ -152,10 +152,6 @@ pub fn patch(
       to.distributed_connection_options,
     ),
     server_keepalive: changed(from.server_keepalive, to.server_keepalive),
-    report_unread_message_data: changed(
-      from.report_unread_message_data,
-      to.report_unread_message_data,
-    ),
     limits: changed(from.limits, to.limits),
     resolvers: soulseek_client::Resolvers::default(),
   })
