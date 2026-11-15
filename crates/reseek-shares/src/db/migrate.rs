@@ -114,19 +114,15 @@ fn statements(sql: &str) -> String {
     }
     gap = false;
     out.push(c);
-    // a quoted string or name is kept as written; a doubled closing quote inside it is a quote
+    // a quoted string or name is kept as written
     let close = match c {
       '\'' | '"' | '`' => c,
       '[' => ']',
       _ => continue,
     };
-    while let Some(c) = chars.next() {
+    for c in chars.by_ref() {
       out.push(c);
       if c == close {
-        if close != ']' && chars.peek() == Some(&close) {
-          out.extend(chars.next());
-          continue;
-        }
         break;
       }
     }
