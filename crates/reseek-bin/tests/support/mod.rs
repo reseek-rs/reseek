@@ -22,7 +22,6 @@ use uuid::Uuid;
 
 /// The client's test harness: the Soulseek server the network tests run against, a scripted
 /// server and scripted peers for what a real one never does, and files to send.
-#[path = "../../../soulseek-client/tests/support/mod.rs"]
 pub mod client;
 pub mod scripted;
 
