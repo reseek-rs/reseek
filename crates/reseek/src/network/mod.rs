@@ -40,6 +40,7 @@ pub use changes::follow_changes;
 pub use events::{follow_shared_counts, observe_client, observe_transfers};
 use mapping::{NatPmp, PortMapper, Upnp};
 use reachability::Reachability;
+pub use resolvers::UserSearch;
 use resolvers::{Edges, IncomingSearches, resolvers};
 use watchdog::Watchdog;
 
@@ -211,6 +212,12 @@ impl Network {
     downloads: Arc<crate::transfers::downloads::Downloads>,
   ) {
     self.edges.attach(uploads, downloads);
+  }
+
+  /// Knows our search `token` as one asking `users` while the returned guard lives, so our own
+  /// search that asked us is answered.
+  pub fn user_search(&self, token: u32, users: Vec<String>) -> UserSearch {
+    self.edges.user_search(token, users)
   }
 
   /// The Soulseek client, for the operations the engines start.

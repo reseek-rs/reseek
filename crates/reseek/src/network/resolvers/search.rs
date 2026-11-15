@@ -152,6 +152,10 @@ pub async fn search(
   token: u32,
   query: &SearchQuery,
 ) -> Option<SearchReply> {
+  if edges.own_unasked(username, token) {
+    debug!(token, "search from our own username dropped");
+    return None;
+  }
   let metrics = &edges.telemetry.metrics().search;
   metrics.requests_received.inc();
   metrics.request_receive_rate.count_up(1);

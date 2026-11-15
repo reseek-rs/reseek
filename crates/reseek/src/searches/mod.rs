@@ -405,6 +405,11 @@ impl SearchService for Searches {
       Arc::new(move |_, snapshot| reported.state_changed(snapshot.state));
     let options = options(&request, search_timeout, state_changed);
     let scope = client_scope(&scope);
+    let asked = match &scope {
+      soulseek_client::SearchScope::Users(users) => Some(users.clone()),
+      _ => None,
+    };
+    let network = self.network.clone();
     let text = record.search_text.clone();
     let (slots, session) = (self.slots.clone(), lock(&self.session).clone());
     let this = self.this();
@@ -428,6 +433,7 @@ impl SearchService for Searches {
             () = session.cancelled() => return Err(ClientError::Canceled),
             slot = slots.acquire_owned() => slot.expect("the slots are never closed"),
           };
+          let _asking = asked.map(|users| network.user_search(reserved.token(), users));
           let search = client
             .search_with(
               request.with_token(reserved),

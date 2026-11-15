@@ -10,14 +10,15 @@ mod browse;
 mod search;
 
 use soulseek_client::soulseek_proto;
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use api_types::activity::ActivityKind;
 use api_types::users::blocking::BlockScope;
 use cascade::Watcher;
 use reseek_shares::LogLimiter;
-use reseek_shares::traverses;
+use reseek_shares::{lock, traverses};
 use soulseek_client::{ClientError, Peer, Resolvers, UploadAsk, UploadDecision};
 use soulseek_proto::peer::UserInfo;
 use soulseek_proto::{RemoteFilename, SearchQuery};
@@ -64,6 +65,8 @@ pub struct Edges {
   uploads: OnceLock<Arc<Uploads>>,
   /// the download engine, attached with the upload engine
   downloads: OnceLock<Arc<Downloads>>,
+  /// the users each of our running searches of users asks, by token
+  user_searches: Mutex<HashMap<u32, Vec<String>>>,
 }
 
 impl Edges {
@@ -89,6 +92,7 @@ impl Edges {
       rebuilding: browse::Rewrites::default(),
       uploads: OnceLock::new(),
       downloads: OnceLock::new(),
+      user_searches: Mutex::default(),
     }
   }
 
@@ -101,11 +105,48 @@ impl Edges {
     );
   }
 
+  /// Whether a search in `username`'s name is one in our own name that we did not send to
+  /// ourselves: our own searches come back through the server and the distributed parent, and
+  /// only one we sent to users we are among is answered.
+  fn own_unasked(&self, username: &str, token: u32) -> bool {
+    let own = self
+      .network
+      .upgrade()
+      .and_then(|network| network.client().username());
+    if own.as_deref() != Some(username) {
+      return false;
+    }
+    !lock(&self.user_searches)
+      .get(&token)
+      .is_some_and(|users| users.iter().any(|user| user == username))
+  }
+
+  /// Knows the search `token` of ours as one asking `users` until the returned guard drops.
+  pub(super) fn user_search(self: &Arc<Self>, token: u32, users: Vec<String>) -> UserSearch {
+    lock(&self.user_searches).insert(token, users);
+    UserSearch {
+      edges: self.clone(),
+      token,
+    }
+  }
+
   fn uploads(&self) -> &Uploads {
     self
       .uploads
       .get()
       .expect("the upload engine is attached while the daemon is built, before peers reach it")
+  }
+}
+
+/// A running search of ours that asks users, known to the answers while it lives.
+pub struct UserSearch {
+  edges: Arc<Edges>,
+  token: u32,
+}
+
+impl Drop for UserSearch {
+  fn drop(&mut self) {
+    lock(&self.edges.user_searches).remove(&self.token);
   }
 }
 
@@ -594,5 +635,47 @@ pub(crate) mod tests {
       decision(Err(NotQueued::Failed(failed)), &file),
       UploadDecision::Deny("Enqueue failed due to internal error".into())
     );
+  }
+
+  #[tokio::test]
+  async fn our_own_search_is_answered_only_while_a_search_of_ours_asks_us() {
+    use crate::testing::soulseek::{self, Server, US};
+    use soulseek_proto::ServerRequest;
+
+    let app = soulseek::app(CONFIG).await;
+    let mut server = Server::silent().await;
+    server.login(&app).await;
+    let edges = edges(&app);
+    assert!(!edges.own_unasked("alice", 7), "another user's search");
+    assert!(edges.own_unasked(US, 7), "ours, which asked no one");
+    let others = app.state.network.user_search(7, vec!["bob".into()]);
+    assert!(edges.own_unasked(US, 7), "ours, which asked others");
+    drop(others);
+    let ours = app
+      .state
+      .network
+      .user_search(7, vec!["bob".into(), US.into()]);
+    assert!(!edges.own_unasked(US, 7), "ours, which asked us");
+    assert!(edges.own_unasked(US, 8), "another of ours");
+    drop(ours);
+    assert!(edges.own_unasked(US, 7), "once it ended");
+
+    // a search of users started through the API is known while it runs
+    let body = json!({
+      "searchText": "pink floyd",
+      "searchTimeout": 60_000,
+      "scope": { "type": "user", "subjects": [US] }
+    });
+    let started = app
+      .send(request("POST", "/api/v0/searches", Some(body)))
+      .await;
+    assert_eq!(started.status, 200, "{:?}", started.body);
+    let token = server
+      .received(|request| match request {
+        ServerRequest::UserSearch(search) => Some(search.token),
+        _ => None,
+      })
+      .await;
+    assert!(!edges.own_unasked(US, token));
   }
 }
