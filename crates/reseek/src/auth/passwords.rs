@@ -103,11 +103,15 @@ pub struct Compared {
 }
 
 /// The local accounts of `authentication` compared with the passwords kept for them, those
-/// with nothing kept as well; `changed_at` says when an account's password changed.
+/// with nothing kept as well. `given_at` says when an account was last given a password while
+/// the options did not stand; one given none then changed before `started`, while stopped. An
+/// account with nothing kept that was given a password then counts as changed, so the sessions
+/// of a password it had before in the same wait end.
 pub async fn compare(
   db: &Database,
   authentication: &Authentication,
-  changed_at: impl Fn(&str) -> DateTime<Utc>,
+  given_at: impl Fn(&str) -> Option<DateTime<Utc>>,
+  started: DateTime<Utc>,
 ) -> Result<Vec<Compared>, DbError> {
   let kept: HashMap<String, String> = db
     .read(|conn| {
@@ -117,10 +121,10 @@ pub async fn compare(
         .collect()
     })
     .await?;
-  let accounts: Vec<(String, Password, DateTime<Utc>)> = accounts(authentication)
+  let accounts: Vec<(String, Password, Option<DateTime<Utc>>)> = accounts(authentication)
     .into_iter()
     .map(|(subject, password)| {
-      let at = changed_at(&subject);
+      let at = given_at(&subject);
       (subject, password, at)
     })
     .collect();
@@ -128,11 +132,12 @@ pub async fn compare(
   tokio::task::spawn_blocking(move || {
     accounts
       .into_iter()
-      .map(|(subject, password, changed_at)| {
+      .map(|(subject, password, given_at)| {
+        let changed_at = given_at.unwrap_or(started);
         let (changed, fingerprint) = match kept.get(&subject) {
           Some(kept) if password.kept_as(kept) => (false, None),
           Some(_) => (true, Some(password.fingerprint())),
-          None => (false, Some(password.fingerprint())),
+          None => (given_at.is_some(), Some(password.fingerprint())),
         };
         Compared {
           subject,
@@ -379,14 +384,20 @@ mod tests {
       password_hash: Some(local::hash("s3cret")),
       ..Authentication::default()
     };
+    let started: DateTime<Utc> = "2026-11-14T11:00:00Z".parse().unwrap();
     let at: DateTime<Utc> = "2026-11-14T12:00:00Z".parse().unwrap();
-    let compare = async |authentication: &Authentication| {
-      let compared = compare(&db, authentication, |_| at).await.unwrap();
+    // `given`: the accounts were given their passwords at `at`, while the options did not stand
+    let compare = async |authentication: &Authentication, given: bool| {
+      let compared = compare(&db, authentication, |_| given.then_some(at), started)
+        .await
+        .unwrap();
       keep(&db, &compared).await.unwrap();
-      compared
+      let mut compared: Vec<_> = compared
         .iter()
         .map(|c| (c.subject.clone(), c.changed))
-        .collect::<Vec<_>>()
+        .collect();
+      compared.sort();
+      compared
     };
     let kept = async || {
       db.read(|conn| {
@@ -399,22 +410,43 @@ mod tests {
     };
     let unchanged = vec![("local:reseek".to_string(), false)];
     let changed = vec![("local:reseek".to_string(), true)];
-    assert_eq!(compare(&plain).await, unchanged, "nothing kept yet");
+    assert_eq!(
+      compare(&plain, false).await,
+      unchanged,
+      "nothing kept yet, and no password given while the options did not stand"
+    );
     let (fingerprint, _) = kept().await;
     assert!(
       fingerprint.starts_with("argon2:$argon2id$"),
       "never the password itself"
     );
     assert!(!fingerprint.contains("reseek"));
-    assert_eq!(compare(&plain).await, unchanged);
-    assert_eq!(compare(&hashed).await, changed);
+    assert_eq!(compare(&plain, false).await, unchanged);
+    assert_eq!(compare(&hashed, true).await, changed);
     assert_eq!(kept().await.1, timestamp(at));
     assert_eq!(
       kept().await.0,
       format!("hash:{}", hashed.password_hash.clone().unwrap())
     );
-    assert_eq!(compare(&hashed).await, unchanged);
-    assert_eq!(compare(&plain).await, changed);
+    assert_eq!(compare(&hashed, true).await, unchanged);
+    assert_eq!(compare(&plain, false).await, changed);
+
+    // an account with nothing kept that was given a password while the options did not stand
+    let mut added = plain.clone();
+    added.local.users.insert(
+      "viewer".into(),
+      LocalUser {
+        password: Some("look".into()),
+        ..LocalUser::default()
+      },
+    );
+    assert_eq!(
+      compare(&added, true).await,
+      [
+        ("local:reseek".to_string(), false),
+        ("local:viewer".to_string(), true)
+      ]
+    );
   }
 
   fn changer(session: &str) -> Changer {

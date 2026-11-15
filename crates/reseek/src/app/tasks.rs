@@ -123,8 +123,8 @@ async fn settle_sessions(app: AppState) {
         if let Err(e) = crate::auth::end_sessions_without_role(&app).await {
           warn!(error = ?e, "the sessions of users with no role now were not ended");
         }
-        let at = |account: &str| given_at.get(account).copied().unwrap_or(started);
-        let mut compared = match passwords::compare(&app.auth.db, &standing, at).await {
+        let at = |account: &str| given_at.get(account).copied();
+        let mut compared = match passwords::compare(&app.auth.db, &standing, at, started).await {
           Ok(compared) => compared,
           Err(e) => {
             warn!(error = %e, "the local accounts' passwords were not checked");
@@ -612,6 +612,18 @@ mod tests {
       4,
     )
     .await;
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn an_added_account_whose_password_changes_in_its_first_wait_ends_the_first() {
+    let app = app("", &[]).await;
+    pass(SETTLE).await;
+    reload(&app, &viewer_with("mid")).await;
+    let cookie = signed_in_as(&app, "viewer", "mid").await;
+    pass(Duration::from_secs(3)).await;
+    reload(&app, &viewer_with("new")).await;
+    pass(SETTLE).await;
+    until_ended(&app, &cookie).await;
   }
 
   #[tokio::test(start_paused = true)]
