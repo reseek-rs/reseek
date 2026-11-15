@@ -341,6 +341,10 @@ mod tests {
     set("soulseek.username", "other").await;
     assert_eq!(server.received(login).await, "other");
     logged_in().await;
+    // a new password under the same name logs in again too
+    set("soulseek.password", "changed").await;
+    assert_eq!(server.received(login).await, "other");
+    logged_in().await;
     let flagged = logs.snapshot().into_iter().any(|record| {
       record
         .message

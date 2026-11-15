@@ -504,6 +504,23 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn our_own_search_that_did_not_ask_us_is_dropped_before_it_counts() {
+    use crate::testing::TRUSTED;
+    use crate::testing::soulseek::{self, Server, US};
+
+    let app = soulseek::app(TRUSTED).await;
+    let server = Server::silent().await;
+    server.login(&app).await;
+    let edges = edges(&app);
+    let received = || metric(&app, "reseek_search_incoming_requests_received");
+    let query = SearchQuery::parse("abbey");
+    assert_eq!(search(&edges, US, 7, &query).await, None);
+    assert_eq!(received(), 0.0, "our own search is not taken");
+    search(&edges, "alice", 8, &query).await;
+    assert_eq!(received(), 1.0, "another user's is");
+  }
+
+  #[tokio::test]
   async fn a_live_filter_change_still_ignores_case() {
     let dir = tempfile::tempdir().unwrap();
     let app = shared(dir.path(), "").await;
