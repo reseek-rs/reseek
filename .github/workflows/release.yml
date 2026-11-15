@@ -27,7 +27,7 @@ jobs:
       # the dev shell's toolchain and soulfind and the web build, which ci's nix job pushed for the
       # tagged commit. it builds on amd64 only
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        if: matrix.arch == 'amd64'
+        if: matrix.arch == 'amd64' && vars.CACHIX_CACHE_NAME != ''
         with:
           name: ${{ vars.CACHIX_CACHE_NAME }}
           skipPush: true

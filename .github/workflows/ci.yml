@@ -39,6 +39,7 @@ jobs:
       - uses: ./.github/actions/setup-nix
       # the dev shell's toolchain and soulfind, which cache.nixos.org does not have
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        if: vars.CACHIX_CACHE_NAME != ''
         with:
           name: ${{ vars.CACHIX_CACHE_NAME }}
           skipPush: true
@@ -78,6 +79,7 @@ jobs:
       - uses: ./.github/actions/setup-nix
       # the package's dependencies, which the nix job pushes for main
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        if: vars.CACHIX_CACHE_NAME != ''
         with:
           name: ${{ vars.CACHIX_CACHE_NAME }}
           skipPush: true
