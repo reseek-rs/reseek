@@ -34,7 +34,7 @@ use super::groups::{self, Facts, Placement};
 use super::store::Stored;
 use super::{Directory, Touch};
 use crate::config::Options;
-use crate::turns::Turns;
+use crate::turns::{Turn, Turns};
 
 /// How old a user's statistics may be when their group is worked out before they are asked
 /// for again.
@@ -205,6 +205,9 @@ pub struct GroupCache {
   asking: Mutex<HashMap<String, bool>>,
   /// one watch of a user at a time
   watching: Turns,
+  /// how many watches of each user completed while another caller waited for their turn, so
+  /// that caller knows; a user's count goes once nobody waits
+  watches: Mutex<HashMap<String, u64>>,
   /// the users whose statistics are being asked for again
   refetching: Mutex<HashSet<String>>,
   /// the presence of each buddy as we knew it when a server session ended, until a status of
@@ -299,6 +302,33 @@ impl<'a> Asking<'a> {
 impl Drop for Asking<'_> {
   fn drop(&mut self) {
     lock(&self.groups.asking).remove(&self.username);
+  }
+}
+
+/// One user's watch turn, which counts the watches completed under it for the callers waiting
+/// for it, and drops the user's count once nobody does.
+struct WatchTurn<'a> {
+  groups: &'a GroupCache,
+  username: &'a str,
+  turn: Turn,
+}
+
+impl WatchTurn<'_> {
+  /// The watch made under this turn completed: counted when someone waits for the turn.
+  fn completed(&self) {
+    if !self.turn.alone() {
+      *lock(&self.groups.watches)
+        .entry(self.username.to_string())
+        .or_default() += 1;
+    }
+  }
+}
+
+impl Drop for WatchTurn<'_> {
+  fn drop(&mut self) {
+    if self.turn.alone() {
+      lock(&self.groups.watches).remove(self.username);
+    }
   }
 }
 
@@ -643,16 +673,23 @@ impl Directory {
     self.watch_once(client, username, true).await
   }
 
-  /// The watch itself, one per user at a time: a caller that finds the user watched once its
-  /// turn comes is done unless `again`.
+  /// The watch itself, one per user at a time: a caller that waited while another watched the
+  /// user takes that watch for its own, and one that finds the user watched already is done
+  /// unless `again`.
   async fn watch_once(
     &self,
     client: &Client,
     username: &str,
     again: bool,
   ) -> Result<(), ClientError> {
-    let _turn = self.groups.watching.take(username).await;
-    if !again && self.is_watched(username) {
+    let completed = |groups: &GroupCache| lock(&groups.watches).get(username).copied();
+    let before = completed(&self.groups);
+    let turn = WatchTurn {
+      groups: &self.groups,
+      username,
+      turn: self.groups.watching.take(username).await,
+    };
+    if completed(&self.groups) != before || (!again && self.is_watched(username)) {
       return Ok(());
     }
     let asking = Asking::new(&self.groups, username);
@@ -671,6 +708,7 @@ impl Directory {
     if let Err(e) = self.status_of(client, username).await {
       warn!(username, error = %e, "status of a watched user not fetched");
     }
+    turn.completed();
     info!(username, "Added user to watch list");
     Ok(())
   }
@@ -963,7 +1001,7 @@ mod tests {
     // dave's watch is answered only when the test says
     let mut server = crate::testing::soulseek::Server::start(|request| match request {
       ServerRequest::WatchUser(asked) if asked.username != "dave" => {
-        vec![watched(&asked.username, asked.username == "alice")]
+        vec![watched(&asked.username, asked.username != "nobody")]
       }
       _ => Vec::new(),
     })
@@ -974,6 +1012,14 @@ mod tests {
     users.watch(client, "alice").await;
     assert!(users.is_watched("alice"));
     assert!(users.try_watch(client, "nobody").await.is_err());
+    // the second waits for the first's turn and takes its watch
+    let (first, second) = tokio::join!(
+      users.watch_again(client, "erin"),
+      users.watch_again(client, "erin")
+    );
+    first.unwrap();
+    second.unwrap();
+    assert!(lock(&users.groups.watches).is_empty());
     // a forget with no watch on its way marks nothing
     users.set_notes("carol", "kind".into()).await.unwrap();
     users.remove("carol", false).await.unwrap();
@@ -997,6 +1043,7 @@ mod tests {
       "forgotten while it was asked for"
     );
     assert_eq!(asking(), 0);
+    assert!(lock(&users.groups.watches).is_empty());
   }
 
   #[test]

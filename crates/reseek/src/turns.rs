@@ -37,6 +37,15 @@ pub struct Turn {
   guard: Option<OwnedMutexGuard<()>>,
 }
 
+impl Turn {
+  /// Whether nobody else waits for this name's turn.
+  pub fn alone(&self) -> bool {
+    lock(&self.map)
+      .get(&self.name)
+      .is_some_and(|mutex| Arc::strong_count(mutex) == 2)
+  }
+}
+
 impl Drop for Turn {
   fn drop(&mut self) {
     let mut map = lock(&self.map);
@@ -67,9 +76,12 @@ mod tests {
     });
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(!waiting.is_finished(), "alice's turn is held");
+    assert!(!first.alone(), "the second caller waits for it");
     let other = turns.take("bob").await;
+    assert!(other.alone());
     drop(first);
     let second = waiting.await.unwrap();
+    assert!(second.alone());
     assert_eq!(lock(&turns.map).len(), 2);
     drop((second, other));
     assert!(lock(&turns.map).is_empty());
