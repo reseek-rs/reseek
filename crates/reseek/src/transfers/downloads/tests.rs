@@ -1543,7 +1543,8 @@ async fn a_download_whose_try_finds_its_user_offline_waits_for_them() {
 
 /// Tells the downloads a user who went offline is back, as the server's word would, as soon as
 /// a download's try says it stops asking for them: the one step between the try seeing them go
-/// and its end, where nothing waits that a test could hold.
+/// and its end, where nothing waits that a test could hold. It keys on that debug line's text,
+/// so rewording the line fails the test that uses it.
 struct BackAsTheTryStops {
   downloads: std::sync::Arc<std::sync::OnceLock<std::sync::Arc<super::Downloads>>>,
   username: &'static str,
