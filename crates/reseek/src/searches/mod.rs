@@ -386,7 +386,7 @@ impl SearchService for Searches {
       Arc::new(move |_, snapshot| reported.state_changed(snapshot.state));
     let options = options(&request, search_timeout, state_changed);
     let scope = client_scope(&scope);
-    let (text, token) = (record.search_text.clone(), record.token);
+    let text = record.search_text.clone();
     let this = self.this();
     let span = info_span!("search", %id);
     self.tasks.spawn(
@@ -396,15 +396,13 @@ impl SearchService for Searches {
         let search = client.search_with(
           &text,
           scope,
-          Some(token),
+          Some(reserved),
           options,
           move |response| taker.response_taken(response, &live, &users),
           &running.cancel,
         );
         this.follow(running.clone(), search).await;
         this.running().remove(&id);
-        // the search took the token out of the reservation as it started, if it did
-        drop(reserved);
       }
       .instrument(span),
     );
