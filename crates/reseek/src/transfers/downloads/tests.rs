@@ -1797,6 +1797,55 @@ async fn a_silent_peer_holds_the_asking_slot_for_the_window_only_and_once() {
   assert!(again.is_err(), "bob was reached on a second connection");
 }
 
+/// A peer marked silent is waited for again once it says a file's place or offers a file: the
+/// next file asked of it gets its place question, which a silent peer's file does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_silent_peer_that_answers_or_offers_is_waited_for_again() {
+  use soulseek_proto::peer::TransferResponse;
+
+  let config = format!(
+    "[transfers.download]\nslots = 2\n[transfers.download.retry]\ndelay = \"1h\"\n\
+     max_delay = \"1h\"\n[soulseek.connection.timeout]\ninactivity = \"60s\"\n{TRUSTED}"
+  );
+  let app = crate::testing::soulseek::app(&config).await;
+  let peers = Peers::start(&app, &["alice"]).await;
+  let away = &app.state.downloads.away;
+  let files = ["@@a\\1.flac", "@@a\\2.flac", "@@a\\3.flac"];
+  let first = enqueued(&app, "alice", files[0]).await;
+  let mut alice = peers.connected("alice").await;
+  alice.asked_for(files[0]).await;
+  match alice.next_within(std::time::Duration::from_secs(10)).await {
+    Some(soulseek_proto::PeerMessage::PlaceInQueueRequest(asked)) => {
+      assert_eq!(asked.filename.as_str(), files[0]);
+    }
+    other => panic!("not a question of the first file's place: {other:?}"),
+  }
+  // as if an earlier file's window had passed unanswered, while this question is out
+  assert!(away.went_silent("alice"));
+  alice
+    .send(soulseek_proto::PeerMessage::PlaceInQueueResponse(
+      soulseek_proto::peer::PlaceInQueueResponse {
+        filename: files[0].into(),
+        place: 4,
+      },
+    ))
+    .await;
+  read_until(&app, first, |r| r.place_in_queue() == Some(4)).await;
+  enqueued(&app, "alice", files[1]).await;
+  alice.asked_for(files[1]).await;
+  alice.place_asked(files[1], 5).await;
+
+  assert!(away.went_silent("alice"));
+  assert!(matches!(
+    alice.offer(files[0], 1).await,
+    TransferResponse::Allowed { token: 1, .. }
+  ));
+  read_until(&app, first, |r| r.state == State::Initializing).await;
+  enqueued(&app, "alice", files[2]).await;
+  alice.asked_for(files[2]).await;
+  alice.place_asked(files[2], 6).await;
+}
+
 /// A user the server says does not exist ends their downloads, failed with a reason that says
 /// so, and is said once, not every time their status would be asked.
 #[tokio::test]

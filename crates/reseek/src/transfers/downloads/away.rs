@@ -3,7 +3,7 @@
 //! until the user is heard of again, from a status the server sends, a new login or the status
 //! the waiting downloads ask for now and then, and then try again. A user the server says does
 //! not exist ends their downloads. A user who left a file's ask unsettled, neither offering it
-//! nor saying its place, is not waited for again while their downloads follow them.
+//! nor saying its place, is not waited for again until they offer a file or say a place.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -107,8 +107,16 @@ impl Away {
       .is_some_and(|user| !std::mem::replace(&mut user.silent, true))
   }
 
-  /// Whether `username` left the ask of a file unsettled for its whole window, while downloads
-  /// followed them.
+  /// Takes word that `username` offered a file or said a file's place, so their asks are
+  /// waited for again; true when they were silent, while downloads follow them.
+  pub fn answered(&self, username: &str) -> bool {
+    lock(&self.users)
+      .get_mut(username)
+      .is_some_and(|user| std::mem::replace(&mut user.silent, false))
+  }
+
+  /// Whether `username` left the ask of a file unsettled for its whole window and has offered
+  /// nothing and said no place since, while downloads followed them.
   pub fn silent(&self, username: &str) -> bool {
     lock(&self.users)
       .get(username)

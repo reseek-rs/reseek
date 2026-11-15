@@ -44,8 +44,20 @@ const HARD_LIMITED: &str = "Download failed to enqueue remotely after hard time 
 /// neither offers it nor says its place, from the question to the end of the wait. A peer with
 /// a free upload slot offers the file as it takes the request, and one that waits to look at
 /// its queue again does so within ten seconds, so an offer is not waited for past that and a
-/// margin. A peer that lets the window pass is not waited for on its next files.
+/// margin. A peer that lets the window pass with the question unanswered is not waited for on
+/// its next files until it offers one or says a place.
 pub(super) const SETTLED_AFTER: Duration = Duration::from_secs(12);
+
+/// How the ask of a file the peer took into its queue settled without an offer.
+enum Settled {
+  /// the peer said the file's place
+  Placed(u32),
+  /// the window passed with the question unanswered
+  Unanswered,
+  /// the question could not be asked, or failed other than by going unanswered, as when the
+  /// connection closes under it, so the peer's silence says nothing
+  Unasked,
+}
 
 /// Progress not written, which a failing database would repeat four times a second.
 static PROGRESS_UNWRITTEN: LogLimiter = LogLimiter::new();
@@ -375,7 +387,7 @@ impl Downloads {
     // the slot it holds once its offer is accepted, to the end of the try
     let mut moving: Option<Slot> = None;
     // the question of its place, which ends its ask once the peer has it queued
-    let mut settling: Option<std::pin::Pin<Box<dyn Future<Output = Option<u32>> + Send>>> = None;
+    let mut settling: Option<std::pin::Pin<Box<dyn Future<Output = Settled> + Send>>> = None;
     // only word that comes during the try stops it
     away.borrow_and_update();
     let result = if let Poll::Ready(result) = first {
@@ -389,8 +401,8 @@ impl Downloads {
         }
         let queued = matches!(record.state, State::QueuedRemotely { .. });
         if queued && asking && settling.is_none() {
-          // a peer that left an earlier ask unsettled is not waited for again: its slot goes
-          // to the next file at once
+          // a peer that left an earlier ask unsettled is not waited for until it answers again:
+          // its slot goes to the next file at once
           if self.away.silent(&record.username) {
             if let Some(gate) = gate {
               gate.pending = None;
@@ -412,12 +424,16 @@ impl Downloads {
               gate.pending = None;
             }
             match place {
-              Some(place) => self.place_answered(record, place).await,
-              None => {
+              Settled::Placed(place) => {
+                self.heard_from(&record.username);
+                self.place_answered(record, place).await;
+              }
+              Settled::Unanswered => {
                 if self.away.went_silent(&record.username) {
                   debug!("the peer neither offered the file nor said its place; its next asks hold no slot");
                 }
               }
+              Settled::Unasked => {}
             }
           }
           // a user who goes offline before their file moves is waited for; one who offered a
@@ -527,13 +543,13 @@ impl Downloads {
   }
 
   /// The settling of the ask of `record`, which its peer has taken into its queue: its place
-  /// in that queue, asked of the peer, or none once [`SETTLED_AFTER`] passed without an
-  /// answer. Stopped with `stop`.
+  /// in that queue, asked of the peer, or how the question went once [`SETTLED_AFTER`] passed
+  /// without an answer. Stopped with `stop`.
   fn settling(
     &self,
     record: &Record,
     stop: &CancellationToken,
-  ) -> std::pin::Pin<Box<dyn Future<Output = Option<u32>> + Send>> {
+  ) -> std::pin::Pin<Box<dyn Future<Output = Settled> + Send>> {
     let client = self.network.client().clone();
     let (username, filename) = (record.username.clone(), record.filename.clone());
     let asked = stop.child_token();
@@ -542,16 +558,17 @@ impl Downloads {
       // the question stops with the try or the window, whichever ends first
       let _stops = asked.clone().drop_guard();
       let place = client.get_download_place_in_queue(&username, filename, &asked);
-      match tokio::time::timeout_at(settled, place).await {
-        Ok(Ok(place)) => Some(place),
-        // a question that failed early still waits out the window, in which an offer may come
+      // a question that ended early still waits out the window, in which an offer may come
+      let settled_as = match tokio::time::timeout_at(settled, place).await {
+        Ok(Ok(place)) => return Settled::Placed(place),
+        Ok(Err(ClientError::Timeout(_))) | Err(_) => Settled::Unanswered,
         Ok(Err(e)) => {
-          debug!(error = %e, "place in the peer's queue not answered");
-          tokio::time::sleep_until(settled).await;
-          None
+          debug!(error = %e, "place in the peer's queue not asked");
+          Settled::Unasked
         }
-        Err(_) => None,
-      }
+      };
+      tokio::time::sleep_until(settled).await;
+      settled_as
     })
   }
 
@@ -589,6 +606,7 @@ impl Downloads {
     );
     if accepted && moving.is_none() {
       *moving = Some(self.starts.moving());
+      self.heard_from(&record.username);
     }
     // after the slot is taken, so the ask it ends frees no slot for another
     if let Some(gate) = gate {
@@ -635,6 +653,17 @@ impl Downloads {
       );
     }
     self.save(record, previous != state).await;
+  }
+
+  /// Takes word that `username` offered a file or said a file's place, so their asks are waited
+  /// for again.
+  pub(super) fn heard_from(&self, username: &str) {
+    if self.away.answered(username) {
+      debug!(
+        username,
+        "the peer answered again; its asks hold their slot again"
+      );
+    }
   }
 
   /// Whether the server says `username` is offline now, kept for their downloads; none when it

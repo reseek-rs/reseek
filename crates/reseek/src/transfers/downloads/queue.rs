@@ -75,6 +75,7 @@ impl Downloads {
     if self.running(id) {
       lock(&self.asked).insert(id, Instant::now());
     }
+    self.heard_from(username);
     self.place(record.id, place).await;
     info!(%id, username, place, "place in the peer's queue");
     Ok(place)
@@ -117,6 +118,7 @@ impl Downloads {
   /// Keeps `place` on the running download of `filename` from `username` while the peer has it
   /// queued.
   async fn place_received(&self, username: &str, filename: &str, place: u32) {
+    self.heard_from(username);
     let name = username.to_string();
     let file = filename.to_string();
     let found = self
