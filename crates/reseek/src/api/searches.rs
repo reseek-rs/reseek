@@ -2,6 +2,7 @@
 //! stopping and deleting it, and the wishlist. Reading takes the ReadOnly role, the rest
 //! ReadWrite.
 
+use soulseek_client::soulseek_proto;
 use std::time::Duration;
 
 use api_types::search::{

@@ -11,6 +11,7 @@ pub mod tracker;
 
 pub use events::room_of;
 
+use soulseek_client::soulseek_proto;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -23,7 +24,7 @@ use api_types::messaging::rooms::{
 use api_types::users::blocking::BlockScope;
 use chrono::Utc;
 use reseek_shares::lock;
-use soulseek_client::{ClientError, RoomErrorKind};
+use soulseek_client::{Client, ClientError, RoomErrorKind};
 use soulseek_proto::RoomType;
 use soulseek_proto::server::{RoomData, RoomList};
 use tokio_util::sync::CancellationToken;
@@ -64,6 +65,16 @@ impl Rooms {
   pub(in crate::messaging) fn tracker(&self) -> MutexGuard<'_, Tracker> {
     lock(&self.tracker)
   }
+}
+
+/// The name the session is logged in as, which `verb` needs.
+fn own_username(client: &Client, verb: &str) -> Result<String, ClientError> {
+  client.username().ok_or_else(|| {
+    ClientError::InvalidOperation(format!(
+      "the server connection must be connected and logged in to {verb} (currently: {})",
+      client.state()
+    ))
+  })
 }
 
 fn internal(error: DbError) -> ApiError {
@@ -171,7 +182,7 @@ impl Messaging {
     }
     let client = self.client();
     // the session's name marks us among the members; taken before the join is sent
-    let us = client.own_username(&format!("join chat room {name}"))?;
+    let us = own_username(client, &format!("join chat room {name}"))?;
     let leaves = self.rooms.tracker().leaves(name);
     let private = private || self.joined_private(name).await;
     let data = match self.ask_to_join(name, private).await {
@@ -201,7 +212,7 @@ impl Messaging {
       if let Err(e) = client.leave_room(name).await {
         debug!(room = name, error = %e, "room joined after it was left not left again");
       }
-      return Err(ClientError::Cancelled);
+      return Err(ClientError::Canceled);
     };
     self.rooms_changed();
     // the server's list taken before we created a private room does not list it as ours
@@ -418,7 +429,7 @@ impl Messaging {
       match self.join_now(&room, false, false).await {
         Ok(Some(_)) => info!(room, "room joined"),
         Ok(None) => debug!(room, "room joined already"),
-        Err(ClientError::Cancelled) => debug!(room, "room left while it was being joined"),
+        Err(ClientError::Canceled) => debug!(room, "room left while it was being joined"),
         Err(e) if self.session_over(session) => {
           debug!(room, error = %e, "room not joined; the session ended");
           break;
@@ -497,7 +508,7 @@ impl Messaging {
         room = name,
         "room joined again after client events were lost"
       ),
-      Err(ClientError::Cancelled) => debug!(room = name, "room left while it was being joined"),
+      Err(ClientError::Canceled) => debug!(room = name, "room left while it was being joined"),
       Err(e) if self.session_over(session) => {
         debug!(room = name, error = %e, "room not joined again; the session ended");
       }
@@ -538,7 +549,7 @@ impl Messaging {
         match this.join_now(&room, false, false).await {
           Ok(Some(_)) => info!(room, "room joined"),
           Ok(None) => debug!(room, "room joined already"),
-          Err(ClientError::Cancelled) => debug!(room, "room left while it was being joined"),
+          Err(ClientError::Canceled) => debug!(room, "room left while it was being joined"),
           Err(e) => warn!(room, error = %e, "room not joined"),
         }
       }
@@ -788,6 +799,7 @@ impl Messaging {
 
 #[cfg(test)]
 mod tests {
+  use soulseek_client::soulseek_proto;
   use std::sync::Arc;
   use std::sync::atomic::{AtomicBool, Ordering};
 

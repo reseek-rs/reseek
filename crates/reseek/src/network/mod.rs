@@ -329,7 +329,7 @@ impl Network {
       .client
       .disconnect(Some(SHUTTING_DOWN), Some(Intent::Shutdown.error()))
       .await;
-    self.client.dispose().await;
+    self.client.shutdown().await;
     self.drained.cancel();
     let following = lock(&self.following).take();
     if let Some(task) = following
@@ -438,7 +438,7 @@ mod tests {
       // the lookup can end now, so a connect the disconnect missed goes on and fails by itself
       drop(release);
       let ended = connecting.await;
-      assert!(matches!(ended, Err(ClientError::Cancelled)), "{ended:?}");
+      assert!(matches!(ended, Err(ClientError::Canceled)), "{ended:?}");
       assert_eq!(client.state(), ClientState::Disconnected);
       holder.await.unwrap();
     });

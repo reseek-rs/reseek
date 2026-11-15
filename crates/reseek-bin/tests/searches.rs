@@ -4,6 +4,7 @@
 
 mod support;
 
+use soulseek_client::soulseek_proto;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

@@ -3,6 +3,7 @@
 //! test's script says, hands on every request it reads, and sends or closes when told.
 //! [`next_frame`] reads what the daemon writes to a scripted peer.
 
+use soulseek_client::soulseek_proto;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
@@ -266,4 +267,44 @@ pub fn member(username: &str) -> UserData {
     slots_full: false,
     country_code: String::new(),
   }
+}
+
+/// A download of `a.flac` from bob, as a client logged in to a [`Server`] reports it first,
+/// for a test of what takes the client's snapshots; the test sets the fields it looks at.
+pub async fn transfer_snapshot() -> soulseek_client::Transfer {
+  use soulseek_client::{Client, ClientOptions, DownloadOutput, DownloadRequest};
+
+  let server = Server::silent().await;
+  let client = Client::new(ClientOptions {
+    enable_listener: false,
+    ..ClientOptions::default()
+  })
+  .unwrap();
+  let cancel = CancellationToken::new();
+  client
+    .connect("127.0.0.1", server.port, US, "secret", &cancel)
+    .await
+    .unwrap();
+  let (reported, mut first) = mpsc::unbounded_channel();
+  let dir = tempfile::tempdir().unwrap();
+  let mut request = DownloadRequest::new(
+    "bob",
+    "a.flac",
+    Some(100),
+    DownloadOutput::File(dir.path().join("a.flac")),
+  );
+  request.options.state_changed = Some(std::sync::Arc::new(move |_, snapshot| {
+    // the receiver goes once the first one came
+    let _ = reported.send(snapshot.clone());
+  }));
+  let downloading = {
+    let (client, cancel) = (client.clone(), cancel.clone());
+    tokio::spawn(async move { client.download(request, &cancel).await })
+  };
+  let snapshot = first.recv().await.unwrap();
+  cancel.cancel();
+  // the download ends canceled, which the snapshot taken before does not show
+  let _ = downloading.await;
+  client.shutdown().await;
+  snapshot
 }

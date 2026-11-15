@@ -5,6 +5,7 @@
 use api_types::profile::{Recommendation, Recommendations, SimilarUser};
 use axum::extract::{Path, State};
 use soulseek_client::ClientError;
+use soulseek_client::soulseek_proto;
 use tracing::debug;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -173,7 +174,11 @@ async fn related(
     .get_interest_recommendations(&interest)
     .await
     .map_err(|e| unanswered("recommendations for the interest", e))?;
-  Ok(Json(shown(reply.recommendations)))
+  // one list for both kinds, which `shown` splits by score
+  Ok(Json(shown(soulseek_proto::server::Recommendations {
+    recommendations: reply.recommendations,
+    unrecommendations: Vec::new(),
+  })))
 }
 
 /// Users who like one interest.
@@ -228,6 +233,48 @@ mod tests {
     assert_eq!(
       sorted.unrecommendations,
       [scored("polka", -4), scored("noise", -1), scored("blues", 0)]
+    );
+  }
+
+  #[tokio::test]
+  async fn an_interests_recommendations_come_as_one_list_split_by_score() {
+    use soulseek_proto::server::GetInterestRecommendationsResponse;
+    use soulseek_proto::{ServerRequest, ServerResponse};
+
+    use crate::testing::soulseek::{self, Server};
+    use crate::testing::{TRUSTED, request};
+
+    let app = soulseek::app(TRUSTED).await;
+    let server = Server::start(|asked| match asked {
+      ServerRequest::GetInterestRecommendations(asked) => {
+        vec![ServerResponse::GetInterestRecommendations(
+          GetInterestRecommendationsResponse {
+            interest: asked.interest.clone(),
+            recommendations: vec![scored("bebop", 2), scored("metal", -1), scored("swing", 5)],
+          },
+        )]
+      }
+      _ => Vec::new(),
+    })
+    .await;
+    server.login(&app).await;
+    let answer = app
+      .send(request(
+        "GET",
+        "/api/v0/interests/jazz/recommendations",
+        None,
+      ))
+      .await;
+    assert_eq!(answer.status, 200, "{:?}", answer.body);
+    assert_eq!(
+      answer.json(),
+      serde_json::json!({
+        "recommended": [
+          { "interest": "swing", "score": 5 },
+          { "interest": "bebop", "score": 2 }
+        ],
+        "unrecommended": [{ "interest": "metal", "score": -1 }]
+      })
     );
   }
 }

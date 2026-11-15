@@ -9,6 +9,7 @@
 mod browse;
 mod search;
 
+use soulseek_client::soulseek_proto;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, OnceLock, Weak};
 
@@ -17,9 +18,9 @@ use api_types::users::blocking::BlockScope;
 use cascade::Watcher;
 use reseek_shares::LogLimiter;
 use reseek_shares::traverses;
-use soulseek_client::{ClientError, Resolvers};
-use soulseek_proto::RemoteFilename;
+use soulseek_client::{ClientError, Peer, Resolvers, UploadAsk, UploadDecision};
 use soulseek_proto::peer::UserInfo;
+use soulseek_proto::{RemoteFilename, SearchQuery};
 use tracing::{debug, info, warn};
 
 pub use browse::{browse, directory_contents};
@@ -31,8 +32,8 @@ use crate::config::Options;
 use crate::shares::Shares;
 use crate::telemetry::Telemetry;
 use crate::transfers::downloads::Downloads;
+use crate::transfers::uploads::{ENQUEUE_FAILED, NotQueued, QUEUE_FULL, Uploads};
 pub use crate::transfers::uploads::{Forecast, NOT_SHARED, OVERWHELMED};
-use crate::transfers::uploads::{QUEUE_FULL, Uploads};
 use crate::users::{Directory as Users, upload_permitted};
 
 /// Requests with a `.` or `..` part, which a peer could send at any rate.
@@ -117,35 +118,67 @@ pub fn resolvers(edges: Arc<Edges>) -> Resolvers {
   let searching = edges.clone();
   let info = edges.clone();
   let place = edges;
+  // a peer's `confirmed` is not read: whether a request counts as its user's is decided by
+  // `Directory::confirms` alone, which asks the server for the address at the time
   Resolvers {
-    upload_request: Some(Arc::new(move |username, endpoint, filename| {
+    upload_request: Some(Arc::new(move |peer: Peer, ask: UploadAsk| {
       let edges = enqueue.clone();
-      Box::pin(async move { enqueue_download(&edges, &username, endpoint, &filename).await })
+      Box::pin(async move {
+        let queued = enqueue_download(&edges, &peer.username, peer.endpoint, &ask.filename).await;
+        Ok(decision(queued, &ask.filename))
+      })
     })),
-    browse_response: Some(Arc::new(move |username, endpoint| {
+    browse_response: Some(Arc::new(move |peer: Peer| {
       let edges = browsing.clone();
-      Box::pin(async move { Ok(browse(&edges, &username, endpoint).await) })
+      Box::pin(async move { Ok(Some(browse(&edges, &peer.username, peer.endpoint).await)) })
     })),
-    folder_contents: Some(Arc::new(move |username, endpoint, _token, directory| {
+    folder_contents: Some(Arc::new(move |peer: Peer, _token, directory| {
       let edges = folder.clone();
-      Box::pin(async move { Ok(directory_contents(&edges, &username, endpoint, &directory).await) })
+      Box::pin(async move {
+        Ok(directory_contents(&edges, &peer.username, peer.endpoint, &directory).await)
+      })
     })),
-    search_response: Some(Arc::new(move |username, token, query| {
+    search_response: Some(Arc::new(move |username, token, text| {
       let edges = searching.clone();
-      Box::pin(async move { Ok(search(&edges, &username, token, &query).await) })
+      Box::pin(
+        async move { Ok(search(&edges, &username, token, &SearchQuery::parse(&text)).await) },
+      )
     })),
-    user_info: Some(Arc::new(move |username, endpoint| {
+    user_info: Some(Arc::new(move |peer: Peer| {
       let edges = info.clone();
-      Box::pin(async move { Ok(user_info(&edges, &username, endpoint).await) })
+      Box::pin(async move { Ok(Some(user_info(&edges, &peer.username, peer.endpoint).await)) })
     })),
-    place_in_queue: Some(Arc::new(move |username, endpoint, filename| {
+    place_in_queue: Some(Arc::new(move |peer: Peer, filename| {
       let edges = place.clone();
-      Box::pin(async move { Ok(place_in_queue(&edges, &username, endpoint, &filename).await) })
+      Box::pin(
+        async move { Ok(place_in_queue(&edges, &peer.username, peer.endpoint, &filename).await) },
+      )
     })),
-    unasked_offer: Some(Arc::new(move |username, endpoint, filename, size| {
+    unasked_offer: Some(Arc::new(move |peer: Peer, filename, size| {
       let edges = receiving.clone();
-      Box::pin(async move { receive_offer(&edges, &username, endpoint, &filename, size).await })
+      Box::pin(async move {
+        receive_offer(&edges, &peer.username, peer.endpoint, &filename, size).await
+      })
     })),
+    // every relayed request is dialed, the parent nearest the top of its branch is taken and
+    // every child is let in while a slot is free
+    connection_request: None,
+    distributed_parent: None,
+    distributed_child: None,
+  }
+}
+
+/// What the peer is told of its request for `filename`, as `queued` went: a failure here is
+/// logged and refused with [`ENQUEUE_FAILED`].
+fn decision(queued: Result<(), NotQueued>, filename: &RemoteFilename) -> UploadDecision {
+  match queued {
+    Ok(()) => UploadDecision::Queue,
+    Err(NotQueued::Refused(reason)) => UploadDecision::Deny(reason),
+    Err(NotQueued::Later) => UploadDecision::Later,
+    Err(NotQueued::Failed(error)) => {
+      warn!(%filename, %error, "upload request resolver failed");
+      UploadDecision::Deny(ENQUEUE_FAILED.into())
+    }
   }
 }
 
@@ -189,19 +222,19 @@ pub async fn enqueue_download(
   username: &str,
   endpoint: SocketAddr,
   filename: &RemoteFilename,
-) -> Result<(), ClientError> {
+) -> Result<(), NotQueued> {
   let uploads = edges.uploads();
   uploads.request_received();
   if traverses(filename.as_str()) {
     suspicious(username, "enqueue", filename.as_str());
     uploads.request_refused();
-    return Err(ClientError::UploadRefused(NOT_SHARED.into()));
+    return Err(NotQueued::Refused(NOT_SHARED.into()));
   }
   if uploads.overwhelmed(username) {
-    return Err(ClientError::UploadRefused(OVERWHELMED.into()));
+    return Err(NotQueued::Refused(OVERWHELMED.into()));
   }
   if uploads.queue_full(username, endpoint.ip()) {
-    return Err(ClientError::UploadRefused(QUEUE_FULL.into()));
+    return Err(NotQueued::Refused(QUEUE_FULL.into()));
   }
   if blocked(edges, username, Some(endpoint), BlockScope::Uploads) {
     uploads.request_refused();
@@ -212,7 +245,7 @@ pub async fn enqueue_download(
       .blocking
       .refusal_message
       .clone();
-    return Err(ClientError::UploadRefused(refusal));
+    return Err(NotQueued::Refused(refusal));
   }
   let sees = edges.users.sees_from(username, endpoint.ip()).await;
   uploads
@@ -361,8 +394,8 @@ pub(crate) mod tests {
     crate::telemetry::registry::text(&metrics.registry.families())
   }
 
-  fn refused(result: Result<(), ClientError>) -> bool {
-    matches!(result, Err(ClientError::UploadRefused(reason)) if reason == NOT_SHARED)
+  fn refused(result: Result<(), NotQueued>) -> bool {
+    matches!(result, Err(NotQueued::Refused(reason)) if reason == NOT_SHARED)
   }
 
   fn empty_share(reply: soulseek_client::BrowseReply) -> bool {
@@ -466,8 +499,7 @@ pub(crate) mod tests {
     assert_eq!(answer.json()["addresses"], json!(["198.51.100.0/24"]));
     let edges = edges(&app);
     let file = name("@@music\\a.mp3");
-    let banned =
-      |result| matches!(result, Err(ClientError::UploadRefused(reason)) if reason == "Banned");
+    let banned = |result| matches!(result, Err(NotQueued::Refused(reason)) if reason == "Banned");
     assert!(banned(
       enqueue_download(&edges, "eve", from("198.51.100.9"), &file).await
     ));
@@ -543,5 +575,24 @@ pub(crate) mod tests {
         "blocked, from = {groups}"
       );
     }
+  }
+
+  #[test]
+  fn a_request_is_answered_as_it_was_decided_and_a_failure_here_is_a_refusal() {
+    let file = name("@@music\\a.mp3");
+    assert_eq!(decision(Ok(()), &file), UploadDecision::Queue);
+    assert_eq!(
+      decision(Err(NotQueued::Refused("Banned".into())), &file),
+      UploadDecision::Deny("Banned".into())
+    );
+    assert_eq!(
+      decision(Err(NotQueued::Later), &file),
+      UploadDecision::Later
+    );
+    let failed = ClientError::client("the queue was not written", None);
+    assert_eq!(
+      decision(Err(NotQueued::Failed(failed)), &file),
+      UploadDecision::Deny("Enqueue failed due to internal error".into())
+    );
   }
 }

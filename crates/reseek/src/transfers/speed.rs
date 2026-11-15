@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension};
-use soulseek_client::{Governor, Reporter};
+use soulseek_client::{TransferGovernor as Governor, TransferReporter as Reporter};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use super::bucket::TokenBucket;
@@ -56,21 +57,37 @@ impl Global {
     self.upload.clone()
   }
 
-  /// The governor and the reporter of one download: each chunk asks the download bucket, and
-  /// what it granted and the chunk did not move goes back to it.
-  pub fn download_pace(&self) -> (Governor, Reporter) {
-    let bucket = self.download.clone();
+  /// The pace of one download, held to the download bucket.
+  pub fn download_pace(&self) -> DownloadPace {
+    DownloadPace(self.download.clone())
+  }
+}
+
+/// The pace of one download: each chunk asks the download bucket, and what it granted and the
+/// chunk did not move goes back to it.
+pub struct DownloadPace(Arc<TokenBucket>);
+
+impl DownloadPace {
+  /// How many of the `want` bytes the next chunk may move, waiting until some may.
+  async fn chunk(&self, want: u32, cancel: &CancellationToken) -> u32 {
+    // the client sees the cancel and ends the download
+    self.0.get(want, cancel).await.unwrap_or(0)
+  }
+
+  /// A chunk was granted `granted` bytes and moved `moved` of them.
+  fn report(&self, granted: u32, moved: u32) {
+    self.0.give_back(granted.saturating_sub(moved));
+  }
+
+  /// The governor and the reporter the client calls at each chunk.
+  pub fn callbacks(self) -> (Governor, Reporter) {
+    let pace = Arc::new(self);
+    let reporting = pace.clone();
     let governor: Governor = Arc::new(move |_, want, cancel| {
-      let bucket = bucket.clone();
-      Box::pin(async move {
-        // the client sees the cancel and ends the download
-        bucket.get(want, &cancel).await.unwrap_or(0)
-      })
+      let pace = pace.clone();
+      Box::pin(async move { pace.chunk(want, &cancel).await })
     });
-    let bucket = self.download.clone();
-    let reporter: Reporter = Arc::new(move |_, _, granted, moved| {
-      bucket.give_back(granted.saturating_sub(moved));
-    });
+    let reporter: Reporter = Arc::new(move |_, _, granted, moved| reporting.report(granted, moved));
     (governor, reporter)
   }
 }
@@ -223,47 +240,21 @@ mod tests {
 
   #[tokio::test(start_paused = true)]
   async fn a_download_takes_what_the_global_limit_grants_and_gives_back_what_it_did_not_move() {
-    use soulseek_client::{Transfer, TransferState};
-    use soulseek_proto::TransferDirection;
     use tokio::time::Instant;
     use tokio_util::sync::CancellationToken;
 
     let options: crate::config::Options =
       toml::from_str("[transfers.download]\nspeed_limit = 1\n").unwrap();
-    let (chunk, report) = super::Global::new(&options, false).download_pace();
-    let transfer = Transfer {
-      direction: TransferDirection::Download,
-      username: "alice".into(),
-      filename: "a.flac".into(),
-      token: 1,
-      remote_token: None,
-      state: TransferState::InProgress,
-      size: 1_000_000,
-      start_offset: 0,
-      bytes_transferred: 0,
-      bytes_remaining: 1_000_000,
-      percent_complete: 0.0,
-      average_speed: 0.0,
-      start_time: None,
-      end_time: None,
-      elapsed_time: None,
-      remaining_time: None,
-      ip_endpoint: None,
-      error: None,
-    };
+    let pace = super::Global::new(&options, false).download_pace();
     let never = CancellationToken::new();
     let before = Instant::now();
-    assert_eq!(chunk(&transfer, 1000, never.clone()).await, 102, "1 KiB/s");
+    assert_eq!(pace.chunk(1000, &never).await, 102, "1 KiB/s");
     // 50 of them read
-    report(&transfer, 1000, 102, 50);
-    assert_eq!(
-      chunk(&transfer, 1000, never.clone()).await,
-      52,
-      "what came back"
-    );
+    pace.report(102, 50);
+    assert_eq!(pace.chunk(1000, &never).await, 52, "what came back");
     assert_eq!(Instant::now(), before);
-    report(&transfer, 1000, 52, 52);
-    assert_eq!(chunk(&transfer, 1000, never).await, 102);
+    pace.report(52, 52);
+    assert_eq!(pace.chunk(1000, &never).await, 102);
     assert_eq!(
       Instant::now() - before,
       std::time::Duration::from_millis(100)

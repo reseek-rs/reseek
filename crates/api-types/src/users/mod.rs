@@ -8,6 +8,7 @@ pub use profiles::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use soulseek_client::soulseek_proto;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::search::File;
@@ -24,12 +25,14 @@ pub enum UserPresence {
   Online,
 }
 
-impl From<soulseek_proto::UserPresence> for UserPresence {
-  fn from(presence: soulseek_proto::UserPresence) -> Self {
+impl UserPresence {
+  /// The presence the server sent, or `None` for a value the protocol does not name.
+  pub fn known(presence: soulseek_proto::UserPresence) -> Option<Self> {
     match presence {
-      soulseek_proto::UserPresence::Offline => Self::Offline,
-      soulseek_proto::UserPresence::Away => Self::Away,
-      soulseek_proto::UserPresence::Online => Self::Online,
+      soulseek_proto::UserPresence::Offline => Some(Self::Offline),
+      soulseek_proto::UserPresence::Away => Some(Self::Away),
+      soulseek_proto::UserPresence::Online => Some(Self::Online),
+      soulseek_proto::UserPresence::Unknown(_) => None,
     }
   }
 }
@@ -202,4 +205,24 @@ pub struct PrivilegesGift {
   /// whole days, at least one and at most the days we have left
   #[schema(example = 7, minimum = 1)]
   pub days: u32,
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn a_presence_the_protocol_does_not_name_is_not_taken_for_one() {
+    use soulseek_proto::UserPresence as Sent;
+    assert_eq!(
+      UserPresence::known(Sent::Offline),
+      Some(UserPresence::Offline)
+    );
+    assert_eq!(UserPresence::known(Sent::Away), Some(UserPresence::Away));
+    assert_eq!(
+      UserPresence::known(Sent::Online),
+      Some(UserPresence::Online)
+    );
+    assert_eq!(UserPresence::known(Sent::Unknown(3)), None);
+  }
 }

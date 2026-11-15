@@ -6,6 +6,7 @@
 
 mod support;
 
+use soulseek_client::soulseek_proto;
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -73,8 +74,7 @@ async fn let_send(api: &Client, groups: serde_json::Value) {
 
 /// Offers `remote` of `size` bytes to the daemon as `username` on `side`, under `token`.
 async fn offer(side: &mut PeerSide, remote: &str, token: u32, size: u64) {
-  let offer = PeerMessage::TransferRequest(TransferRequest {
-    direction: soulseek_proto::TransferDirection::Upload,
+  let offer = PeerMessage::TransferRequest(TransferRequest::Upload {
     token,
     filename: remote.into(),
     file_size: Some(size),

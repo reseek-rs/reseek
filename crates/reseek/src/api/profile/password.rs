@@ -67,6 +67,7 @@ async fn change_password(
         Some(e.to_string()),
       )
     })?;
+  app.network.watchdog().password_changed(&change.password);
   let set = BTreeMap::from([(PASSWORD.to_string(), Value::String(change.password))]);
   // the server has the password already, so it is saved whatever changed meanwhile
   write(&app, &admin.principal, target, set, Vec::new(), None)

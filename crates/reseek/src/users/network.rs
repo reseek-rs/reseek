@@ -5,6 +5,7 @@
 //! Asking about a user's presence, info or shares asks the server for their statistics again
 //! too, since the server does not push those.
 
+use soulseek_client::soulseek_proto;
 use std::sync::Arc;
 use std::time::Duration;
 

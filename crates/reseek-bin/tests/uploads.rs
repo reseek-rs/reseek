@@ -208,7 +208,7 @@ async fn a_second_request_waits_its_place_and_starts_once_the_first_ends() {
   let (_, responses) = third
     .client
     .search(
-      SearchRequest::new("small", SearchScope::User(vec![name.clone()]), options).unwrap(),
+      SearchRequest::new("small", SearchScope::Users(vec![name.clone()]), options).unwrap(),
       &cancel,
     )
     .await

@@ -68,6 +68,8 @@ struct Inner {
   status: Mutex<Status>,
   /// the ways attempts failed since the last login, each warned about once
   outage: Mutex<Outage>,
+  /// the username and password of the latest attempt, which a session it logged in has
+  login: Mutex<Option<(String, String)>>,
 }
 
 /// Whether the watchdog is on, and what may turn it on
@@ -161,6 +163,7 @@ impl Watchdog {
         turns: Mutex::new(Turns::default()),
         status: Mutex::new(Status::default()),
         outage: Mutex::new(Outage::new()),
+        login: Mutex::new(None),
       }),
     };
     tokio::spawn(
@@ -175,6 +178,25 @@ impl Watchdog {
   /// Whether the watchdog is on.
   pub fn is_enabled(&self) -> bool {
     *self.inner.mode.borrow() == Mode::On
+  }
+
+  /// Whether the session is logged in with `username` and `password`.
+  pub fn logged_in_as(&self, username: &str, password: &str) -> bool {
+    let session = self.inner.client.session();
+    session.state.is_logged_in()
+      && session.username.as_deref() == Some(username)
+      && lock(&self.inner.login).as_ref() == Some(&(username.to_owned(), password.to_owned()))
+  }
+
+  /// Takes `password` as the one the logged in session has, once the server took it.
+  pub fn password_changed(&self, password: &str) {
+    let username = self.inner.client.username();
+    let mut login = lock(&self.inner.login);
+    if let Some((held, held_password)) = login.as_mut()
+      && username.as_ref() == Some(held)
+    {
+      *held_password = password.to_owned();
+    }
   }
 
   /// Turns the watchdog on and starts a loop at once, unless one runs.
@@ -460,13 +482,14 @@ impl Watchdog {
     } else {
       debug!(address, port, username, "{told}");
     }
+    *lock(&inner.login) = Some((username.to_owned(), password.to_owned()));
     match inner
       .client
       .connect(&soulseek.address, soulseek.port, username, password, cancel)
       .await
     {
       Ok(()) => Attempt::Connected,
-      Err(ClientError::Cancelled) => {
+      Err(ClientError::Canceled) => {
         debug!("Reconnection attempt canceled");
         Attempt::Canceled
       }

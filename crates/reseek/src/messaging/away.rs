@@ -4,6 +4,7 @@
 //! opens it. The server is told at once while logged in, else at the next login. While away, the
 //! first private message from each user is answered once with `chat.auto_reply`.
 
+use soulseek_client::soulseek_proto;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -144,17 +145,17 @@ impl Messaging {
     if !self.logged_in_now() {
       return;
     }
-    let presence = if lock(&self.status.inner).away.is_some() {
-      UserPresence::Away
+    let (presence, shown) = if lock(&self.status.inner).away.is_some() {
+      (UserPresence::Away, api_types::users::UserPresence::Away)
     } else {
-      UserPresence::Online
+      (UserPresence::Online, api_types::users::UserPresence::Online)
     };
     if let Err(e) = self.client().set_status(presence).await {
       return warn!(error = %e, ?presence, "status not sent to the server");
     }
     debug!(?presence, "status sent to the server");
     if let Some(us) = self.client().username() {
-      self.member_status(&us, presence.into());
+      self.member_status(&us, shown);
     }
   }
 

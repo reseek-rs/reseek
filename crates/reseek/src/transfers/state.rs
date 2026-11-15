@@ -132,7 +132,7 @@ pub fn reported(state: soulseek_client::TransferState) -> TransferStates {
     Reported::InProgress => TransferStates::InProgress,
     Reported::Completed(outcome) => TransferStates::Completed(match outcome {
       Client::Succeeded => TransferOutcome::Succeeded,
-      Client::Cancelled => TransferOutcome::Cancelled,
+      Client::Canceled => TransferOutcome::Cancelled,
       Client::TimedOut => TransferOutcome::TimedOut,
       Client::Errored => TransferOutcome::Errored,
       Client::Rejected => TransferOutcome::Rejected,
@@ -192,7 +192,7 @@ pub fn in_states(states: impl IntoIterator<Item = TransferStates>) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
   use super::*;
   use TransferOutcome::*;
   use TransferStates::*;
@@ -259,29 +259,66 @@ mod tests {
     }
   }
 
+  /// The names of a schema's values in the committed API contract.
+  pub(crate) fn contract_values(schema: &str) -> Vec<String> {
+    let contract: serde_json::Value =
+      serde_json::from_str(include_str!("../../../../api/openapi.json")).unwrap();
+    contract["components"]["schemas"][schema]["enum"]
+      .as_array()
+      .unwrap_or_else(|| panic!("{schema} has values in the contract"))
+      .iter()
+      .map(|value| value.as_str().unwrap().to_string())
+      .collect()
+  }
+
   #[test]
-  fn every_client_state_is_reported_as_the_state_of_the_same_name() {
-    let client = [
-      soulseek_client::TransferState::QueuedLocally,
-      soulseek_client::TransferState::Requested,
-      soulseek_client::TransferState::QueuedRemotely,
-      soulseek_client::TransferState::Initializing,
-      soulseek_client::TransferState::InProgress,
-    ]
-    .into_iter()
-    .chain(
-      [
-        soulseek_client::TransferOutcome::Succeeded,
-        soulseek_client::TransferOutcome::Cancelled,
-        soulseek_client::TransferOutcome::TimedOut,
-        soulseek_client::TransferOutcome::Errored,
-        soulseek_client::TransferOutcome::Rejected,
-        soulseek_client::TransferOutcome::Aborted,
-      ]
-      .map(soulseek_client::TransferState::Completed),
-    );
-    for state in client {
-      assert_eq!(reported(state).as_str(), state.to_string());
+  fn every_client_state_is_reported_by_the_name_and_column_the_daemon_keeps() {
+    use soulseek_client::{TransferOutcome as Outcome, TransferState as Reported};
+    let rows = [
+      (Reported::QueuedLocally, "Queued, Locally", 2 | 2048),
+      (Reported::Requested, "Requested", 1),
+      (Reported::QueuedRemotely, "Queued, Remotely", 2 | 4096),
+      (Reported::Initializing, "Initializing", 4),
+      (Reported::InProgress, "InProgress", 8),
+      (
+        Reported::Completed(Outcome::Succeeded),
+        "Completed, Succeeded",
+        16 | 32,
+      ),
+      (
+        Reported::Completed(Outcome::Canceled),
+        "Completed, Cancelled",
+        16 | 64,
+      ),
+      (
+        Reported::Completed(Outcome::TimedOut),
+        "Completed, TimedOut",
+        16 | 128,
+      ),
+      (
+        Reported::Completed(Outcome::Errored),
+        "Completed, Errored",
+        16 | 256,
+      ),
+      (
+        Reported::Completed(Outcome::Rejected),
+        "Completed, Rejected",
+        16 | 512,
+      ),
+      (
+        Reported::Completed(Outcome::Aborted),
+        "Completed, Aborted",
+        16 | 1024,
+      ),
+    ];
+    let named = contract_values("TransferStates");
+    for (state, name, stored) in rows {
+      assert_eq!(reported(state).as_str(), name, "{state:?}");
+      assert_eq!(column(reported(state)), stored, "{state:?}");
+      assert!(
+        named.iter().any(|n| n == name),
+        "{name} is not in the contract"
+      );
     }
   }
 }

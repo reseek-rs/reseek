@@ -9,6 +9,7 @@
 
 mod support;
 
+use soulseek_client::soulseek_proto;
 use std::time::{Duration, Instant};
 
 use api_client::Client;

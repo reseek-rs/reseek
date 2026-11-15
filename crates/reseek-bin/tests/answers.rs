@@ -56,7 +56,7 @@ async fn another_user_searches_browses_and_asks_the_daemon() {
     other.client.search(
       SearchRequest::new(
         "abbey -something",
-        SearchScope::User(vec![name.clone()]),
+        SearchScope::Users(vec![name.clone()]),
         options,
       )
       .unwrap(),

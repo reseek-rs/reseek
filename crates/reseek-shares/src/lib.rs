@@ -47,6 +47,7 @@ mod visibility;
 mod walk;
 mod watcher;
 
+use soulseek_client::soulseek_proto;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

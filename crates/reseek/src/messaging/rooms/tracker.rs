@@ -3,12 +3,14 @@
 //! room stays across a lost connection so it is joined again, and is gone once left or at a
 //! restart.
 
+use soulseek_client::soulseek_proto;
 use std::collections::{BTreeMap, BTreeSet};
 
 use api_types::messaging::rooms::{Room, RoomTicker, RoomUser};
 use api_types::state::UserStatistics;
 use api_types::users::UserPresence;
 use soulseek_proto::server::{RoomData, UserData};
+use tracing::debug;
 
 /// A room we are in, or were in before the connection was lost.
 #[derive(Clone, Debug, Default)]
@@ -92,11 +94,24 @@ pub fn country_of(user: &UserData) -> Option<&str> {
   Some(user.country_code.as_str()).filter(|code| !code.trim().is_empty())
 }
 
+/// A member's presence as a room shows it: a member is logged in, so a presence the protocol
+/// does not name is shown as online.
+fn presence_of(user: &UserData) -> UserPresence {
+  UserPresence::known(user.status).unwrap_or_else(|| {
+    let presence = format!("{:?}", user.status);
+    debug!(
+      username = user.username,
+      presence, "room member with a presence the protocol does not name, shown online"
+    );
+    UserPresence::Online
+  })
+}
+
 /// A member as a room shows them; `us` marks ourselves.
 pub fn room_user(user: &UserData, us: &str) -> RoomUser {
   RoomUser {
     username: user.username.clone(),
-    status: user.status.into(),
+    status: presence_of(user),
     statistics: UserStatistics {
       average_speed: user.stats.average_speed,
       directory_count: user.stats.directory_count,
@@ -401,6 +416,7 @@ mod tests {
       stats: UserStats {
         average_speed: 100,
         upload_count: 1,
+        unknown: 0,
         file_count: 10,
         directory_count: 2,
       },
@@ -555,5 +571,15 @@ mod tests {
       "no change, no news"
     );
     assert!(tracker.status("nobody", away).is_empty());
+  }
+
+  #[test]
+  fn a_member_with_a_presence_the_protocol_does_not_name_is_shown_online() {
+    let mut alice = user("alice");
+    alice.status = UserPresence::Unknown(3);
+    assert_eq!(
+      room_user(&alice, "me").status,
+      api_types::users::UserPresence::Online
+    );
   }
 }

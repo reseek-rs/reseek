@@ -8,6 +8,7 @@ use api_types::users::{
 use chrono::Utc;
 use rusqlite::params_from_iter;
 use rusqlite::types::Value;
+use soulseek_client::soulseek_proto;
 use soulseek_proto::SERVER_USERNAME;
 
 use super::store::{COLUMN_COUNT, COLUMNS, Stored, presence_text, stored};

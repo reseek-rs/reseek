@@ -5,6 +5,7 @@
 //! from one login to the next. Whether a request in a buddy's name comes from the buddy is
 //! decided in `identity`.
 
+use soulseek_client::soulseek_proto;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 

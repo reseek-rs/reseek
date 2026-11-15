@@ -1,6 +1,7 @@
 //! A scripted peer: the far end of a peer, transfer or distributed connection, for what two
 //! clients on soulfind cannot show. It reads and writes whole frames with the protocol codecs.
 
+use soulseek_client::soulseek_proto;
 use std::net::{Ipv4Addr, SocketAddr};
 
 use soulseek_proto::frame::{self, FrameKind};
@@ -41,7 +42,7 @@ impl FakePeer {
     u32::from(self.address().port())
   }
 
-  /// the next connection the client makes to us
+  /// the next connection the client makes to this peer
   pub async fn accept(&self) -> PeerSide {
     let (stream, _) = tokio::time::timeout(PATIENCE, self.listener.accept())
       .await

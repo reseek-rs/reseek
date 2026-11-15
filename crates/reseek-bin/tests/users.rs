@@ -4,6 +4,7 @@
 
 mod support;
 
+use soulseek_client::soulseek_proto;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -93,17 +94,17 @@ async fn a_profile_names_its_picture_by_a_url_that_serves_it_at_once() {
     ..ClientOptions::default()
   };
   let sent = picture.clone();
-  options.resolvers.user_info = Some(Arc::new(move |_, _| {
+  options.resolvers.user_info = Some(Arc::new(move |_| {
     let picture = sent.lock().unwrap().clone();
     Box::pin(async move {
-      Ok(UserInfo {
+      Ok(Some(UserInfo {
         description: String::new(),
         picture: Some(picture),
         upload_slots: 1,
         queue_length: 0,
         has_free_upload_slot: true,
         upload_permitted: None,
-      })
+      }))
     })
   }));
   let peer = server.login("peer", options).await;
@@ -181,20 +182,20 @@ async fn a_user_is_browsed_with_progress_asked_about_and_watched() {
     ..ClientOptions::default()
   };
   let shared = listing(200);
-  options.resolvers.browse_response = Some(Arc::new(move |_, _| {
+  options.resolvers.browse_response = Some(Arc::new(move |_| {
     let shared = shared.clone();
-    Box::pin(async move { Ok(BrowseReply::Response(shared)) })
+    Box::pin(async move { Ok(Some(BrowseReply::Response(shared))) })
   }));
-  options.resolvers.user_info = Some(Arc::new(|_, _| {
+  options.resolvers.user_info = Some(Arc::new(|_| {
     Box::pin(async {
-      Ok(UserInfo {
+      Ok(Some(UserInfo {
         description: "hello from the peer".into(),
         picture: None,
         upload_slots: 2,
         queue_length: 0,
         has_free_upload_slot: true,
         upload_permitted: Some(1),
-      })
+      }))
     })
   }));
   let peer = server.login("peer", options).await;

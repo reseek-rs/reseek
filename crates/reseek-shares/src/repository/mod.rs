@@ -5,6 +5,7 @@
 //! A "prefix" here is a remote directory name followed by `\`; rows under it are found with a
 //! range on the name, which is exact, case-sensitive and uses the index.
 
+use soulseek_client::soulseek_proto;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 

@@ -6,7 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-soulseek-proto.workspace = true
+soulseek-client.workspace = true
 
 bitflags.workspace = true
 chrono.workspace = true

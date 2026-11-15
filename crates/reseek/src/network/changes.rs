@@ -9,11 +9,12 @@
 use std::sync::Arc;
 
 use cascade::Loaded;
-use soulseek_client::{Client, ClientError};
+use soulseek_client::ClientError;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, info, warn};
 
 use super::options;
+use super::watchdog::Watchdog;
 use crate::app::AppState;
 use crate::config::Options;
 
@@ -96,7 +97,7 @@ async fn apply(
   {
     super::events::tell_invitations(network.client().clone(), invitations);
   }
-  let credentials = credentials(network.client(), applied, &values);
+  let credentials = credentials(network.watchdog(), applied, &values);
   let relogin = credentials == Credentials::New;
   // the reconnect-class keys changed since the session began; while disconnected the next
   // connect takes them without a flag, as logging in again does
@@ -162,15 +163,17 @@ enum Credentials {
   InSession,
 }
 
-/// What the change from `previous` to `current` does to the credentials `client` logs in with.
-fn credentials(client: &Client, previous: &Options, current: &Options) -> Credentials {
+/// What the change from `previous` to `current` does to the credentials `watchdog` logs in with.
+fn credentials(watchdog: &Watchdog, previous: &Options, current: &Options) -> Credentials {
   let (was, now) = (&previous.soulseek, &current.soulseek);
   if was.username == now.username && was.password == now.password {
     return Credentials::Kept;
   }
   match super::credentials(now) {
     None => Credentials::Kept,
-    Some((username, password)) if client.logged_in_as(username, password) => Credentials::InSession,
+    Some((username, password)) if watchdog.logged_in_as(username, password) => {
+      Credentials::InSession
+    }
     Some(_) => Credentials::New,
   }
 }
@@ -187,6 +190,7 @@ fn reaches_differently(previous: &Options, current: &Options) -> bool {
 
 #[cfg(test)]
 mod tests {
+  use soulseek_client::soulseek_proto;
   use std::time::Duration;
 
   use api_types::state::Reachable;

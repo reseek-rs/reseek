@@ -1,5 +1,6 @@
 //! A user on soulfind whose peer side a test scripts, for what a real client does not do on cue.
 
+use soulseek_client::soulseek_proto;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
@@ -26,7 +27,7 @@ impl Scripted {
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).await.unwrap();
     let options = ClientOptions {
       enable_listener: false,
-      listen_port: listener.local_addr().unwrap().port(),
+      advertised_port: Some(listener.local_addr().unwrap().port()),
       ..ClientOptions::default()
     };
     Self {

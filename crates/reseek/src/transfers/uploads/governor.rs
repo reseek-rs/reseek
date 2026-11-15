@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use reseek_shares::lock;
-use soulseek_client::{Governor as ChunkGovernor, Reporter};
+use soulseek_client::{TransferGovernor as ChunkGovernor, TransferReporter as Reporter};
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::config::{DEFAULT_GROUP, Groups, Options, PRIVILEGED_GROUP};
@@ -21,9 +22,6 @@ use crate::transfers::bucket::TokenBucket;
 
 /// Looks up the group an upload's user is in now.
 pub type CurrentGroup = Arc<dyn Fn() -> String + Send + Sync>;
-
-/// The group bucket an upload's last chunk was granted bytes by, with how many.
-type LastGrant = Arc<Mutex<Option<(Arc<TokenBucket>, u32)>>>;
 
 /// The groups' buckets, and the global one every upload asks after its group's.
 pub struct Governor {
@@ -111,33 +109,57 @@ impl Governor {
       .clone()
   }
 
-  /// The governor and the reporter of one upload whose user is in the group `group` gives at
-  /// each chunk.
-  pub fn pace(self: &Arc<Self>, group: CurrentGroup) -> (ChunkGovernor, Reporter) {
-    let last: LastGrant = Arc::default();
-    let granting = last.clone();
-    let governor = self.clone();
+  /// The pace of one upload whose user is in the group `group` gives at each chunk.
+  pub fn pace(self: &Arc<Self>, group: CurrentGroup) -> Pace {
+    Pace {
+      governor: self.clone(),
+      group,
+      last: Mutex::new(None),
+    }
+  }
+}
+
+/// The pace of one upload: each chunk asks the bucket of its user's group, then the global one.
+pub struct Pace {
+  governor: Arc<Governor>,
+  group: CurrentGroup,
+  /// the group bucket the last chunk was granted bytes by, with how many
+  last: Mutex<Option<(Arc<TokenBucket>, u32)>>,
+}
+
+impl Pace {
+  /// How many of the `want` bytes the next chunk may move, waiting until some may.
+  pub async fn chunk(&self, want: u32, cancel: &CancellationToken) -> u32 {
+    let bucket = self.governor.bucket(&(self.group)());
+    // the client sees a cancel and ends the upload
+    let Some(granted) = bucket.get(want, cancel).await else {
+      return 0;
+    };
+    *lock(&self.last) = Some((bucket, granted));
+    self.governor.global.get(granted, cancel).await.unwrap_or(0)
+  }
+
+  /// A chunk was granted `granted` bytes and moved `moved` of them.
+  fn report(&self, granted: u32, moved: u32) {
+    let taken = lock(&self.last).take();
+    if let Some((bucket, group_granted)) = taken {
+      bucket.give_back(group_granted.saturating_sub(moved));
+    }
+    self
+      .governor
+      .global
+      .give_back(granted.saturating_sub(moved));
+  }
+
+  /// The governor and the reporter the client calls at each chunk.
+  pub fn callbacks(self) -> (ChunkGovernor, Reporter) {
+    let pace = Arc::new(self);
+    let reporting = pace.clone();
     let chunk: ChunkGovernor = Arc::new(move |_, want, cancel| {
-      let bucket = governor.bucket(&group());
-      let global = governor.global.clone();
-      let last = granting.clone();
-      Box::pin(async move {
-        // the client sees a cancel and ends the upload
-        let Some(granted) = bucket.get(want, &cancel).await else {
-          return 0;
-        };
-        *lock(&last) = Some((bucket, granted));
-        global.get(granted, &cancel).await.unwrap_or(0)
-      })
+      let pace = pace.clone();
+      Box::pin(async move { pace.chunk(want, &cancel).await })
     });
-    let global = self.global.clone();
-    let reporter: Reporter = Arc::new(move |_, _, granted, moved| {
-      let taken = lock(&last).take();
-      if let Some((bucket, group_granted)) = taken {
-        bucket.give_back(group_granted.saturating_sub(moved));
-      }
-      global.give_back(granted.saturating_sub(moved));
-    });
+    let reporter: Reporter = Arc::new(move |_, _, granted, moved| reporting.report(granted, moved));
     (chunk, reporter)
   }
 }
@@ -165,51 +187,27 @@ mod tests {
     limited(toml, 0)
   }
 
-  /// A snapshot no governor here looks at.
-  fn transfer() -> soulseek_client::Transfer {
-    soulseek_client::Transfer {
-      direction: soulseek_proto::TransferDirection::Upload,
-      username: "alice".into(),
-      filename: "a.flac".into(),
-      token: 1,
-      remote_token: None,
-      state: soulseek_client::TransferState::InProgress,
-      size: 1_000_000,
-      start_offset: 0,
-      bytes_transferred: 0,
-      bytes_remaining: 1_000_000,
-      percent_complete: 0.0,
-      average_speed: 0.0,
-      start_time: None,
-      end_time: None,
-      elapsed_time: None,
-      remaining_time: None,
-      ip_endpoint: None,
-      error: None,
-    }
-  }
-
   #[tokio::test(start_paused = true)]
   async fn a_speed_change_rebuckets_a_running_upload_at_its_next_chunk() {
     let governor = Arc::new(grouped(
       "[transfers.groups.default.upload]\nspeed_limit = 1\n",
     ));
-    let (chunk, report) = governor.pace(Arc::new(|| DEFAULT_GROUP.to_string()));
+    let pace = governor.pace(Arc::new(|| DEFAULT_GROUP.to_string()));
     let never = CancellationToken::new();
-    assert_eq!(chunk(&transfer(), 50_000, never.clone()).await, 102);
-    report(&transfer(), 50_000, 102, 102);
+    assert_eq!(pace.chunk(50_000, &never).await, 102);
+    pace.report(102, 102);
     governor.configure(&options(
       "[transfers.groups.default.upload]\nspeed_limit = 100\n",
     ));
     let before = tokio::time::Instant::now();
     assert_eq!(
-      chunk(&transfer(), 50_000, never.clone()).await,
+      pace.chunk(50_000, &never).await,
       10_240,
       "the new bucket, full"
     );
     assert_eq!(tokio::time::Instant::now(), before, "without a wait");
     tokio::time::advance(Duration::from_millis(100)).await;
-    assert_eq!(chunk(&transfer(), 50_000, never).await, 10_240);
+    assert_eq!(pace.chunk(50_000, &never).await, 10_240);
   }
 
   #[tokio::test(start_paused = true)]
@@ -217,17 +215,13 @@ mod tests {
     let governor = Arc::new(grouped(
       "[transfers.groups.leechers.upload]\nspeed_limit = 1\n",
     ));
-    let (chunk, report) = governor.pace(Arc::new(|| LEECHERS_GROUP.to_string()));
+    let pace = governor.pace(Arc::new(|| LEECHERS_GROUP.to_string()));
     let never = CancellationToken::new();
-    assert_eq!(chunk(&transfer(), 1000, never.clone()).await, 102);
+    assert_eq!(pace.chunk(1000, &never).await, 102);
     // 30 of the 102 granted were written
-    report(&transfer(), 1000, 102, 30);
+    pace.report(102, 30);
     let before = tokio::time::Instant::now();
-    assert_eq!(
-      chunk(&transfer(), 1000, never).await,
-      72,
-      "102 - 30 came back"
-    );
+    assert_eq!(pace.chunk(1000, &never).await, 72, "102 - 30 came back");
     assert_eq!(tokio::time::Instant::now(), before);
   }
 
@@ -254,13 +248,13 @@ mod tests {
         &format!("[transfers.groups.default.upload]\nspeed_limit = {group}\n"),
         global,
       ));
-      let (chunk, report) = governor.pace(Arc::new(|| DEFAULT_GROUP.to_string()));
+      let pace = governor.pace(Arc::new(|| DEFAULT_GROUP.to_string()));
       let never = CancellationToken::new();
       let before = tokio::time::Instant::now();
       for interval in 0..3 {
-        let granted = chunk(&transfer(), 50_000, never.clone()).await;
+        let granted = pace.chunk(50_000, &never).await;
         assert_eq!(granted, 102, "group {group}, global {global}");
-        report(&transfer(), 50_000, granted, granted);
+        pace.report(granted, granted);
         assert_eq!(
           tokio::time::Instant::now() - before,
           Duration::from_millis(100 * interval)
@@ -275,14 +269,14 @@ mod tests {
       "[transfers.groups.default.upload]\nspeed_limit = 3\n",
       2,
     ));
-    let (chunk, report) = governor.pace(Arc::new(|| DEFAULT_GROUP.to_string()));
+    let pace = governor.pace(Arc::new(|| DEFAULT_GROUP.to_string()));
     let never = CancellationToken::new();
     let before = tokio::time::Instant::now();
     // the group grants 307 and the global limit 204 of them
-    assert_eq!(chunk(&transfer(), 1000, never.clone()).await, 204);
-    report(&transfer(), 1000, 204, 100);
+    assert_eq!(pace.chunk(1000, &never).await, 204);
+    pace.report(204, 100);
     // 207 came back to the group and 104 to the global limit
-    assert_eq!(chunk(&transfer(), 1000, never).await, 104);
+    assert_eq!(pace.chunk(1000, &never).await, 104);
     assert_eq!(tokio::time::Instant::now(), before);
   }
 }

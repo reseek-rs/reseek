@@ -469,7 +469,7 @@ mod tests {
       .await
       .unwrap();
     for room in ["indie", "fresh"] {
-      let data = soulseek_proto::server::RoomData {
+      let data = soulseek_client::soulseek_proto::server::RoomData {
         name: room.into(),
         users: Vec::new(),
         private: None,

@@ -4,6 +4,7 @@
 //! files of the views that hide something carry a generation, which a change of who sees what
 //! moves on, so the files written before it are never read again and can be removed.
 
+use soulseek_client::soulseek_proto;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

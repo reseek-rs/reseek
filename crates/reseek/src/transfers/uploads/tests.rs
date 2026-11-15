@@ -3,6 +3,7 @@
 //! of the API, a group we put a user in taking effect at once, and the queued uploads of a user
 //! canceled when the user is blocked.
 
+use soulseek_client::soulseek_proto;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
@@ -10,13 +11,12 @@ use std::task::Poll;
 use api_types::transfers::{TransferDirection, TransferOutcome, TransferStates, UserResponse};
 use reseek_shares::lock;
 use serde_json::{Value, json};
-use soulseek_client::ClientError;
 use soulseek_proto::RemoteFilename;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::intake::{QUEUED_PER_ADDRESS, QUEUED_USERS};
-use super::{InFlight, OVERWHELMED, QUEUE_FULL};
+use super::{InFlight, NotQueued, OVERWHELMED, QUEUE_FULL};
 use crate::network::resolvers::tests::{edges, exposed, from};
 use crate::network::resolvers::{enqueue_download, place_in_queue, user_info};
 use crate::testing::soulseek::Server;
@@ -59,7 +59,7 @@ async fn asked_from(app: &TestApp, ip: &str, username: &str, filename: &str) -> 
   let peer = from(ip);
   match enqueue_download(&edges(app), username, peer, &RemoteFilename::from(filename)).await {
     Ok(()) => None,
-    Err(ClientError::UploadRefused(reason)) => Some(reason),
+    Err(NotQueued::Refused(reason)) => Some(reason),
     Err(other) => panic!("not a refusal: {other}"),
   }
 }
@@ -244,6 +244,7 @@ async fn one_address_queues_its_share_of_users_and_more_once_they_leave() {
   let stats = UserStats {
     average_speed: 1000,
     upload_count: 10,
+    unknown: 0,
     file_count: 1000,
     directory_count: 100,
   };
@@ -285,7 +286,7 @@ async fn one_address_queues_its_share_of_users_and_more_once_they_leave() {
       let file = RemoteFilename::from(SHARED);
       match enqueue_download(&edges, &username, here, &file).await {
         Ok(()) => None,
-        Err(ClientError::UploadRefused(reason)) => Some(reason),
+        Err(NotQueued::Refused(reason)) => Some(reason),
         Err(other) => panic!("not a refusal: {other}"),
       }
     }
@@ -927,34 +928,10 @@ async fn a_queued_user_the_cache_does_not_know_is_asked_about_again() {
 #[tokio::test]
 async fn an_uploads_chunks_are_held_to_the_global_limit_as_well_as_its_groups() {
   let (_files, app) = shared_app("[transfers.upload]\nspeed_limit = 1\n").await;
-  let (chunk, _) = app.state.uploads.governor.pace(std::sync::Arc::new(|| {
+  let pace = app.state.uploads.governor.pace(std::sync::Arc::new(|| {
     crate::config::DEFAULT_GROUP.to_string()
   }));
   // the default group sets no limit, so 1 KiB/s is the global one: 102 bytes a 100 ms
-  let granted = chunk(
-    &soulseek_client::Transfer {
-      direction: soulseek_proto::TransferDirection::Upload,
-      username: "alice".into(),
-      filename: SHARED.into(),
-      token: 1,
-      remote_token: None,
-      state: soulseek_client::TransferState::InProgress,
-      size: 1_000_000,
-      start_offset: 0,
-      bytes_transferred: 0,
-      bytes_remaining: 1_000_000,
-      percent_complete: 0.0,
-      average_speed: 0.0,
-      start_time: None,
-      end_time: None,
-      elapsed_time: None,
-      remaining_time: None,
-      ip_endpoint: None,
-      error: None,
-    },
-    50_000,
-    CancellationToken::new(),
-  )
-  .await;
+  let granted = pace.chunk(50_000, &CancellationToken::new()).await;
   assert_eq!(granted, 102);
 }

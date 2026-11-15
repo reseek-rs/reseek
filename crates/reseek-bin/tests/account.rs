@@ -6,6 +6,7 @@
 mod support;
 
 use api_client::{Client, Credential};
+use soulseek_client::soulseek_proto;
 use soulseek_proto::server::NewPassword;
 use soulseek_proto::{ServerRequest, ServerResponse};
 use support::{client, logged_in, scripted, scripted_login_with, signed_in, until};

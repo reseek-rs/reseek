@@ -13,6 +13,7 @@ pub(crate) mod store;
 mod suspect;
 mod wishlist;
 
+use soulseek_client::soulseek_proto;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -107,7 +108,7 @@ fn client_scope(scope: &SearchScope) -> soulseek_client::SearchScope {
   match scope.scope_type {
     SearchScopeType::Network => To::Network,
     SearchScopeType::Wishlist => To::Wishlist,
-    SearchScopeType::User | SearchScopeType::Buddies => To::User(scope.subjects.clone()),
+    SearchScopeType::User | SearchScopeType::Buddies => To::Users(scope.subjects.clone()),
     SearchScopeType::Room | SearchScopeType::Rooms => To::Rooms(scope.subjects.clone()),
   }
 }
@@ -423,17 +424,18 @@ impl SearchService for Searches {
           running.queued();
           let _slot = tokio::select! {
             biased;
-            () = running.cancel.cancelled() => return Err(ClientError::Cancelled),
-            () = session.cancelled() => return Err(ClientError::Cancelled),
+            () = running.cancel.cancelled() => return Err(ClientError::Canceled),
+            () = session.cancelled() => return Err(ClientError::Canceled),
             slot = slots.acquire_owned() => slot.expect("the slots are never closed"),
           };
-          client
+          let search = client
             .search_with(
               request.with_token(reserved),
               move |response| taker.response_taken(response, &live, &users),
               &running.cancel,
             )
-            .await
+            .await?;
+          Ok(search.state)
         };
         this.follow(running.clone(), search).await;
         this.running().remove(&id);

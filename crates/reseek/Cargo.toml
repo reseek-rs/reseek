@@ -14,7 +14,6 @@ reseek-relay-proto.workspace = true
 reseek-shares.workspace = true
 reseek-tls.workspace = true
 soulseek-client.workspace = true
-soulseek-proto.workspace = true
 
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "password-hash"] }

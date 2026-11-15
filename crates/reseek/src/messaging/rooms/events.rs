@@ -4,6 +4,7 @@
 //! stored hidden and told to no one. A change of a block pushes again the rooms whose tickers
 //! it hides or shows.
 
+use soulseek_client::soulseek_proto;
 use std::collections::BTreeMap;
 
 use api_types::events::{Event as BusEvent, EventType, RoomMessageReceivedEvent};
@@ -37,11 +38,11 @@ pub fn room_of(event: &Event) -> Option<&str> {
     | Event::PrivateRoomOperatorAdded { room_name, .. }
     | Event::PrivateRoomOperatorRemoved { room_name, .. }
     | Event::PrivateRoomUserListReceived(RoomMembers { room_name, .. })
-    | Event::PrivateRoomModeratedUserListReceived(RoomMembers { room_name, .. })
+    | Event::PrivateRoomOperatorListReceived(RoomMembers { room_name, .. })
     | Event::PrivateRoomMembershipAdded(room_name)
     | Event::PrivateRoomMembershipRemoved(room_name)
-    | Event::PrivateRoomModerationAdded(room_name)
-    | Event::PrivateRoomModerationRemoved(room_name) => Some(room_name),
+    | Event::PrivateRoomOperatorshipAdded(room_name)
+    | Event::PrivateRoomOperatorshipRemoved(room_name) => Some(room_name),
     _ => None,
   }
 }
@@ -86,7 +87,7 @@ impl Messaging {
           room.members = users.into_iter().collect()
         });
       }
-      Event::PrivateRoomModeratedUserListReceived(RoomMembers { room_name, users }) => {
+      Event::PrivateRoomOperatorListReceived(RoomMembers { room_name, users }) => {
         self.change_private(&room_name, |room| {
           room.operators = users.into_iter().collect()
         });
@@ -126,7 +127,7 @@ impl Messaging {
         info!(room, "Removed from private room");
         self.dropped(&room).await;
       }
-      Event::PrivateRoomModerationAdded(room) => {
+      Event::PrivateRoomOperatorshipAdded(room) => {
         info!(room, "Promoted to moderator in private room");
         self.forget_room_list().await;
         if let Some(us) = self.logged_in_as() {
@@ -135,7 +136,7 @@ impl Messaging {
           });
         }
       }
-      Event::PrivateRoomModerationRemoved(room) => {
+      Event::PrivateRoomOperatorshipRemoved(room) => {
         info!(room, "Demoted from moderator in private room");
         self.forget_room_list().await;
         if let Some(us) = self.logged_in_as() {
@@ -340,6 +341,7 @@ impl Messaging {
 #[cfg(test)]
 mod tests {
   use soulseek_client::Event;
+  use soulseek_client::soulseek_proto;
   use soulseek_proto::server::RoomData;
 
   use super::history;

@@ -3,6 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use soulseek_client::soulseek_proto;
 use utoipa::openapi::RefOr;
 use utoipa::openapi::schema::{ObjectBuilder, OneOfBuilder, Schema, Type};
 use utoipa::{IntoParams, ToSchema};

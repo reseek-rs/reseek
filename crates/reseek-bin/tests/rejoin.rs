@@ -4,6 +4,7 @@
 
 mod support;
 
+use soulseek_client::soulseek_proto;
 use soulseek_proto::server::{
   JoinRoomRequest, LeaveRoom, PrivateMessageResponse, RoomData, UserData, UserStats,
 };
@@ -34,6 +35,7 @@ async fn an_unanswered_join_is_left_and_joined_again_once() {
               stats: UserStats {
                 average_speed: 0,
                 upload_count: 0,
+                unknown: 0,
                 file_count: 0,
                 directory_count: 0,
               },

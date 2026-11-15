@@ -15,6 +15,7 @@
 //! user takes one turn per user, so a burst of uploads from one user watches them once. The end
 //! of a server session forgets which users the server was watching for us, not what it said.
 
+use soulseek_client::soulseek_proto;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{
@@ -637,7 +638,17 @@ impl Directory {
   ) -> Result<(UserStatus, bool), ClientError> {
     let before = self.groups.facts(username).unwrap_or_default();
     let status = client.get_user_status(username).await?;
-    let presence = UserPresence::from(status.presence);
+    let Some(presence) = UserPresence::known(status.presence) else {
+      let presence = format!("{:?}", status.presence);
+      debug!(
+        username,
+        presence, "user status with a presence the protocol does not name"
+      );
+      return Err(ClientError::client(
+        format!("the server gave {username} a presence the protocol does not name"),
+        None,
+      ));
+    };
     let moved = self.status_fetched(username, presence, status.is_privileged, &before);
     let status = UserStatus {
       presence,

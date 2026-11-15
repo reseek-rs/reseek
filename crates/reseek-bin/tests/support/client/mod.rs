@@ -11,6 +11,7 @@ pub mod transfers;
 
 pub use ports::free_port;
 
+use soulseek_client::soulseek_proto;
 use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -18,9 +19,12 @@ use std::task::Poll;
 use std::time::Duration;
 
 use soulseek_client::testing::{Engine, WaitKey};
-use soulseek_client::{Client, ClientError, ClientOptions, ClientState, Event};
+use soulseek_client::{
+  BrowseReply, Client, ClientError, ClientOptions, ClientState, Event, Resolvers,
+};
 use soulseek_proto::frame::{self, FrameKind};
 use soulseek_proto::init::PeerInit;
+use soulseek_proto::peer::{BrowseResponse, UserInfo};
 use soulseek_proto::server::{
   GetPeerAddressRequest, GetPeerAddressResponse, GlobalAdminMessage, LoginRequest, LoginResponse,
   PrivateMessageRequest,
@@ -40,10 +44,39 @@ pub const PUBLIC_IP: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 7);
 /// how long a test waits for something that should happen promptly
 pub const PATIENCE: Duration = Duration::from_secs(10);
 
+/// Resolvers that answer a browse with an empty listing and a user info request with a blank
+/// info, for the tests that ask either to see a connection carry messages
+pub fn answering() -> Resolvers {
+  Resolvers {
+    browse_response: Some(Arc::new(|_| {
+      Box::pin(async {
+        Ok(Some(BrowseReply::Response(BrowseResponse {
+          directories: Vec::new(),
+          locked_directories: Vec::new(),
+        })))
+      })
+    })),
+    user_info: Some(Arc::new(|_| {
+      Box::pin(async {
+        Ok(Some(UserInfo {
+          description: String::new(),
+          picture: None,
+          upload_slots: 0,
+          queue_length: 0,
+          has_free_upload_slot: false,
+          upload_permitted: Some(0),
+        }))
+      })
+    })),
+    ..Resolvers::default()
+  }
+}
+
 /// options for a client that does not listen, so tests need no free port
 pub fn options() -> ClientOptions {
   ClientOptions {
     enable_listener: false,
+    resolvers: answering(),
     ..ClientOptions::default()
   }
 }
@@ -53,6 +86,7 @@ pub fn listening_options() -> ClientOptions {
   ClientOptions {
     listen_ip_address: Ipv4Addr::LOCALHOST.into(),
     listen_port: free_port(),
+    resolvers: answering(),
     ..ClientOptions::default()
   }
 }
@@ -168,10 +202,10 @@ impl ServerSide {
   }
 
   /// reads the messages a client that takes distributed children sends right after logging in:
-  /// the listen port, the distributed status and the request for its own statistics
+  /// the distributed status and the request for its own statistics
   pub async fn read_configuration(&mut self) -> Vec<ServerRequest> {
     let mut messages = Vec::new();
-    for _ in 0..6 {
+    for _ in 0..5 {
       messages.push(self.request().await);
     }
     messages
@@ -189,14 +223,27 @@ impl ServerSide {
   /// waits for the client to close the connection, failing if it sends anything but pings
   pub async fn closed(&mut self) {
     loop {
+      while let Some((_, consumed)) =
+        frame::split(FrameKind::Server, &self.buffer, &Limits::DEFAULT).unwrap()
+      {
+        let frame: Vec<u8> = self.buffer.drain(..consumed).collect();
+        let request = ServerRequest::decode(&frame).unwrap();
+        assert_eq!(
+          request,
+          ServerRequest::Ping,
+          "the client sent more before closing"
+        );
+      }
       let mut chunk = [0; 4096];
       let read = tokio::time::timeout(PATIENCE, self.stream.read(&mut chunk))
         .await
         .expect("the client closes the connection")
         .unwrap_or(0);
       if read == 0 {
+        assert!(self.buffer.is_empty(), "the client closed inside a frame");
         return;
       }
+      self.buffer.extend_from_slice(&chunk[..read]);
     }
   }
 }

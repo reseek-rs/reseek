@@ -1,5 +1,6 @@
 //! The pinned chats route: the chats above the others in the chat list, in the user's order.
 
+use soulseek_client::soulseek_proto;
 use std::collections::HashSet;
 
 use api_types::messaging::{ChatKind, ChatPin, ChatPins};

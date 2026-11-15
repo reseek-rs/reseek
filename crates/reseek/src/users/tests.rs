@@ -2,6 +2,7 @@
 //! listing's filters and sorts, groups, the blocking conflicts, the expiry sweep, imports and
 //! forgetting a user.
 
+use soulseek_client::soulseek_proto;
 use std::sync::Arc;
 
 use super::store::Change;
@@ -2149,6 +2150,7 @@ async fn alice_watched_sharing() -> (
         stats: UserStats {
           average_speed: 1000,
           upload_count: 10,
+          unknown: 0,
           file_count: 1000,
           directory_count: 100,
         },

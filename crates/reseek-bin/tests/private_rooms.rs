@@ -7,6 +7,7 @@ mod support;
 
 use api_client::Client;
 use api_types::messaging::rooms::RoomInfo;
+use soulseek_client::soulseek_proto;
 use soulseek_proto::server::{
   JoinRoomRequest, LeaveRoom, PrivateMessageResponse, PrivateRoomAdded, PrivateRoomData,
   PrivateRoomDropOwnership, RoomData, RoomList, UserData, UserStats,
@@ -23,6 +24,7 @@ fn private_room(name: String, owner: &str) -> RoomData {
     stats: UserStats {
       average_speed: 0,
       upload_count: 0,
+      unknown: 0,
       file_count: 0,
       directory_count: 0,
     },

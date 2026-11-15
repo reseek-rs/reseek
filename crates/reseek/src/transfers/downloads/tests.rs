@@ -3,6 +3,7 @@
 //! finished download's file served from where it was moved, the removals and updates
 //! pushed on the `transfers` topic, and a job told of once its last download ended.
 
+use soulseek_client::soulseek_proto;
 use std::task::Poll;
 
 use api_types::transfers::{TransferOutcome, TransferStates, UserResponse};
@@ -1170,7 +1171,7 @@ async fn an_albums_files_are_asked_of_their_user_in_the_order_enqueued() {
     .expect("every file is asked for");
     match PeerMessage::decode(&frame).unwrap() {
       PeerMessage::QueueDownload(request) => asked.push(request.filename.to_string()),
-      PeerMessage::TransferRequest(request) => asked.push(request.filename.to_string()),
+      PeerMessage::TransferRequest(request) => asked.push(request.filename().to_string()),
       _ => {}
     }
   }
@@ -1430,8 +1431,7 @@ impl Peer {
     use soulseek_proto::peer::TransferRequest;
     self
       .send(soulseek_proto::PeerMessage::TransferRequest(
-        TransferRequest {
-          direction: soulseek_proto::TransferDirection::Upload,
+        TransferRequest::Upload {
           token,
           filename: filename.into(),
           file_size: Some(10),
@@ -1980,8 +1980,7 @@ async fn a_file_sent_unasked_takes_a_slot_while_it_moves() {
   let gift = "@@a\\gift.flac";
   alice
     .send(soulseek_proto::PeerMessage::TransferRequest(
-      TransferRequest {
-        direction: soulseek_proto::TransferDirection::Upload,
+      TransferRequest::Upload {
         token: 9,
         filename: gift.into(),
         file_size: Some(10),
@@ -2578,7 +2577,7 @@ async fn a_paused_download_canceled_is_pushed_as_no_longer_paused() {
 async fn a_download_is_held_to_the_global_download_limit() {
   use soulseek_proto::init::{FileTransferInit, PeerInit};
   use soulseek_proto::peer::{TransferRequest, TransferResponse};
-  use soulseek_proto::{InitMessage, PeerConnectionType, PeerMessage, TransferDirection};
+  use soulseek_proto::{InitMessage, PeerConnectionType, PeerMessage};
   use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
   let config = format!("[transfers.download]\nspeed_limit = 1\n{TRUSTED}");
@@ -2606,8 +2605,7 @@ async fn a_download_is_held_to_the_global_download_limit() {
   let mut alice = peers.connected("alice").await;
   alice.asked_for(file).await;
   alice
-    .send(PeerMessage::TransferRequest(TransferRequest {
-      direction: TransferDirection::Upload,
+    .send(PeerMessage::TransferRequest(TransferRequest::Upload {
       token: 1,
       filename: file.into(),
       file_size: Some(size),

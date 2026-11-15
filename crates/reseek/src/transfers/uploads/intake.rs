@@ -38,6 +38,36 @@ pub const NOT_SHARED: &str = "File not shared.";
 /// know as the request's end and do not ask again on their own.
 pub const QUEUE_FULL: &str = "Queue full";
 
+/// What a peer is told when deciding its request failed here.
+pub const ENQUEUE_FAILED: &str = "Enqueue failed due to internal error";
+
+/// Why an upload is not queued.
+#[derive(Debug)]
+pub enum NotQueued {
+  /// refused, with the reason the peer is told as written
+  Refused(String),
+  /// the file cannot be queued now; the peer is told the upload failed, so it asks again
+  Later,
+  /// something here failed
+  Failed(ClientError),
+}
+
+impl From<ClientError> for NotQueued {
+  fn from(error: ClientError) -> Self {
+    Self::Failed(error)
+  }
+}
+
+impl std::fmt::Display for NotQueued {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::Refused(reason) => f.write_str(reason),
+      Self::Later => f.write_str("the file cannot be queued now"),
+      Self::Failed(error) => error.fmt(f),
+    }
+  }
+}
+
 /// How many users may have uploads in the queue at once. A new user past them is refused until
 /// one leaves, which bounds the queue over every user, and with it the users cache, which keeps
 /// every user the queue holds.
@@ -262,7 +292,7 @@ impl Uploads {
     from: IpAddr,
     filename: &str,
     sees: BTreeSet<String>,
-  ) -> Result<(), ClientError> {
+  ) -> Result<(), NotQueued> {
     // decided on a task of its own that holds the user's turn to the end, so a caller that
     // stops waiting leaves no upload half queued and the user's next request waits for this one
     let this = self.this();
@@ -273,10 +303,10 @@ impl Uploads {
     match ran.await {
       Ok(result) => result,
       Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
-      Err(e) => Err(ClientError::client(
+      Err(e) => Err(NotQueued::Failed(ClientError::client(
         format!("the upload request was not decided: {e}"),
         None,
-      )),
+      ))),
     }
   }
 
@@ -287,7 +317,7 @@ impl Uploads {
     from: IpAddr,
     filename: &str,
     sees: &BTreeSet<String>,
-  ) -> Result<(), ClientError> {
+  ) -> Result<(), NotQueued> {
     let (_turn, waiting) = self.intake.turn(username).await;
     let enqueue = &self.telemetry.metrics().enqueue;
     enqueue.queue_depth.set(waiting as f64);
@@ -316,7 +346,7 @@ impl Uploads {
             filename, reason, suppressed, "upload request refused"
           );
         }
-        return Err(ClientError::UploadRefused(reason.to_string()));
+        return Err(NotQueued::Refused(reason.to_string()));
       }
       Err(Refusal::Later) => {
         enqueue.requests_rejected.inc();
@@ -326,9 +356,9 @@ impl Uploads {
             filename, suppressed, "upload request failed; the agent holding the file is away"
           );
         }
-        return Err(ClientError::UploadUnavailable);
+        return Err(NotQueued::Later);
       }
-      Err(Refusal::Failed(error)) => return Err(error),
+      Err(Refusal::Failed(error)) => return Err(NotQueued::Failed(error)),
     };
     self.enqueue(username, filename, located, true).await?;
     let total = millis(started);
@@ -403,10 +433,7 @@ impl Uploads {
           debug!(username, filename, error = %e, "file not sent");
           sent.failed.push(EnqueueFailure {
             filename,
-            message: match e {
-              ClientError::UploadRefused(reason) => reason,
-              other => other.to_string(),
-            },
+            message: e.to_string(),
           });
         }
       }
@@ -421,15 +448,15 @@ impl Uploads {
     username: &str,
     filename: &str,
     sees: &BTreeSet<String>,
-  ) -> Result<Enqueued, ClientError> {
+  ) -> Result<Enqueued, NotQueued> {
     if self.sending_already(username, filename, false).await? {
       return Ok(Enqueued::Already);
     }
     match self.decide(username, None, filename, sees).await {
-      Ok(located) => self.enqueue(username, filename, located, false).await,
-      Err(Refusal::Peer(reason)) => Err(ClientError::UploadRefused(reason.to_string())),
-      Err(Refusal::Later) => Err(ClientError::UploadUnavailable),
-      Err(Refusal::Failed(error)) => Err(error),
+      Ok(located) => Ok(self.enqueue(username, filename, located, false).await?),
+      Err(Refusal::Peer(reason)) => Err(NotQueued::Refused(reason.to_string())),
+      Err(Refusal::Later) => Err(NotQueued::Later),
+      Err(Refusal::Failed(error)) => Err(NotQueued::Failed(error)),
     }
   }
 
@@ -642,5 +669,22 @@ mod tests {
     assert!(intake.backlog() > BACKLOG_MILLIS);
     intake.latency.store(45_000f64.to_bits(), Ordering::Release);
     assert!(intake.backlog() <= BACKLOG_MILLIS);
+  }
+
+  #[test]
+  fn a_file_not_queued_says_why_as_a_send_shows_it() {
+    assert_eq!(
+      NotQueued::Refused("Queue full".into()).to_string(),
+      "Queue full"
+    );
+    assert_eq!(
+      NotQueued::Later.to_string(),
+      "the file cannot be queued now"
+    );
+    let failed = ClientError::client("the queue was not written", None);
+    assert_eq!(
+      NotQueued::Failed(failed).to_string(),
+      "the queue was not written"
+    );
   }
 }

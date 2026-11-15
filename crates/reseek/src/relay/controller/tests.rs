@@ -5,6 +5,7 @@
 //! session while another device under its name is refused, a share upload cut off partway
 //! leaves no file behind, and a file in flight stops when its agent is kicked.
 
+use soulseek_client::soulseek_proto;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::pin::Pin;
@@ -795,7 +796,7 @@ fn file_info(id: Uuid, exists: bool, length: u64) -> Result<Message, axum::Error
 }
 
 /// What a peer asking `app` for [`AGENT_FILE`] is told.
-async fn asked(app: &crate::testing::TestApp) -> Result<(), soulseek_client::ClientError> {
+async fn asked(app: &crate::testing::TestApp) -> Result<(), crate::transfers::uploads::NotQueued> {
   use crate::network::resolvers::tests::{edges, from};
   crate::network::resolvers::enqueue_download(
     &edges(app),
@@ -817,7 +818,7 @@ async fn a_file_its_agent_is_slow_to_find_has_the_peer_ask_again() {
 
   let slow = asked(&app).await;
   assert!(
-    matches!(slow, Err(soulseek_client::ClientError::UploadUnavailable)),
+    matches!(slow, Err(crate::transfers::uploads::NotQueued::Later)),
     "{slow:?}"
   );
 
@@ -844,7 +845,7 @@ async fn a_file_its_agent_is_slow_to_find_has_the_peer_ask_again() {
     asking.await
   };
   assert!(
-    matches!(&refused, Err(soulseek_client::ClientError::UploadRefused(reason)) if reason == "File not shared."),
+    matches!(&refused, Err(crate::transfers::uploads::NotQueued::Refused(reason)) if reason == "File not shared."),
     "{refused:?}"
   );
 }

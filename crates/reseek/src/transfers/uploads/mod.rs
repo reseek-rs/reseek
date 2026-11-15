@@ -46,7 +46,7 @@ use crate::telemetry::Telemetry;
 use crate::users::Directory;
 use governor::Governor;
 use intake::Intake;
-pub use intake::{NOT_SHARED, OVERWHELMED, QUEUE_FULL};
+pub use intake::{ENQUEUE_FAILED, NOT_SHARED, NotQueued, OVERWHELMED, QUEUE_FULL};
 pub use queue::Forecast;
 use queue::UploadQueue;
 
@@ -165,7 +165,7 @@ impl Uploads {
       .network
       .upgrade()
       .map(|network| network.client().clone())
-      .ok_or(ClientError::Disposed)
+      .ok_or(ClientError::Shutdown)
   }
 
   /// Where a new upload request from `username` would land in the queue, by the group known
@@ -285,7 +285,7 @@ impl Uploads {
   async fn cancel_unrun(&self, mut record: Record, remove: bool) -> Result<(), ApiError> {
     let id = record.id;
     let canceled = TransferStates::Completed(TransferOutcome::Cancelled);
-    let exception = ClientError::Cancelled.to_string();
+    let exception = ClientError::Canceled.to_string();
     let unfinished = record
       .complete(TransferOutcome::Cancelled, Some(exception.clone()))
       .is_ok();

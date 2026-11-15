@@ -1,6 +1,7 @@
 //! The private conversations in `messaging.db`: the conversations, their messages, and what
 //! each notifies of and keeps as a draft.
 
+use soulseek_client::soulseek_proto;
 use std::collections::BTreeMap;
 
 use api_types::messaging::NotifyLevel;

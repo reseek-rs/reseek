@@ -1,6 +1,7 @@
 //! The engine as a whole: scanning at startup and loading the index again, the scan pending
 //! after an option change, watched changes, and the indexes of relay agents.
 
+use soulseek_client::soulseek_proto;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;

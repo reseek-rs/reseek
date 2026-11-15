@@ -10,6 +10,7 @@ use api_types::users::UsernameQuery;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
+use soulseek_client::soulseek_proto;
 use tracing::{debug, info};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;

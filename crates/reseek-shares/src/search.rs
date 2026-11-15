@@ -5,6 +5,7 @@
 //! exclusion also removes every match whose name holds it anywhere, ignoring case.
 
 use rusqlite::{Connection, params};
+use soulseek_client::soulseek_proto;
 use soulseek_proto::SearchQuery;
 use soulseek_proto::peer;
 

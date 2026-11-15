@@ -16,8 +16,9 @@ use chrono::Utc;
 use reseek_shares::LogLimiter;
 use reseek_shares::lock;
 use soulseek_client::{
-  ClientError, InputFactory, ProgressUpdated, SlotAwaiter, SlotReleased, StateChanged,
-  Transfer as Snapshot, TransferOptions, UploadInput, UploadRequest, UploadSource,
+  ClientError, InputFactory, SlotAwaiter, SlotReleased, Transfer as Snapshot, TransferOptions,
+  TransferProgressUpdated as ProgressUpdated, TransferStateChanged as StateChanged, UploadInput,
+  UploadRequest, UploadSource,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
@@ -53,7 +54,7 @@ fn input_error(error: &ClientError) -> Option<&std::io::Error> {
 /// How an upload that ended with `error` ended.
 fn outcome(error: &ClientError) -> TransferOutcome {
   match error {
-    ClientError::Cancelled => TransferOutcome::Cancelled,
+    ClientError::Canceled => TransferOutcome::Cancelled,
     ClientError::Timeout(_) => TransferOutcome::TimedOut,
     ClientError::TransferRejected(_) => TransferOutcome::Rejected,
     ClientError::NotFound(_) => TransferOutcome::Aborted,
@@ -81,7 +82,7 @@ fn reason(error: &ClientError) -> String {
 fn relayed(result: &Result<Snapshot, ClientError>, record: &Record) -> (RelayUploadOutcome, u64) {
   match result {
     Ok(transfer) => (RelayUploadOutcome::Succeeded, transfer.bytes_transferred),
-    Err(ClientError::Cancelled) => (RelayUploadOutcome::Cancelled, record.bytes_transferred),
+    Err(ClientError::Canceled) => (RelayUploadOutcome::Cancelled, record.bytes_transferred),
     Err(_) => (RelayUploadOutcome::Failed, record.bytes_transferred),
   }
 }
@@ -180,7 +181,8 @@ impl Uploads {
     let users = self.users.clone();
     let (governor, reporter) = self
       .governor
-      .pace(Arc::new(move || users.speed_group(&username)));
+      .pace(Arc::new(move || users.speed_group(&username)))
+      .callbacks();
     let (input, relay) = self.input(&record, &located);
     let request = UploadRequest {
       username: record.username.clone(),
@@ -276,7 +278,7 @@ impl Uploads {
         let start = start.map_err(|e| ClientError::client(e.to_string(), None))?;
         tokio::select! {
           biased;
-          () = cancel.cancelled() => Err(ClientError::Cancelled),
+          () = cancel.cancelled() => Err(ClientError::Canceled),
           started = start => started.map_err(|_| {
             ClientError::client(format!("upload {id} left the queue before its slot"), None)
           }),

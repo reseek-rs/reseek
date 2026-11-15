@@ -4,6 +4,7 @@
 
 mod support;
 
+use soulseek_client::soulseek_proto;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 

@@ -14,8 +14,8 @@ use chrono::Utc;
 use reseek_shares::LogLimiter;
 use soulseek_client::{
   ClientError, DownloadOutput, DownloadRequest, DownloadSink, OutputFactory, PeerRequestOptions,
-  ProgressUpdated, RequestStyle, SizeMismatchResolver, StateChanged, Transfer as Snapshot,
-  TransferOptions,
+  RequestStyle, SizeMismatchResolver, Transfer as Snapshot, TransferOptions,
+  TransferProgressUpdated as ProgressUpdated, TransferStateChanged as StateChanged,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
@@ -132,7 +132,7 @@ pub(super) fn failure(error: &ClientError) -> Failure {
     retryable: true,
   };
   match error {
-    ClientError::Cancelled => Failure::canceled(),
+    ClientError::Canceled => Failure::canceled(),
     ClientError::Timeout(message) => retry(TransferOutcome::TimedOut, message.clone()),
     ClientError::TransferRejected(reason) => Failure {
       outcome: TransferOutcome::Rejected,
@@ -164,17 +164,21 @@ pub(super) fn failure(error: &ClientError) -> Failure {
 /// size a fresh search gives. The 0 an old client reports for a file of `OVERFLOWED_SIZE`
 /// bytes or more keeps ours.
 fn peers_size() -> SizeMismatchResolver {
-  Arc::new(|transfer, remote| {
-    if remote == 0 && transfer.size >= OVERFLOWED_SIZE {
-      return Ok(transfer.size);
-    }
-    if transfer.start_offset > 0 {
-      return Err(ClientError::transfer(
-        "a partial file of the size asked for was resumed",
-      ));
-    }
-    Ok(remote)
-  })
+  Arc::new(|transfer, remote| settled_size(transfer.size, transfer.start_offset, remote))
+}
+
+/// The size [`peers_size`] settles on for a download of `size` bytes from `start_offset` that
+/// the peer reports as `remote`.
+fn settled_size(size: u64, start_offset: u64, remote: u64) -> Result<u64, ClientError> {
+  if remote == 0 && size >= OVERFLOWED_SIZE {
+    return Ok(size);
+  }
+  if start_offset > 0 {
+    return Err(ClientError::transfer(
+      "a partial file of the size asked for was resumed",
+    ));
+  }
+  Ok(remote)
 }
 
 /// Where a try starts in the incomplete file.
@@ -341,7 +345,7 @@ impl Downloads {
         warn!(error = %e, "download state not recorded");
       }
     });
-    let (governor, reporter) = self.network.speeds().download_pace();
+    let (governor, reporter) = self.network.speeds().download_pace().callbacks();
     let (progress_sent, mut progress) = watch::channel((start, 0.0));
     let progress_updated: ProgressUpdated = Arc::new(move |_, snapshot: &Snapshot| {
       progress_sent.send_replace((snapshot.bytes_transferred, snapshot.average_speed));
@@ -349,7 +353,7 @@ impl Downloads {
     let request = DownloadRequest {
       username: record.username.clone(),
       filename: record.filename.clone().into(),
-      size: record.size,
+      size: Some(record.size),
       start_offset: start,
       token: None,
       output: DownloadOutput::Stream(output(incomplete.to_path_buf(), mode, start)),
@@ -787,40 +791,16 @@ mod tests {
     assert!(super::failure(&passing).retryable);
   }
 
-  fn snapshot(size: u64, start_offset: u64) -> Snapshot {
-    Snapshot {
-      direction: soulseek_proto::TransferDirection::Download,
-      username: "bob".into(),
-      filename: "a.flac".into(),
-      token: 1,
-      remote_token: None,
-      state: soulseek_client::TransferState::QueuedRemotely,
-      size,
-      start_offset,
-      bytes_transferred: start_offset,
-      bytes_remaining: size - start_offset,
-      percent_complete: 0.0,
-      average_speed: 0.0,
-      start_time: None,
-      end_time: None,
-      elapsed_time: None,
-      remaining_time: None,
-      ip_endpoint: None,
-      error: None,
-    }
-  }
-
   #[test]
   fn the_peers_size_is_taken_only_without_a_partial() {
-    let resolve = peers_size();
-    assert_eq!(resolve(&snapshot(100, 0), 120).unwrap(), 120);
-    assert!(resolve(&snapshot(100, 40), 120).is_err());
+    assert_eq!(settled_size(100, 0, 120).unwrap(), 120);
+    assert!(settled_size(100, 40, 120).is_err());
     assert_eq!(
-      resolve(&snapshot(OVERFLOWED_SIZE, 0), 0).unwrap(),
+      settled_size(OVERFLOWED_SIZE, 0, 0).unwrap(),
       OVERFLOWED_SIZE,
       "an old client's 0 for a large file"
     );
-    assert_eq!(resolve(&snapshot(OVERFLOWED_SIZE - 1, 0), 0).unwrap(), 0);
+    assert_eq!(settled_size(OVERFLOWED_SIZE - 1, 0, 0).unwrap(), 0);
   }
 
   #[tokio::test]

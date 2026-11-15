@@ -4,6 +4,7 @@
 
 mod support;
 
+use soulseek_client::soulseek_proto;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
@@ -47,9 +48,9 @@ async fn user(server: &Arc<Soulfind>) -> (User, Asked) {
     }],
     locked_directories: Vec::new(),
   };
-  options.resolvers.browse_response = Some(Arc::new(move |_, _| {
+  options.resolvers.browse_response = Some(Arc::new(move |_| {
     let shared = shared.clone();
-    Box::pin(async move { Ok(BrowseReply::Response(shared)) })
+    Box::pin(async move { Ok(Some(BrowseReply::Response(shared))) })
   }));
   (server.login("user", options).await, requests)
 }

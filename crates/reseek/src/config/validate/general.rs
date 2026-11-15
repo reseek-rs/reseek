@@ -1,6 +1,7 @@
 //! The options outside the larger sections: the base and download directories, the blocklist,
 //! search filters, logging, metrics, throttling, retention, blocking and the rooms to join.
 
+use soulseek_client::soulseek_proto;
 use std::time::Duration;
 
 use super::blacklist::{UNDETECTED, detect_file};

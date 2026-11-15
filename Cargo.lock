@@ -95,7 +95,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_plain",
- "soulseek-proto",
+ "soulseek-client",
  "utoipa",
  "uuid",
 ]
@@ -3426,7 +3426,6 @@ dependencies = [
  "serde_plain",
  "sha2 0.11.1",
  "soulseek-client",
- "soulseek-proto",
  "subtle",
  "sysinfo",
  "tempfile",
@@ -3496,7 +3495,6 @@ dependencies = [
  "reseek-ui-assets",
  "serde_json",
  "soulseek-client",
- "soulseek-proto",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -3535,7 +3533,7 @@ dependencies = [
  "serde_json",
  "sha1 0.11.0",
  "sha2 0.11.1",
- "soulseek-proto",
+ "soulseek-client",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -4250,24 +4248,24 @@ dependencies = [
 [[package]]
 name = "soulseek-client"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9469f07721110cf84bb689107da5a40edfc4b09634e821375826da013d6ed89d"
 dependencies = [
  "bitflags 2.13.2",
  "socket2",
- "soulseek-client",
  "soulseek-proto",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
 [[package]]
 name = "soulseek-proto"
-version = "0.1.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9d2c2959c0705ca42f2904defdb3f93c20aad41fb659d8984e231b0ee89bf87"
+checksum = "22ddd268cd67e3555733205c0e45f8390608a273ba28774014c894b05898adcd"
 dependencies = [
  "flate2",
  "md-5 0.11.0",

@@ -4,6 +4,7 @@
 //! our shares, which depends on whether they are our buddy and ask from the address the server
 //! reports for them.
 
+use soulseek_client::soulseek_proto;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -506,7 +507,7 @@ mod tests {
     let file = RemoteFilename::from("Music\\Album\\01.mp3");
     let queued = super::super::enqueue_download(&edges, "alice", peer, &file).await;
     assert!(
-      matches!(&queued, Err(soulseek_client::ClientError::UploadRefused(r)) if r == super::super::NOT_SHARED),
+      matches!(&queued, Err(crate::transfers::uploads::NotQueued::Refused(r)) if r == super::super::NOT_SHARED),
       "{queued:?}"
     );
   }

@@ -6,6 +6,7 @@
 
 mod support;
 
+use soulseek_client::soulseek_proto;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
@@ -16,11 +17,11 @@ use api_types::transfers::{Transfer, TransferOutcome, TransferStates};
 use reseek::safety::Os;
 use reseek::transfers::downloads::incomplete_path;
 use serde_json::json;
+use soulseek_proto::PeerMessage;
 use soulseek_proto::peer::{
   PlaceInQueueRequest, PlaceInQueueResponse, QueueDownload, TransferRequest, TransferResponse,
   UploadDenied, UploadFailed,
 };
-use soulseek_proto::{PeerMessage, TransferDirection as Wire};
 use support::peer::PeerSide;
 use support::scripted::{Scripted, send_from};
 use support::soulfind::{self, Soulfind};
@@ -50,8 +51,7 @@ async fn queued(side: &mut PeerSide, filename: &str) {
 /// question of the file's place in queue, which the daemon asks once the file is queued and may
 /// send before or after the acceptance.
 async fn offer(side: &mut PeerSide, filename: &str, token: u32, size: u64) {
-  let request = PeerMessage::TransferRequest(TransferRequest {
-    direction: Wire::Upload,
+  let request = PeerMessage::TransferRequest(TransferRequest::Upload {
     token,
     filename: filename.into(),
     file_size: Some(size),
@@ -155,7 +155,7 @@ async fn refusals_failures_and_sizes_end_each_in_their_outcome() {
   assert_eq!(waiting.state, TransferStates::QueuedLocally);
   assert_eq!(
     waiting.exception.as_deref(),
-    Some("Download reported as failed by remote client"),
+    Some("download reported as failed by remote client"),
     "the reason shows while it waits"
   );
   assert_eq!(
@@ -197,7 +197,7 @@ async fn refusals_failures_and_sizes_end_each_in_their_outcome() {
     .collect();
   assert!(reasons.contains(&json!("File not shared.")), "{reasons:?}");
   assert!(
-    reasons.contains(&json!("Download reported as failed by remote client")),
+    reasons.contains(&json!("download reported as failed by remote client")),
     "{reasons:?}"
   );
   assert_eq!(reasons.len(), 2, "once, after the last try: {reasons:?}");
@@ -230,8 +230,7 @@ async fn refusals_failures_and_sizes_end_each_in_their_outcome() {
   std::fs::write(&kept_at, &content(100)[..10]).unwrap();
   let id = enqueue(&api, sending.name(), shrunk, 100).await;
   queued(&mut side, shrunk).await;
-  let request = PeerMessage::TransferRequest(TransferRequest {
-    direction: Wire::Upload,
+  let request = PeerMessage::TransferRequest(TransferRequest::Upload {
     token: 10,
     filename: shrunk.into(),
     file_size: Some(90),
@@ -343,7 +342,7 @@ async fn a_peer_that_never_answers_times_out() {
   let PeerMessage::TransferRequest(asked) = side.read_peer().await else {
     panic!("the daemon asks for the file with a transfer request");
   };
-  assert_eq!(asked.direction, Wire::Download);
+  assert!(matches!(asked, TransferRequest::Download { .. }));
   let timed_out = download_when(&api, silent.name(), id, "timed out", ended).await;
   assert_eq!(
     timed_out.state,
@@ -358,7 +357,7 @@ async fn a_peer_that_never_answers_times_out() {
     panic!("the daemon asks for the file with a transfer request");
   };
   let queued = PeerMessage::TransferResponse(TransferResponse::Denied {
-    token: asked.token,
+    token: asked.token(),
     message: "Queued.".into(),
   });
   side.send(&queued.encode()).await;

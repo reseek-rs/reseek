@@ -5,6 +5,7 @@
 //! the last of them to let go stops it and removes the directory. A test that stops and starts
 //! its server takes one of its own.
 
+use soulseek_client::soulseek_proto;
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -40,6 +41,7 @@ pub struct Soulfind {
 pub fn listening() -> ClientOptions {
   ClientOptions {
     listen_port: super::free_port(),
+    resolvers: super::answering(),
     ..ClientOptions::default()
   }
 }
@@ -47,7 +49,7 @@ pub fn listening() -> ClientOptions {
 /// options for a client that advertises a port nothing listens on, so dialing it fails at once
 pub fn unreachable() -> ClientOptions {
   ClientOptions {
-    listen_port: super::free_port(),
+    advertised_port: Some(super::free_port()),
     ..super::options()
   }
 }
@@ -220,7 +222,7 @@ impl Drop for Soulfind {
     // the server may have exited already; either way it is gone afterwards
     let _ = self.child.kill();
     let _ = self.child.wait();
-    // a directory that cannot be removed only leaves files in the target directory
+    // a directory that cannot be removed only leaves files in the temporary directory
     let _ = std::fs::remove_dir_all(&self.data);
   }
 }
@@ -252,7 +254,7 @@ impl User {
     self.client.write_server_message(&request).await.unwrap();
   }
 
-  /// Asks the server about ourselves and waits for the answer. The server handles a user's
+  /// Asks the server about this user and waits for the answer. The server handles a user's
   /// messages in order, so everything written before has been handled when this returns.
   pub async fn settle(&self) {
     let _: UserStatus = self

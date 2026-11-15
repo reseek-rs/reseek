@@ -219,9 +219,6 @@ impl Downloads {
 /// The answer to a peer that could not say a place in its queue.
 fn asked_failed(username: &str, error: ClientError) -> ApiError {
   match error {
-    ClientError::TransferNotFound { .. } => {
-      ApiError::conflict("Transfer is not queued remotely", Some(error.to_string()))
-    }
     ClientError::Timeout(message) | ClientError::NoResponse(message) => {
       ApiError::gateway_timeout(message)
     }

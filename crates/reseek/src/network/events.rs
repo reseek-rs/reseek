@@ -14,6 +14,7 @@ use api_types::state::{DistributedNetworkState, ServerConnectionState};
 use api_types::users::UserPresence;
 use chrono::Utc;
 use reseek_shares::LogLimiter;
+use soulseek_client::soulseek_proto;
 use soulseek_client::{
   Client, ClientError, ClientState, DistributedNetworkInfo, Event, PrivateMessage, SessionEnd,
   SessionStatus, Transfer, TransferState,
@@ -342,8 +343,8 @@ async fn handle(app: &AppState, event: Event, session: &mut Session) {
     ),
     room @ (Event::PrivateRoomMembershipAdded(_)
     | Event::PrivateRoomMembershipRemoved(_)
-    | Event::PrivateRoomModerationAdded(_)
-    | Event::PrivateRoomModerationRemoved(_)) => {
+    | Event::PrivateRoomOperatorshipAdded(_)
+    | Event::PrivateRoomOperatorshipRemoved(_)) => {
       private_room(app, &room);
       app.messaging.take(room).await;
     }
@@ -358,7 +359,7 @@ async fn handle(app: &AppState, event: Event, session: &mut Session) {
     | Event::PrivateRoomOperatorAdded { .. }
     | Event::PrivateRoomOperatorRemoved { .. }
     | Event::PrivateRoomUserListReceived(_)
-    | Event::PrivateRoomModeratedUserListReceived(_)) => app.messaging.take(room).await,
+    | Event::PrivateRoomOperatorListReceived(_)) => app.messaging.take(room).await,
     Event::GlobalMessageReceived(message) => server_message(app, message),
     Event::PublicChatMessageReceived {
       room_name,
@@ -422,7 +423,13 @@ async fn handle(app: &AppState, event: Event, session: &mut Session) {
 /// a buddy whose presence it moved is told of.
 async fn user_status(app: &AppState, status: &soulseek_proto::server::UserStatus, asked: bool) {
   let username = &status.username;
-  let presence = UserPresence::from(status.presence);
+  let Some(presence) = UserPresence::known(status.presence) else {
+    let presence = format!("{:?}", status.presence);
+    return debug!(
+      username,
+      presence, asked, "user status with a presence the protocol does not name, not taken"
+    );
+  };
   trace!(username, ?presence, asked, "user status changed");
   app.messaging.member_status(username, presence);
   app.downloads.presence(username, presence);
@@ -487,8 +494,8 @@ fn server_state(app: &AppState, state: ClientState) {
   let username = state.is_logged_in().then(|| client.username()).flatten();
   let (address, ip_end_point) = if state.is_connected() {
     (
-      client.address(),
-      client.ip_endpoint().map(|e| e.to_string()),
+      client.server_address(),
+      client.server_endpoint().map(|e| e.to_string()),
     )
   } else {
     (None, None)
@@ -628,7 +635,7 @@ fn disconnected(app: &AppState, message: &str, error: Option<&ClientError>, reac
   app.network.forget_reconnect();
   let intent = error.and_then(Intent::of);
   match error {
-    Some(ClientError::Disposed) => {
+    Some(ClientError::Shutdown) => {
       info!("Disconnected from the Soulseek server: the client is shutting down");
     }
     _ if intent == Some(Intent::Shutdown) => {
@@ -646,7 +653,7 @@ fn disconnected(app: &AppState, message: &str, error: Option<&ClientError>, reac
       );
     }
     // a restart or a disconnect asked for canceled the attempt
-    Some(ClientError::Cancelled) => debug!("connection attempt canceled"),
+    Some(ClientError::Canceled) => debug!("connection attempt canceled"),
     Some(ClientError::LoginRejected(reason)) => {
       error!(
         reason,
@@ -693,7 +700,7 @@ fn error_kind(error: &ClientError) -> &'static str {
     ClientError::InvalidArgument(_) => "InvalidArgument",
     ClientError::InvalidOperation(_) => "InvalidOperation",
     ClientError::Timeout(_) => "Timeout",
-    ClientError::Cancelled => "Cancelled",
+    ClientError::Canceled => "Cancelled",
     ClientError::Address(_) => "Address",
     ClientError::Listen { .. } => "Listen",
     ClientError::Connect { .. } => "Connect",
@@ -702,7 +709,7 @@ fn error_kind(error: &ClientError) -> &'static str {
     ClientError::KickedFromServer => "KickedFromServer",
     ClientError::Connection { .. } => "Connection",
     ClientError::Message { .. } => "Message",
-    ClientError::Disposed => "Disposed",
+    ClientError::Shutdown => "Disposed",
     _ => "Client",
   }
 }
@@ -770,8 +777,8 @@ fn transfer_state(app: &AppState, previous: Option<TransferState>, transfer: &Tr
   let name = transfer.filename.as_str();
   let basename = name.rsplit(['\\', '/']).next().unwrap_or(name);
   let direction = match transfer.direction {
-    soulseek_proto::TransferDirection::Download => "Download",
-    soulseek_proto::TransferDirection::Upload => "Upload",
+    soulseek_client::TransferDirection::Download => "Download",
+    soulseek_client::TransferDirection::Upload => "Upload",
   };
   info!(
     direction,
@@ -784,7 +791,7 @@ fn transfer_state(app: &AppState, previous: Option<TransferState>, transfer: &Tr
     speed = transfer.average_speed,
     "transfer state changed"
   );
-  if transfer.direction != soulseek_proto::TransferDirection::Upload {
+  if transfer.direction != soulseek_client::TransferDirection::Upload {
     return;
   }
   upload_activity(app, previous, transfer);
@@ -840,8 +847,8 @@ fn private_room(app: &AppState, event: &Event) {
   let (room, change) = match event {
     Event::PrivateRoomMembershipAdded(room) => (room, PrivateRoomChange::Added),
     Event::PrivateRoomMembershipRemoved(room) => (room, PrivateRoomChange::Removed),
-    Event::PrivateRoomModerationAdded(room) => (room, PrivateRoomChange::Operator),
-    Event::PrivateRoomModerationRemoved(room) => (room, PrivateRoomChange::NoLongerOperator),
+    Event::PrivateRoomOperatorshipAdded(room) => (room, PrivateRoomChange::Operator),
+    Event::PrivateRoomOperatorshipRemoved(room) => (room, PrivateRoomChange::NoLongerOperator),
     _ => return,
   };
   app.activity.record(
@@ -993,27 +1000,10 @@ mod tests {
   }
 
   /// a download as the client reports it while its peer has it queued
-  fn queued_download() -> Transfer {
-    Transfer {
-      direction: soulseek_proto::TransferDirection::Download,
-      username: "bob".into(),
-      filename: "a.flac".into(),
-      token: 1,
-      remote_token: None,
-      state: TransferState::QueuedRemotely,
-      size: 100,
-      start_offset: 0,
-      bytes_transferred: 0,
-      bytes_remaining: 100,
-      percent_complete: 0.0,
-      average_speed: 0.0,
-      start_time: None,
-      end_time: None,
-      elapsed_time: None,
-      remaining_time: None,
-      ip_endpoint: None,
-      error: None,
-    }
+  async fn queued_download() -> Transfer {
+    let mut transfer = crate::testing::soulseek::transfer_snapshot().await;
+    transfer.state = TransferState::QueuedRemotely;
+    transfer
   }
 
   #[tokio::test]
@@ -1038,7 +1028,7 @@ mod tests {
     observe_transfers(&app.state).await;
     assert_eq!(queued(), 2);
     // the client holds none of the downloads waiting here
-    transfer_state(&app.state, None, &queued_download());
+    transfer_state(&app.state, None, &queued_download().await);
     assert_eq!(queued(), 2);
   }
 

@@ -2,6 +2,7 @@
 //! client starts with and the patch a configuration change applies, so a client that started with
 //! some options and one patched to them run with the same ones.
 
+use soulseek_client::soulseek_proto;
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -9,7 +10,7 @@ use soulseek_client::{
   ClientLimits, ClientOptions, ClientOptionsPatch, ConnectionOptions, KeepAlive, ProxyCredentials,
   ProxyOptions, RequestStyle,
 };
-use soulseek_proto::Secret;
+use soulseek_proto::{Limits, Secret};
 
 use crate::config::{Options, Soulseek, enums};
 
@@ -45,7 +46,6 @@ pub fn client_options(options: &Options) -> Result<ClientOptions, String> {
     enable_distributed_network: !soulseek.distributed_network.disabled,
     accept_distributed_children: !soulseek.distributed_network.disable_children,
     distributed_child_limit: soulseek.distributed_network.child_limit,
-    deduplicate_search_requests: true,
     message_timeout: MESSAGE_TIMEOUT,
     transfer_response_timeout: soulseek.connection.timeout.transfer_response,
     server_connection_options: sets.server,
@@ -54,13 +54,17 @@ pub fn client_options(options: &Options) -> Result<ClientOptions, String> {
     incoming_connection_options: sets.peer,
     distributed_connection_options: sets.distributed,
     limits: ClientLimits {
-      max_message_size: u32::try_from(limits.max_message_size.as_u64())
-        .map_err(|_| "soulseek.limits.max_message_size: more than 4 GiB".to_string())?,
+      decode: Limits {
+        browse_message_bytes: u32::try_from(limits.max_message_size.as_u64())
+          .map_err(|_| "soulseek.limits.max_message_size: more than 4 GiB".to_string())?,
+        ..Limits::DEFAULT
+      },
       max_concurrent_peer_connects: limits.max_concurrent_peer_connects,
       max_cached_peer_connections: limits.max_cached_peer_connections,
       search_response_cache_size: limits.search_response_cache_size,
       user_endpoint_cache_size: limits.user_endpoint_cache_size,
       distributed_parent_negotiation_timeout: limits.distributed_parent_negotiation_timeout,
+      ..ClientLimits::default()
     },
     ..ClientOptions::default()
   })
@@ -92,10 +96,6 @@ pub fn patch(previous: &Options, current: &Options) -> Result<ClientOptionsPatch
       from.transfer_response_timeout,
       to.transfer_response_timeout,
     ),
-    deduplicate_search_requests: changed(
-      from.deduplicate_search_requests,
-      to.deduplicate_search_requests,
-    ),
     server_connection_options: changed(
       from.server_connection_options,
       to.server_connection_options,
@@ -114,7 +114,28 @@ pub fn patch(previous: &Options, current: &Options) -> Result<ClientOptionsPatch
       to.distributed_connection_options,
     ),
     limits: changed(from.limits, to.limits),
-    resolvers: soulseek_client::Resolvers::default(),
+    listen_while_disconnected: changed(
+      from.listen_while_disconnected,
+      to.listen_while_disconnected,
+    ),
+    cancel_searches_on_disconnect: changed(
+      from.cancel_searches_on_disconnect,
+      to.cancel_searches_on_disconnect,
+    ),
+    advertised_port: changed(from.advertised_port, to.advertised_port),
+    parent_must_relay_search: changed(from.parent_must_relay_search, to.parent_must_relay_search),
+    follow_server_child_limits: changed(
+      from.follow_server_child_limits,
+      to.follow_server_child_limits,
+    ),
+    transfer_accept_timeout: changed(from.transfer_accept_timeout, to.transfer_accept_timeout),
+    send_place_when_queued: changed(from.send_place_when_queued, to.send_place_when_queued),
+    upload_notice_timeout: changed(from.upload_notice_timeout, to.upload_notice_timeout),
+    unasked_offer_timeout: changed(from.unasked_offer_timeout, to.unasked_offer_timeout),
+    server_ping_interval: changed(from.server_ping_interval, to.server_ping_interval),
+    check_names: changed(from.check_names, to.check_names),
+    // the daemon's resolvers are set once, at the start
+    resolvers: None,
   })
 }
 
@@ -274,7 +295,7 @@ mod tests {
       format!("{:?}", client.options()),
       format!("{:?}", client_options(current).unwrap())
     );
-    client.dispose().await;
+    client.shutdown().await;
   }
 
   #[tokio::test]

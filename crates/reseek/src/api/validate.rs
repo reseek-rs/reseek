@@ -2,6 +2,7 @@
 //! base64 paths of the files routes and room names. A domain's own checks are in its handler
 //! module.
 
+use soulseek_client::soulseek_proto;
 use std::time::Duration;
 
 use base64::Engine;

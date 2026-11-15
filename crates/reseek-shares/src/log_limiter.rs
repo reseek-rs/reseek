@@ -60,8 +60,10 @@ mod tests {
     assert_eq!(limiter.allow(), Some(0));
     assert_eq!(limiter.allow(), None);
     assert_eq!(limiter.allow(), None);
-    tokio::time::sleep(INTERVAL).await;
-    assert_eq!(limiter.allow(), Some(2));
+    tokio::time::sleep(Duration::from_secs(59)).await;
+    assert_eq!(limiter.allow(), None);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(limiter.allow(), Some(3));
     assert_eq!(limiter.allow(), None);
   }
 }

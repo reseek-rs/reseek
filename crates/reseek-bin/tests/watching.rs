@@ -5,6 +5,7 @@
 
 mod support;
 
+use soulseek_client::soulseek_proto;
 use std::time::Duration;
 
 use api_types::profile::Interests;
@@ -38,6 +39,7 @@ async fn two_watches_of_one_user_at_once_ask_the_server_once() {
           let stats = UserStats {
             average_speed: 1000,
             upload_count: 1,
+            unknown: 0,
             file_count: 10,
             directory_count: 2,
           };

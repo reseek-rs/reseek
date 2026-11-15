@@ -6,7 +6,6 @@ members = [
   "crates/api-types",
   "crates/cascade",
   "crates/cascade-derive",
-  "crates/soulseek-client",
   "crates/reseek",
   "crates/reseek-agent",
   "crates/reseek-bin",
@@ -36,7 +35,6 @@ reseek-relay-proto = { path = "crates/reseek-relay-proto" }
 reseek-shares = { path = "crates/reseek-shares" }
 reseek-tls = { path = "crates/reseek-tls" }
 reseek-ui-assets = { path = "crates/reseek-ui-assets" }
-soulseek-client = { path = "crates/soulseek-client" }
 
 base64 = "0.23"
 bitflags = "2"
@@ -66,9 +64,9 @@ serde_path_to_error = "0.1"
 serde_plain = "1"
 sha1 = "0.11"
 sha2 = "0.11"
-socket2 = { version = "0.6", features = ["all"] }
-# the wire protocol, made and published in github.com/reseek-rs/soulseek-proto
-soulseek-proto = "0.1"
+# the Soulseek client, made and published in github.com/reseek-rs/soulseek-client; protocol types
+# come through its `soulseek_proto` re-export, so the two versions always agree
+soulseek-client = "0.1"
 subtle = "2"
 syn = { version = "3", features = ["full"] }
 thiserror = "2"

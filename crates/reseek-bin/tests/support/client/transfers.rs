@@ -1,12 +1,16 @@
 //! What the transfer suites share: files to send, a client that queues every upload a peer asks
 //! for and hands the request to the test, and the states a transfer goes through.
 
+use soulseek_client::soulseek_proto;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use soulseek_client::{ClientOptions, Event, Transfer, TransferOutcome, TransferState};
-use soulseek_proto::{RemoteFilename, TransferDirection};
+use soulseek_client::TransferDirection;
+use soulseek_client::{
+  ClientOptions, Event, Peer, Transfer, TransferOutcome, TransferState, UploadAsk, UploadDecision,
+};
+use soulseek_proto::RemoteFilename;
 use tokio::sync::{broadcast, mpsc};
 
 use super::{PATIENCE, next_event};
@@ -45,10 +49,10 @@ pub type Asked = mpsc::UnboundedReceiver<(String, RemoteFilename)>;
 /// receiver, which is where a test starts the upload
 pub fn queueing(options: &mut ClientOptions) -> Asked {
   let (asked, requests) = mpsc::unbounded_channel();
-  options.resolvers.upload_request = Some(Arc::new(move |username, _, filename| {
+  options.resolvers.upload_request = Some(Arc::new(move |peer: Peer, ask: UploadAsk| {
     // the test may have stopped listening; the request is queued either way
-    let _ = asked.send((username, filename));
-    Box::pin(async { Ok(()) })
+    let _ = asked.send((peer.username, ask.filename));
+    Box::pin(async { Ok(UploadDecision::Queue) })
   }));
   requests
 }

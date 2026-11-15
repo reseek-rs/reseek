@@ -5,6 +5,7 @@
 //! the server exclude. Files found are offered to a requester who is online and not blocked at
 //! their address, with our upload speed and the place they would take in our upload queue.
 
+use soulseek_client::soulseek_proto;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};

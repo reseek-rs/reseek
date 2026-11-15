@@ -3,6 +3,7 @@
 //! since at most every 250 ms, and the end written with every response in one transaction before
 //! anyone is told the search completed.
 
+use soulseek_client::soulseek_proto;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -66,8 +67,10 @@ fn state(state: ClientState) -> SearchState {
     ClientState::Requested => SearchState::Requested,
     ClientState::InProgress => SearchState::InProgress,
     ClientState::Completed(outcome) => SearchState::Completed(match outcome {
-      soulseek_client::SearchOutcome::Cancelled => SearchOutcome::Cancelled,
-      soulseek_client::SearchOutcome::TimedOut => SearchOutcome::TimedOut,
+      soulseek_client::SearchOutcome::Canceled => SearchOutcome::Cancelled,
+      // no search here has a maximum duration; one that had would have run out of time
+      soulseek_client::SearchOutcome::TimedOut
+      | soulseek_client::SearchOutcome::MaximumDurationReached => SearchOutcome::TimedOut,
       soulseek_client::SearchOutcome::ResponseLimitReached => SearchOutcome::ResponseLimitReached,
       soulseek_client::SearchOutcome::FileLimitReached => SearchOutcome::FileLimitReached,
       soulseek_client::SearchOutcome::Errored => SearchOutcome::Errored,
@@ -143,7 +146,7 @@ impl Running {
   /// The client moved the search to `next`. The end is not taken here, but written with the
   /// responses once the client returns.
   pub fn state_changed(&self, next: ClientState) {
-    if !next.is_complete() {
+    if !next.is_terminal() {
       self.moved(state(next));
     }
   }
@@ -211,12 +214,13 @@ impl Running {
 }
 
 impl Searches {
-  /// Follows `running` until `search`, the client's operation, returns: a state change is
-  /// written and pushed at once, the counts at most every [`COUNTS_EVERY`]. Then writes the end.
+  /// Follows `running` until `search`, the client's operation, returns how it ended: a state
+  /// change is written and pushed at once, the counts at most every [`COUNTS_EVERY`]. Then
+  /// writes the end.
   pub(super) async fn follow(
     &self,
     running: Arc<Running>,
-    search: impl Future<Output = Result<soulseek_client::Search, ClientError>>,
+    search: impl Future<Output = Result<ClientState, ClientError>>,
   ) {
     tokio::pin!(search);
     let mut written: Option<Instant> = None;
@@ -260,8 +264,8 @@ impl Searches {
       return;
     }
     let ended = match result {
-      Ok(search) => state(search.state),
-      Err(ClientError::Cancelled) if running.canceled.load(Ordering::Relaxed) => {
+      Ok(ended) => state(ended),
+      Err(ClientError::Canceled) if running.canceled.load(Ordering::Relaxed) => {
         SearchState::Completed(SearchOutcome::Cancelled)
       }
       Err(error) => {
@@ -372,11 +376,50 @@ impl Searches {
 #[cfg(test)]
 mod tests {
   use api_types::search::{SearchScope, SearchScopeType};
-  use soulseek_client::SearchScope as ClientScope;
-  use soulseek_proto::SearchQuery;
   use uuid::Uuid;
 
   use super::*;
+
+  #[test]
+  fn every_client_state_is_shown_by_the_name_the_daemon_keeps() {
+    use soulseek_client::SearchOutcome as Outcome;
+    let rows = [
+      (ClientState::Requested, "Requested"),
+      (ClientState::InProgress, "InProgress"),
+      (
+        ClientState::Completed(Outcome::Canceled),
+        "Completed, Cancelled",
+      ),
+      (
+        ClientState::Completed(Outcome::TimedOut),
+        "Completed, TimedOut",
+      ),
+      (
+        ClientState::Completed(Outcome::MaximumDurationReached),
+        "Completed, TimedOut",
+      ),
+      (
+        ClientState::Completed(Outcome::ResponseLimitReached),
+        "Completed, ResponseLimitReached",
+      ),
+      (
+        ClientState::Completed(Outcome::FileLimitReached),
+        "Completed, FileLimitReached",
+      ),
+      (
+        ClientState::Completed(Outcome::Errored),
+        "Completed, Errored",
+      ),
+    ];
+    let named = crate::transfers::state::tests::contract_values("SearchState");
+    for (client, name) in rows {
+      assert_eq!(state(client).as_str(), name, "{client:?}");
+      assert!(
+        named.iter().any(|n| n == name),
+        "{name} is not in the contract"
+      );
+    }
+  }
   use crate::services::{Canceled, SearchService};
   use crate::testing::{TRUSTED, app};
 
@@ -428,16 +471,9 @@ mod tests {
     let stored = searches.get(id, false).await.unwrap();
     assert!(!stored.state.is_complete(), "the end is not written yet");
 
-    let search = soulseek_client::Search {
-      query: SearchQuery::parse("animals"),
-      scope: ClientScope::Network,
-      token: 7,
-      state: ended,
-      response_count: 0,
-      file_count: 0,
-      locked_file_count: 0,
-    };
-    searches.follow(running.clone(), async { Ok(search) }).await;
+    searches
+      .follow(running.clone(), async move { Ok(ended) })
+      .await;
     assert!(*running.done.borrow());
     let stored = searches.get(id, true).await.unwrap();
     assert_eq!(
@@ -467,7 +503,9 @@ mod tests {
     searches.tasks.spawn(async move {
       let search = async move {
         cancel.cancelled().await;
-        Err(ClientError::Cancelled)
+        Ok(ClientState::Completed(
+          soulseek_client::SearchOutcome::Canceled,
+        ))
       };
       following.follow(running, search).await;
     });
@@ -541,17 +579,9 @@ mod tests {
     }
   }
 
-  /// The client's search as it returns once it timed out.
-  fn timed_out() -> soulseek_client::Search {
-    soulseek_client::Search {
-      query: SearchQuery::parse("animals"),
-      scope: ClientScope::Network,
-      token: 7,
-      state: ClientState::Completed(soulseek_client::SearchOutcome::TimedOut),
-      response_count: 0,
-      file_count: 0,
-      locked_file_count: 0,
-    }
+  /// How the client's search ended once it timed out.
+  fn timed_out() -> ClientState {
+    ClientState::Completed(soulseek_client::SearchOutcome::TimedOut)
   }
 
   /// Makes every write to a search's row fail while `refused` is true.

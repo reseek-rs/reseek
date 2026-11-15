@@ -75,7 +75,7 @@ impl Messaging {
     self.belongs(room)?;
     self
       .client()
-      .add_private_room_moderator(room, username)
+      .add_private_room_operator(room, username)
       .await
       .map_err(|e| unconfirmed(room, "add operator", e))?;
     debug!(room, username, "operator added to a private room");
@@ -90,7 +90,7 @@ impl Messaging {
     self.belongs(room)?;
     self
       .client()
-      .remove_private_room_moderator(room, username)
+      .remove_private_room_operator(room, username)
       .await
       .map_err(|e| unconfirmed(room, "remove operator", e))?;
     debug!(room, username, "operator removed from a private room");
@@ -114,9 +114,8 @@ impl Messaging {
   pub(in crate::messaging) async fn drop_ownership(&self, room: &str) -> Result<(), ApiError> {
     self.belongs(room)?;
     let client = self.client();
-    let us = client
-      .own_username(&format!("give up private room {room}"))
-      .map_err(unsent)?;
+    let us =
+      super::own_username(client, &format!("give up private room {room}")).map_err(unsent)?;
     let owner = self
       .rooms
       .tracker()

@@ -145,6 +145,7 @@ impl Messaging {
 mod tests {
   use api_types::messaging::rooms::{RoomHistory, RoomMessagesQuery};
   use rusqlite::params;
+  use soulseek_client::soulseek_proto;
   use soulseek_proto::server::RoomData;
 
   use super::history::{self, Arrived};

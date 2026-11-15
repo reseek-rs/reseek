@@ -3,6 +3,7 @@
 //! job is made, and a sender is held to the files they may send at once even when their offers
 //! all come together.
 
+use soulseek_client::soulseek_proto;
 use std::net::IpAddr;
 use std::sync::Mutex;
 
