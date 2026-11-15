@@ -212,7 +212,9 @@ fn asked_failed(username: &str, error: ClientError) -> ApiError {
     ClientError::TransferNotFound { .. } => {
       ApiError::conflict("Transfer is not queued remotely", Some(error.to_string()))
     }
-    ClientError::Timeout(message) => ApiError::gateway_timeout(message),
+    ClientError::Timeout(message) | ClientError::NoResponse(message) => {
+      ApiError::gateway_timeout(message)
+    }
     ClientError::UserOffline(_) | ClientError::UserNotFound(_) => ApiError::offline(username),
     ClientError::InvalidOperation(message) => ApiError::unavailable(Some(message)),
     other => ApiError::upstream(
