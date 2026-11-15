@@ -615,6 +615,27 @@ mod tests {
   }
 
   #[tokio::test(start_paused = true)]
+  async fn a_password_hash_changed_to_another_ends_the_older_sessions() {
+    let config = |password: &str| {
+      let hash = crate::auth::local::hash(password);
+      format!("[web.authentication]\npassword_hash = \"{hash}\"\n")
+    };
+    let app = app(&config("s3cret"), &[]).await;
+    let cookie = admin(&app, "s3cret").await;
+    pass(SETTLE).await;
+    reload(&app, &config("n3w")).await;
+    pass(SETTLE).await;
+    until_ended(&app, &cookie).await;
+
+    // and while stopped
+    let cookie = admin(&app, "n3w").await;
+    std::fs::write(app.dir.path().join("config.toml"), config("again")).unwrap();
+    let app = app.restarted(&[]).await;
+    pass(SETTLE).await;
+    until_ended(&app, &cookie).await;
+  }
+
+  #[tokio::test(start_paused = true)]
   async fn an_added_account_whose_password_changes_in_its_first_wait_ends_the_first() {
     let app = app("", &[]).await;
     pass(SETTLE).await;
