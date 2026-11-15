@@ -198,7 +198,9 @@ pub fn resolvers(edges: Arc<Edges>) -> Resolvers {
     unasked_offer: Some(Arc::new(move |peer: Peer, filename, size| {
       let edges = receiving.clone();
       Box::pin(async move {
-        receive_offer(&edges, &peer.username, peer.endpoint, &filename, size).await
+        receive_offer(&edges, &peer.username, peer.endpoint, &filename, size)
+          .await
+          .map_err(not_taken)
       })
     })),
     // every relayed request is dialed, the parent nearest the top of its branch is taken and
@@ -206,6 +208,21 @@ pub fn resolvers(edges: Arc<Edges>) -> Resolvers {
     connection_request: None,
     distributed_parent: None,
     distributed_child: None,
+  }
+}
+
+/// What the sender of a file offered unasked is told when it is refused, whatever the reason.
+const NOT_TAKEN: &str = "Cancelled";
+
+/// The error a file offered unasked is refused with: our reason is logged here and the sender is
+/// told [`NOT_TAKEN`]. Any other error the client logs and answers the same way.
+fn not_taken(error: ClientError) -> ClientError {
+  match error {
+    ClientError::TransferRejected(reason) => {
+      debug!(reason, "file offered unasked refused");
+      ClientError::TransferRejected(NOT_TAKEN.into())
+    }
+    other => other,
   }
 }
 
