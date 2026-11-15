@@ -1,6 +1,6 @@
-//! Searches we start on the network: each is recorded before it is sent, followed while peers
-//! answer, its responses saved as they come, and stored with every response it took once it
-//! ends. Searches that a stop left running are ended at the next start with the responses they
+//! Searches we start on the network: each is recorded before it is sent, waits as `Queued` while
+//! `soulseek.search.max_concurrent` others run, is followed while peers answer, its responses
+//! saved as they come, and stored with every response it took once it ends. Searches that a stop left running are ended at the next start with the responses they
 //! saved, and finished ones older than `retention.search` are deleted every five minutes.
 //!
 //! [`Searches`] is the engine; it answers the API's search calls and the search topic's
@@ -28,7 +28,7 @@ use chrono::Utc;
 use reseek_shares::lock;
 use soulseek_client::{ClientError, SearchOptions, SearchStateChanged};
 use soulseek_proto::SearchQuery;
-use tokio::sync::oneshot;
+use tokio::sync::{Semaphore, oneshot};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{Instrument, debug, info_span, warn};
@@ -67,6 +67,10 @@ pub struct Searches {
   config: Watcher<Options>,
   /// held while a search starts; a second start meanwhile is refused
   starting: tokio::sync::Mutex<()>,
+  /// one permit per search that may run at once, taken in the order the searches started
+  slots: Arc<Semaphore>,
+  /// canceled when the server session ends, which ends the searches waiting for a slot
+  session: Mutex<CancellationToken>,
   running: Mutex<HashMap<Uuid, Arc<Running>>>,
   /// every search's task, so the stop waits for them
   tasks: TaskTracker,
@@ -145,6 +149,8 @@ impl Searches {
     config: Watcher<Options>,
   ) -> Result<Arc<Self>, DbError> {
     let db = Database::open(&store::SCHEMA, location).await?;
+    // a restart applies a new bound
+    let max_concurrent = config.current().values.soulseek.search.max_concurrent;
     Ok(Arc::new_cyclic(|this| Self {
       this: this.clone(),
       db,
@@ -154,11 +160,19 @@ impl Searches {
       live,
       config,
       starting: tokio::sync::Mutex::new(()),
+      slots: Arc::new(Semaphore::new(max_concurrent as usize)),
+      session: Mutex::new(CancellationToken::new()),
       running: Mutex::new(HashMap::new()),
       tasks: TaskTracker::new(),
       stopping: CancellationToken::new(),
       unreadable: Mutex::new(HashSet::new()),
     }))
+  }
+
+  /// The server session ended: the searches waiting for a slot end with it, as the running ones
+  /// do in the client.
+  pub fn session_ended(&self) {
+    std::mem::take(&mut *lock(&self.session)).cancel();
   }
 
   /// `search.db`.
@@ -387,20 +401,34 @@ impl SearchService for Searches {
     let options = options(&request, search_timeout, state_changed);
     let scope = client_scope(&scope);
     let text = record.search_text.clone();
+    let (slots, session) = (self.slots.clone(), lock(&self.session).clone());
     let this = self.this();
     let span = info_span!("search", %id);
     self.tasks.spawn(
       async move {
         let taker = running.clone();
         let (live, users) = (this.live.clone(), this.users.clone());
-        let search = client.search_with(
-          &text,
-          scope,
-          Some(reserved),
-          options,
-          move |response| taker.response_taken(response, &live, &users),
-          &running.cancel,
-        );
+        let search = async {
+          // a search the client would refuse is refused before it waits for a slot
+          client.check_search(&text, &scope, &options)?;
+          running.queued();
+          let _slot = tokio::select! {
+            biased;
+            () = running.cancel.cancelled() => return Err(ClientError::Canceled),
+            () = session.cancelled() => return Err(ClientError::Canceled),
+            slot = slots.acquire_owned() => slot.expect("the slots are never closed"),
+          };
+          client
+            .search_with(
+              &text,
+              scope,
+              Some(reserved),
+              options,
+              move |response| taker.response_taken(response, &live, &users),
+              &running.cancel,
+            )
+            .await
+        };
         this.follow(running.clone(), search).await;
         this.running().remove(&id);
       }
@@ -641,6 +669,65 @@ mod tests {
     drop(post);
     let token = sent().await;
     assert_eq!(stored(dropped).await, token);
+  }
+
+  #[tokio::test]
+  async fn a_search_past_the_bound_waits_queued_until_a_slot_frees_or_the_session_ends() {
+    use crate::testing::soulseek::{self, Server};
+    use soulseek_proto::ServerRequest;
+
+    let config = format!("{TRUSTED}[soulseek.search]\nmax_concurrent = 1\n");
+    let app = soulseek::app(&config).await;
+    let mut server = Server::silent().await;
+    server.login(&app).await;
+    let start = async |text: &str| {
+      let id = Uuid::new_v4();
+      let body = json!({ "id": id, "searchText": text, "searchTimeout": 60_000 });
+      let started = app
+        .send(request("POST", "/api/v0/searches", Some(body)))
+        .await;
+      assert_eq!(started.status, 200, "{:?}", started.body);
+      (id, started.json()["state"].clone())
+    };
+    let state = async |id: Uuid| {
+      app
+        .send(request("GET", &format!("/api/v0/searches/{id}"), None))
+        .await
+        .json()["state"]
+        .clone()
+    };
+    let sent = |request: &ServerRequest| match request {
+      ServerRequest::FileSearch(search) => Some(search.query.clone()),
+      _ => None,
+    };
+    let any_sent = |request: &ServerRequest| matches!(request, ServerRequest::FileSearch(_));
+
+    let (first, _) = start("first one").await;
+    assert_eq!(server.received(sent).await, "first one");
+    let (second, told) = start("second one").await;
+    assert_eq!(told, "Queued");
+    assert!(
+      !server.receives(Duration::from_millis(500), any_sent).await,
+      "the second waits for the first"
+    );
+    assert_eq!(state(second).await, "Queued");
+    let cancel = request("PUT", &format!("/api/v0/searches/{first}"), None);
+    assert_eq!(app.send(cancel).await.status, 200);
+    assert_eq!(server.received(sent).await, "second one");
+
+    // one waiting when the session ends ends with it, though its slot is not freed by the end
+    let cancel = request("PUT", &format!("/api/v0/searches/{second}"), None);
+    assert_eq!(app.send(cancel).await.status, 200);
+    let _held = app.state.searches.slots.clone().acquire_owned().await;
+    let (third, _) = start("third one").await;
+    server.drop_session(&app).await;
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+      while state(third).await != "Completed, Errored" {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+      }
+    })
+    .await;
+    assert!(ended.is_ok(), "{}", state(third).await);
   }
 
   #[tokio::test]

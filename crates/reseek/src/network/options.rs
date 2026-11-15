@@ -48,7 +48,6 @@ pub fn client_options(options: &Options, alternative: bool) -> Result<ClientOpti
     enable_distributed_network: !soulseek.distributed_network.disabled,
     accept_distributed_children: !soulseek.distributed_network.disable_children,
     distributed_child_limit: soulseek.distributed_network.child_limit,
-    maximum_concurrent_searches: soulseek.search.max_concurrent,
     maximum_concurrent_uploads: transfers.upload.slots,
     // the client takes 0 as no limit
     maximum_upload_speed: transfers.upload_speed_limit(alternative).unwrap_or(0),
@@ -108,8 +107,6 @@ pub fn patch(
       to.accept_distributed_children,
     ),
     distributed_child_limit: changed(from.distributed_child_limit, to.distributed_child_limit),
-    // a restart applies it; the client keeps the bound it started with
-    maximum_concurrent_searches: None,
     maximum_concurrent_uploads: changed(
       from.maximum_concurrent_uploads,
       to.maximum_concurrent_uploads,

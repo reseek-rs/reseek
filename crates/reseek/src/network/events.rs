@@ -233,9 +233,11 @@ async fn ended(app: &AppState, end: SessionEnd, reached: bool) {
   logged_out(app, end).await;
 }
 
-/// What a session's end ends besides the connection: the port mapping and reachability stop
-/// counting on a login, and the messaging engine closes its session when it ended.
+/// What a session's end ends besides the connection: the searches waiting for a slot end, the
+/// port mapping and reachability stop counting on a login, and the messaging engine closes its
+/// session when it ended.
 async fn logged_out(app: &AppState, end: SessionEnd) {
+  app.searches.session_ended();
   app.network.mapper.logged_in(false);
   app.network.reachability.logged_out();
   app

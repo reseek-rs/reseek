@@ -64,7 +64,6 @@ struct Progress {
 fn state(state: ClientState) -> SearchState {
   match state {
     ClientState::Requested => SearchState::Requested,
-    ClientState::Queued => SearchState::Queued,
     ClientState::InProgress => SearchState::InProgress,
     ClientState::Completed(outcome) => SearchState::Completed(match outcome {
       soulseek_client::SearchOutcome::Cancelled => SearchOutcome::Cancelled,
@@ -136,18 +135,27 @@ impl Running {
     lock(&self.progress).responses.clone()
   }
 
-  /// The client moved the search to `next`. The first report says the client took it; the
-  /// end is not taken here, but written with the responses once the client returns.
+  /// The search waits for a slot: it is taken, and waits as `Queued`.
+  pub fn queued(&self) {
+    self.moved(SearchState::Queued);
+  }
+
+  /// The client moved the search to `next`. The end is not taken here, but written with the
+  /// responses once the client returns.
   pub fn state_changed(&self, next: ClientState) {
+    if !next.is_complete() {
+      self.moved(state(next));
+    }
+  }
+
+  /// The search moved to `next`. The first move says the search was taken.
+  fn moved(&self, next: SearchState) {
     let mut progress = lock(&self.progress);
     if let Some(accepted) = progress.accepted.take() {
       // the request waiting for this may have given up already
       let _ = accepted.send(Ok(()));
     }
-    if next.is_complete() {
-      return;
-    }
-    progress.record.state = state(next);
+    progress.record.state = next;
     progress.moved = true;
     drop(progress);
     self.changed.notify_one();
