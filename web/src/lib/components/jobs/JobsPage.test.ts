@@ -89,4 +89,33 @@ describe("the Jobs page", () => {
     await flush();
     expect(row()).toBeNull();
   });
+
+  it("reads the jobs again only once its sender's card has closed", async () => {
+    const sent = { ...cleanup, starter: { kind: "user", name: "alice" } };
+    const net = connected((url) => {
+      if (url.pathname.endsWith("/api/v0/jobs")) return { jobs: [sent] };
+      if (url.pathname.endsWith("/api/v0/jobs/schedules")) return [];
+      return undefined;
+    });
+    page = mount(JobsPage, { target: document.body, props: {} });
+    await flush();
+    await flush();
+    const reads = () => net.requests.filter((r) => r.url.pathname.endsWith("/api/v0/jobs")).length;
+    const name = document.querySelector<HTMLElement>(`#job-${cleanup.id} a`)!;
+    name.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+    await flush();
+    expect(document.querySelector('[role="dialog"][aria-label="Profile of alice"]')).not.toBeNull();
+    const before = reads();
+    // the tab comes back into view, which reads the jobs again
+    document.dispatchEvent(new Event("visibilitychange"));
+    await flush();
+    expect(reads()).toBe(before);
+    document
+      .querySelector('[role="dialog"]')!
+      .dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+      );
+    await flush();
+    expect(reads()).toBe(before + 1);
+  });
 });
