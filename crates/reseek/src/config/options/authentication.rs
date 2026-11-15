@@ -109,7 +109,8 @@ impl Default for ApiKey {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Cascade)]
 #[serde(default)]
 pub struct Local {
-  /// Enables password login.
+  /// Enables password login. Turned off, the sessions of a password login end and the API tokens
+  /// their users made are refused.
   #[cascade(env = "RESEEK_LOCAL_LOGIN", cli = "--local-login")]
   pub enabled: bool,
   /// Additional local accounts by username.
@@ -258,7 +259,8 @@ impl Default for OidcLogout {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Cascade)]
 #[serde(default)]
 pub struct Proxy {
-  /// Accepts the user named by a trusted reverse proxy.
+  /// Accepts the user named by a trusted reverse proxy. Turned off, the sessions it started end
+  /// and the API tokens its users made are refused.
   #[cascade(env = "RESEEK_PROXY_AUTH", cli = "--proxy-auth")]
   pub enabled: bool,
   /// Header that holds the username.
