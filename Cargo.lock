@@ -3085,17 +3085,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proptest-derive"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "587d11bad8340bf431e47b2ca2a3f11ecac3b09ecbf2f6e17dcf6655eead1ca9"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.10",
-]
-
-[[package]]
 name = "psl-types"
 version = "2.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4277,11 +4266,11 @@ dependencies = [
 [[package]]
 name = "soulseek-proto"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9d2c2959c0705ca42f2904defdb3f93c20aad41fb659d8984e231b0ee89bf87"
 dependencies = [
  "flate2",
  "md-5 0.11.0",
- "proptest",
- "proptest-derive",
  "thiserror 2.0.21",
  "tracing",
 ]
