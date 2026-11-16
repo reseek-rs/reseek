@@ -150,7 +150,7 @@ impl Messaging {
     } else {
       (UserPresence::Online, api_types::users::UserPresence::Online)
     };
-    if let Err(e) = self.client().set_status(presence).await {
+    if let Err(e) = self.client().account().set_status(presence).await {
       return warn!(error = %e, ?presence, "status not sent to the server");
     }
     debug!(?presence, "status sent to the server");

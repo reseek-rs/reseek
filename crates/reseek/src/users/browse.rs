@@ -102,7 +102,7 @@ impl Browses {
   }
 
   /// More of the reply to `browse` arrived.
-  pub fn progressed(&self, browse: u64, progress: &soulseek_client::BrowseProgress) {
+  pub fn progressed(&self, browse: u64, progress: &soulseek_client::user::BrowseProgress) {
     let mut entries = self.entries();
     let Some(entry) = entries
       .get_mut(&progress.username)
@@ -151,8 +151,8 @@ mod tests {
   use super::*;
   use tokio_util::sync::CancellationToken;
 
-  fn progress(received: u64, size: u64) -> soulseek_client::BrowseProgress {
-    soulseek_client::BrowseProgress {
+  fn progress(received: u64, size: u64) -> soulseek_client::user::BrowseProgress {
+    soulseek_client::user::BrowseProgress {
       username: "alice".into(),
       bytes_transferred: received,
       bytes_remaining: size - received,

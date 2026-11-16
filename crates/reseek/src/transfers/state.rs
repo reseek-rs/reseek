@@ -122,8 +122,8 @@ pub fn entered_from(to: TransferStates) -> impl Iterator<Item = TransferStates> 
 }
 
 /// The state the client reports as `state`.
-pub fn reported(state: soulseek_client::TransferState) -> TransferStates {
-  use soulseek_client::{TransferOutcome as Client, TransferState as Reported};
+pub fn reported(state: soulseek_client::transfer::State) -> TransferStates {
+  use soulseek_client::transfer::{Outcome as Client, State as Reported};
   match state {
     Reported::QueuedLocally => TransferStates::QueuedLocally,
     Reported::Requested => TransferStates::Requested,
@@ -273,7 +273,7 @@ pub(crate) mod tests {
 
   #[test]
   fn every_client_state_is_reported_by_the_name_and_column_the_daemon_keeps() {
-    use soulseek_client::{TransferOutcome as Outcome, TransferState as Reported};
+    use soulseek_client::transfer::{Outcome, State as Reported};
     let rows = [
       (Reported::QueuedLocally, "Queued, Locally", 2 | 2048),
       (Reported::Requested, "Requested", 1),

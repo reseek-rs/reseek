@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use reseek_shares::lock;
-use soulseek_client::ClientError;
+use soulseek_client::ErrorKind;
 use tracing::{debug, warn};
 
 use super::Directory;
@@ -123,9 +123,9 @@ impl Directory {
   async fn confirming_address(&self, username: &str, from: Option<IpAddr>) -> Option<IpAddr> {
     // the client is attached before the network answers anyone
     let client = self.client.get()?;
-    let reported = match client.get_user_endpoint(username).await {
+    let reported = match client.users().address(username).await {
       Ok(endpoint) => endpoint.ip(),
-      Err(ClientError::UserOffline(_)) => {
+      Err(e) if e.kind() == ErrorKind::UserOffline => {
         debug!(
           username,
           "a group member the server says is offline; not confirmed"

@@ -12,7 +12,6 @@ use api_client::Client;
 use api_types::messaging::conversations::{
   ConversationListQuery, MessageDirection, PrivateMessage,
 };
-use soulseek_client::Event;
 use support::soulfind::{self, User};
 use support::{PATIENCE, daemon, events, logged_in, quiet, signed_in, until};
 
@@ -47,7 +46,7 @@ async fn log_in_again(api: &Client) {
 
 /// `peer` says `text` to `to` and waits until the server has it.
 async fn say(peer: &User, to: &str, text: &str) {
-  peer.client.send_private_message(to, text).await.unwrap();
+  peer.client.users().message(to, text).await.unwrap();
   peer.settle().await;
 }
 
@@ -169,7 +168,7 @@ async fn a_message_with_line_breaks_arrives_as_it_is_stored_on_one_line() {
   let api = signed_in(&running).await;
   until(&api, "logged in", logged_in).await;
   let peer = server.login("peer", quiet()).await;
-  let mut heard = peer.client.subscribe();
+  let mut heard = peer.client.users().messages();
 
   // the server drops a message holding a line break, so this one arriving is the point
   api
@@ -178,7 +177,7 @@ async fn a_message_with_line_breaks_arrives_as_it_is_stored_on_one_line() {
     .unwrap();
   let arrived = tokio::time::timeout(PATIENCE, async {
     loop {
-      if let Event::PrivateMessageReceived(message) = heard.recv().await.unwrap() {
+      if let Ok(message) = heard.next().await.expect("the client is alive") {
         return message.message;
       }
     }

@@ -224,7 +224,7 @@ impl Record {
 
   /// Takes the times, the bytes moved and the speed the client's `snapshot` of the transfer
   /// has.
-  pub fn take_figures(&mut self, snapshot: &soulseek_client::Transfer) {
+  pub fn take_figures(&mut self, snapshot: &soulseek_client::transfer::Transfer) {
     let time = |at: Option<std::time::SystemTime>| at.map(DateTime::<Utc>::from);
     self.started_at = time(snapshot.start_time);
     self.ended_at = time(snapshot.end_time);

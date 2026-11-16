@@ -30,12 +30,12 @@ use api_types::messaging::NotifyLevel;
 use cascade::Watcher;
 use chrono::{DateTime, Utc};
 use reseek_shares::lock;
-use soulseek_client::{Client, Event};
+use soulseek_client::{Client, Event, session};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
-use tracing::{Instrument, debug, info_span, warn};
+use tracing::{Instrument, debug, info_span, trace, warn};
 
 pub use conversations::store::{figures as message_figures, summary as conversation_summary};
 
@@ -312,19 +312,22 @@ impl Messaging {
 
   async fn handle(&self, event: Event) {
     match event {
-      Event::PrivateMessageReceived(message) => self.received(message).await,
-      Event::LoggedIn { username, .. } => self.session_started(username).await,
-      Event::Disconnected { at, .. } => {
+      Event::PrivateMessage(message) => self.received(message).await,
+      Event::Session(session::Event::LoggedIn { username, .. }) => {
+        self.session_started(username).await;
+      }
+      Event::Session(session::Event::Disconnected { at, .. }) => {
         lock(&self.session_ends).cancel();
         self.session_ended(at.into()).await;
         self.rooms_disconnected();
         self.status_disconnected();
         self.feed_disconnected().await;
       }
-      other => {
-        let span = info_span!("room", room = rooms::room_of(&other));
-        self.room_event(other).instrument(span).await;
+      Event::Room(event) => {
+        let span = info_span!("room", room = rooms::room_of(&event));
+        self.room_event(event).instrument(span).await;
       }
+      other => trace!(?other, "client event no messaging engine follows"),
     }
   }
 

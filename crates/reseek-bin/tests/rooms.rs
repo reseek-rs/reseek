@@ -49,7 +49,7 @@ async fn history_when(
 
 /// `peer` says `text` in `room` and waits until the server has it.
 async fn say(peer: &User, room: &str, text: &str) {
-  peer.client.send_room_message(room, text).await.unwrap();
+  peer.client.rooms().say(room, text).await.unwrap();
   peer.settle().await;
 }
 
@@ -75,7 +75,8 @@ async fn a_configured_room_keeps_its_history_and_its_gaps_across_a_restart() {
   let peer = server.login("peer", quiet()).await;
   peer
     .client
-    .join_room(&room, RoomType::Public)
+    .rooms()
+    .join(&room, RoomType::Public)
     .await
     .unwrap();
 
@@ -207,7 +208,8 @@ async fn the_rooms_we_were_in_are_joined_again_after_a_restart_until_left() {
   let owner = server.login("owner", quiet()).await;
   owner
     .client
-    .join_room(&taken, RoomType::Private)
+    .rooms()
+    .join(&taken, RoomType::Private)
     .await
     .unwrap();
 
@@ -314,7 +316,8 @@ async fn the_room_list_is_asked_for_once_a_minute_at_most() {
   let early = soulfind::username("early");
   peer
     .client
-    .join_room(&early, RoomType::Public)
+    .rooms()
+    .join(&early, RoomType::Public)
     .await
     .unwrap();
   let running = daemon(dir.path(), &server, &name, &[]);
@@ -330,7 +333,8 @@ async fn the_room_list_is_asked_for_once_a_minute_at_most() {
   let late = soulfind::username("late");
   peer
     .client
-    .join_room(&late, RoomType::Public)
+    .rooms()
+    .join(&late, RoomType::Public)
     .await
     .unwrap();
   let again = api.available_rooms().await.unwrap();

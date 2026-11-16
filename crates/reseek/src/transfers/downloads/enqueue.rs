@@ -14,7 +14,7 @@ use regex::Regex;
 use reseek_shares::lock;
 use reseek_shares::traverses;
 use rusqlite::params;
-use soulseek_client::ClientError;
+use soulseek_client::{Error as ClientError, ErrorKind};
 use tracing::{Instrument, debug, info, warn};
 use uuid::Uuid;
 
@@ -166,12 +166,12 @@ pub(super) fn download_filters(options: &Options) -> Vec<Regex> {
 
 /// The answer to a failure reaching `username`.
 fn unreachable(username: &str, error: ClientError) -> ApiError {
-  match error {
-    ClientError::UserOffline(_) | ClientError::UserNotFound(_) => ApiError::offline(username),
-    ClientError::InvalidOperation(message) => ApiError::unavailable(Some(message)),
-    other => ApiError::upstream(
+  match error.kind() {
+    ErrorKind::UserOffline | ErrorKind::UserNotFound => ApiError::offline(username),
+    ErrorKind::InvalidOperation => ApiError::unavailable(Some(error.to_string())),
+    _ => ApiError::upstream(
       format!("Could not reach {username}"),
-      Some(other.to_string()),
+      Some(error.to_string()),
     ),
   }
 }
@@ -297,6 +297,7 @@ impl Downloads {
     let tracked: HashSet<String> = self
       .network
       .client()
+      .transfers()
       .downloads()
       .into_iter()
       .filter(|t| t.username == username)
@@ -396,7 +397,8 @@ impl Downloads {
       None
     } else {
       let endpoint = client
-        .get_user_endpoint(username)
+        .users()
+        .address(username)
         .await
         .map_err(|e| unreachable(username, e))?;
       Some(endpoint.ip())
@@ -416,7 +418,8 @@ impl Downloads {
       return Ok(());
     }
     client
-      .connect_to_user(username)
+      .users()
+      .open_connection(username)
       .await
       .map_err(|e| unreachable(username, e))
   }

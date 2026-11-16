@@ -26,7 +26,7 @@ const BUSY: &str =
   "Too many download requests are being handled at once. Wait until one of them completes.";
 
 /// One of the client's transfers as `GET /debug/transfers` shows it.
-fn client_transfer(transfer: &soulseek_client::Transfer) -> serde_json::Value {
+fn client_transfer(transfer: &soulseek_client::transfer::Transfer) -> serde_json::Value {
   let time = |at: Option<std::time::SystemTime>| at.map(chrono::DateTime::<Utc>::from);
   json!({
     "direction": api_types::transfers::TransferDirection::from(transfer.direction),
@@ -41,7 +41,7 @@ fn client_transfer(transfer: &soulseek_client::Transfer) -> serde_json::Value {
     "averageSpeed": transfer.average_speed,
     "startTime": time(transfer.start_time),
     "endTime": time(transfer.end_time),
-    "ipEndPoint": transfer.endpoint.map(|e| e.to_string()),
+    "ipEndPoint": transfer.address.map(|e| e.to_string()),
     "exception": transfer.error.as_ref().map(ToString::to_string),
   })
 }
@@ -375,8 +375,18 @@ impl TransferService for Downloads {
     let client = self.network.client();
     Ok(DebugTransfers {
       soulseek: ClientTransfers {
-        uploads: client.uploads().iter().map(client_transfer).collect(),
-        downloads: client.downloads().iter().map(client_transfer).collect(),
+        uploads: client
+          .transfers()
+          .uploads()
+          .iter()
+          .map(client_transfer)
+          .collect(),
+        downloads: client
+          .transfers()
+          .downloads()
+          .iter()
+          .map(client_transfer)
+          .collect(),
       },
     })
   }
@@ -391,9 +401,9 @@ mod tests {
 
   #[tokio::test]
   async fn the_clients_own_records_show_the_daemons_state_names() {
-    use soulseek_client::{TransferOutcome as Outcome, TransferState as Reported};
+    use soulseek_client::transfer::{Outcome, State as Reported};
 
-    let mut transfer = crate::testing::soulseek::transfer_snapshot().await;
+    let mut transfer = crate::testing::soulseek::transfer_snapshot();
     for (state, name) in [
       (Reported::QueuedRemotely, "Queued, Remotely"),
       (Reported::InProgress, "InProgress"),

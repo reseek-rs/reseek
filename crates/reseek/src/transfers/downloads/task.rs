@@ -205,6 +205,7 @@ impl Downloads {
     let tracked = self
       .network
       .client()
+      .transfers()
       .downloads()
       .iter()
       .any(|t| t.username == record.username && t.filename.as_str() == record.filename);
@@ -427,7 +428,7 @@ impl Downloads {
       async move {
         match this.users.try_watch(&client, &username).await {
           Ok(()) => {}
-          Err(soulseek_client::ClientError::UserNotFound(_)) => {
+          Err(e) if e.kind() == soulseek_client::ErrorKind::UserNotFound => {
             if this.away.missing(&username) {
               info!(
                 username,

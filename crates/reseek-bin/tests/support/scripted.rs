@@ -4,7 +4,7 @@ use soulseek_client::soulseek_proto;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
-use soulseek_client::ClientOptions;
+use soulseek_client::Config;
 use soulseek_proto::init::{FileTransferInit, PeerInit};
 use soulseek_proto::{InitMessage, PeerConnectionType};
 use tokio::net::TcpListener;
@@ -25,11 +25,9 @@ impl Scripted {
   pub async fn start(server: &Arc<Soulfind>) -> Self {
     // soulfind gives out a loopback user's address as the host's LAN address
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).await.unwrap();
-    let options = ClientOptions {
-      enable_listener: false,
-      advertised_port: Some(listener.local_addr().unwrap().port()),
-      ..ClientOptions::default()
-    };
+    let options = Config::builder()
+      .listener(false)
+      .advertised_port(listener.local_addr().unwrap().port());
     Self {
       user: server.login("peer", options).await,
       listener,

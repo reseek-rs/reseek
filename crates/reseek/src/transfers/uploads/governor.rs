@@ -13,12 +13,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use reseek_shares::lock;
-use soulseek_client::{TransferGovernor as ChunkGovernor, TransferReporter as Reporter};
+use soulseek_client::transfer::{Chunk, Transfer};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::config::{DEFAULT_GROUP, Groups, Options, PRIVILEGED_GROUP};
 use crate::transfers::bucket::TokenBucket;
+use crate::transfers::speed::Granted;
 
 /// Looks up the group an upload's user is in now.
 pub type CurrentGroup = Arc<dyn Fn() -> String + Send + Sync>;
@@ -152,14 +153,20 @@ impl Pace {
   }
 
   /// The governor and the reporter the client calls at each chunk.
-  pub fn callbacks(self) -> (ChunkGovernor, Reporter) {
+  pub fn callbacks(
+    self,
+  ) -> (
+    impl Fn(&Transfer, u32) -> Granted + Send + Sync + 'static,
+    impl Fn(&Transfer, Chunk) + Send + Sync + 'static,
+  ) {
     let pace = Arc::new(self);
     let reporting = pace.clone();
-    let chunk: ChunkGovernor = Arc::new(move |_, want, cancel| {
+    let chunk = move |_: &Transfer, want| -> Granted {
       let pace = pace.clone();
-      Box::pin(async move { pace.chunk(want, &cancel).await })
-    });
-    let reporter: Reporter = Arc::new(move |_, _, granted, moved| reporting.report(granted, moved));
+      // the client drops the wait when it ends the upload
+      Box::pin(async move { pace.chunk(want, &CancellationToken::new()).await })
+    };
+    let reporter = move |_: &Transfer, chunk: Chunk| reporting.report(chunk.allowed, chunk.moved);
     (chunk, reporter)
   }
 }

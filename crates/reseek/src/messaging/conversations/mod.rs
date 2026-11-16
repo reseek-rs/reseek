@@ -16,7 +16,7 @@ use api_types::users::blocking::BlockScope;
 use axum::response::Response;
 use chrono::{DateTime, Utc};
 use reseek_shares::lock;
-use soulseek_client::ClientError;
+use soulseek_client::{Error as ClientError, ErrorKind};
 use tracing::{debug, info, trace, warn};
 
 use super::{Messaging, export};
@@ -57,9 +57,9 @@ fn one_line(text: &str) -> String {
 
 /// The answer to a request the server could not take: 409 while not logged in, else 502.
 pub(super) fn unsent(error: ClientError) -> ApiError {
-  match error {
-    ClientError::InvalidOperation(detail) => ApiError::conflict("Not logged in", Some(detail)),
-    other => ApiError::upstream("Could not reach the server", Some(other.to_string())),
+  match error.kind() {
+    ErrorKind::InvalidOperation => ApiError::conflict("Not logged in", Some(error.to_string())),
+    _ => ApiError::upstream("Could not reach the server", Some(error.to_string())),
   }
 }
 
@@ -225,7 +225,7 @@ impl Messaging {
     let mut told = Vec::new();
     let mut failed = None;
     for &id in ids {
-      match self.client().acknowledge_private_message(id).await {
+      match self.client().users().acknowledge_message(id).await {
         Ok(()) => told.push(id),
         Err(e) => {
           failed = Some(e);
@@ -330,7 +330,8 @@ impl Messaging {
     }
     self
       .client()
-      .send_private_message(username, &message)
+      .users()
+      .message(username, &message)
       .await
       .map_err(unsent)?;
     // the conversation opens once the server took the message

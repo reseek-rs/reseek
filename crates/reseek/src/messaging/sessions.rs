@@ -412,10 +412,12 @@ mod tests {
     let app = crate::testing::app("", &[]).await;
     let messaging = &app.state.messaging;
     messaging
-      .handle(soulseek_client::Event::LoggedIn {
-        session: 1,
-        username: "me".into(),
-      })
+      .handle(soulseek_client::Event::Session(
+        soulseek_client::session::Event::LoggedIn {
+          session: 1,
+          username: "me".into(),
+        },
+      ))
       .await;
     let from = Utc::now();
     messaging.events_missed(from).await;

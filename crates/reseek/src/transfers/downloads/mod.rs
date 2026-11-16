@@ -17,6 +17,7 @@ mod jobs;
 mod pause;
 mod queue;
 mod received;
+pub use received::NotTaken;
 mod resume;
 mod service;
 mod starts;

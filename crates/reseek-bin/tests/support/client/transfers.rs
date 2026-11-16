@@ -3,17 +3,18 @@
 
 use soulseek_client::soulseek_proto;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use soulseek_client::TransferDirection;
-use soulseek_client::{
-  ClientOptions, Event, Peer, Transfer, TransferOutcome, TransferState, UploadAsk, UploadDecision,
+use soulseek_client::config::ConfigBuilder;
+use soulseek_client::transfer::{
+  self, Direction as TransferDirection, Outcome as TransferOutcome, State as TransferState,
+  Transfer,
 };
+use soulseek_client::{Event, Events};
 use soulseek_proto::RemoteFilename;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 
-use super::{PATIENCE, next_event};
+use super::{PATIENCE, Queueing};
 
 static DIRECTORIES: AtomicU32 = AtomicU32::new(0);
 
@@ -42,19 +43,20 @@ pub fn file(dir: &std::path::Path, name: &str, len: usize) -> PathBuf {
   path
 }
 
-/// A peer's request to queue an upload, as the client's resolver saw it
+/// A peer's request to queue an upload, as the client's handler saw it
 pub type Asked = mpsc::UnboundedReceiver<(String, RemoteFilename)>;
 
-/// Has `options` queue every upload a peer asks for and hand the request to the returned
-/// receiver, which is where a test starts the upload
-pub fn queueing(options: &mut ClientOptions) -> Asked {
+/// The handler of a client that queues every upload a peer asks for and hands the request to the
+/// returned receiver, which is where a test starts the upload
+pub fn queueing() -> (Queueing, Asked) {
   let (asked, requests) = mpsc::unbounded_channel();
-  options.resolvers.upload_request = Some(Arc::new(move |peer: Peer, ask: UploadAsk| {
-    // the test may have stopped listening; the request is queued either way
-    let _ = asked.send((peer.username, ask.filename));
-    Box::pin(async { Ok(UploadDecision::Queue) })
-  }));
-  requests
+  (Queueing { asked }, requests)
+}
+
+/// `options` with a handler that queues every upload as [`queueing`] says
+pub fn queueing_with(options: ConfigBuilder) -> (ConfigBuilder, Asked) {
+  let (handler, requests) = queueing();
+  (options.handler(handler), requests)
 }
 
 /// the next upload a peer asked to queue
@@ -68,14 +70,15 @@ pub async fn asked(requests: &mut Asked) -> (String, RemoteFilename) {
 /// Every state the next transfer going `direction` reported, until it ended, and its last
 /// snapshot
 pub async fn states(
-  events: &mut broadcast::Receiver<Event>,
+  events: &mut Events,
   direction: TransferDirection,
 ) -> (Vec<TransferState>, Transfer) {
   let mut states = Vec::new();
   let mut token = None;
   tokio::time::timeout(PATIENCE * 3, async {
     loop {
-      let Event::TransferStateChanged { transfer, .. } = events.recv().await.unwrap() else {
+      let event = events.next().await.expect("the client is alive");
+      let Ok(Event::Transfer(transfer::Event::StateChanged { transfer, .. })) = event else {
         continue;
       };
       if transfer.direction != direction || token.is_some_and(|token| token != transfer.token) {
@@ -84,7 +87,7 @@ pub async fn states(
       token = Some(transfer.token);
       states.push(transfer.state);
       if transfer.state.is_terminal() {
-        return (states, transfer);
+        return (states, *transfer);
       }
     }
   })
@@ -92,15 +95,18 @@ pub async fn states(
   .expect("the transfer ends")
 }
 
-/// waits until a transfer's progress reaches `bytes`
-pub async fn reached(events: &mut broadcast::Receiver<Event>, bytes: u64) {
-  next_event(events, |event| match event {
-    Event::TransferProgressUpdated { transfer, .. } if transfer.bytes_transferred >= bytes => {
-      Some(())
+/// waits until the progress of the transfer `changes` follows reaches `bytes`
+pub async fn reached(changes: &mut transfer::Changes, bytes: u64) {
+  tokio::time::timeout(PATIENCE, async {
+    while let Some(transfer) = changes.next().await {
+      if transfer.bytes_transferred >= bytes {
+        return;
+      }
     }
-    _ => None,
+    panic!("the transfer ended before {bytes} bytes");
   })
-  .await;
+  .await
+  .expect("the transfer reaches the bytes");
 }
 
 /// the states a download goes through when it succeeds

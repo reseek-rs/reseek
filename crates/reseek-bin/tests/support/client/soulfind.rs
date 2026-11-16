@@ -13,12 +13,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use soulseek_client::testing::{Engine, WaitKey};
-use soulseek_client::{Client, ClientOptions, Event};
-use soulseek_proto::server::{GetStatusRequest, UserStatus};
-use soulseek_proto::{ServerCode, ServerRequest};
-use tokio::sync::broadcast;
-use tokio_util::sync::CancellationToken;
+use soulseek_client::config::ConfigBuilder;
+use soulseek_client::{Client, Event, Events};
+use soulseek_proto::ServerRequest;
 
 /// how long a fresh server may take to accept connections; it starts within milliseconds and
 /// says nothing once bound, so this only ends the wait on one that hangs
@@ -37,21 +34,17 @@ pub struct Soulfind {
   binary: PathBuf,
 }
 
-/// options for a client that listens on a free port, so peers can dial it
-pub fn listening() -> ClientOptions {
-  ClientOptions {
-    listen_port: super::free_port(),
-    resolvers: super::answering(),
-    ..ClientOptions::default()
-  }
+/// a configuration for a client that listens on a free port, so peers can dial it
+pub fn listening() -> ConfigBuilder {
+  soulseek_client::Config::builder()
+    .listen_port(super::free_port())
+    .handler(super::Answering)
 }
 
-/// options for a client that advertises a port nothing listens on, so dialing it fails at once
-pub fn unreachable() -> ClientOptions {
-  ClientOptions {
-    advertised_port: Some(super::free_port()),
-    ..super::options()
-  }
+/// a configuration for a client that advertises a port nothing listens on, so dialing it fails
+/// at once
+pub fn unreachable() -> ConfigBuilder {
+  super::options().advertised_port(super::free_port())
 }
 
 /// The server the tests running now share, or `None` when there is no soulfind to run
@@ -164,14 +157,14 @@ impl Soulfind {
 
   /// Logs in a fresh user named after `prefix` and returns it with its event receiver. The name
   /// is unique among the users of this server.
-  pub async fn login(self: &Arc<Self>, prefix: &str, options: ClientOptions) -> User {
+  pub async fn login(self: &Arc<Self>, prefix: &str, options: ConfigBuilder) -> User {
     self.login_as(username(prefix), options).await
   }
 
   /// Logs in as `username`, for a test that needs the name before the client exists
-  pub async fn login_as(self: &Arc<Self>, username: String, options: ClientOptions) -> User {
-    let client = Client::new(options).unwrap();
-    let events = client.subscribe();
+  pub async fn login_as(self: &Arc<Self>, username: String, options: ConfigBuilder) -> User {
+    let client = Client::new(self.served(options));
+    let events = client.events();
     self.connect(&client, &username, PASSWORD).await.unwrap();
     User {
       client,
@@ -181,25 +174,24 @@ impl Soulfind {
     }
   }
 
-  /// connects and logs in `client` as `username`
+  /// `options` for a client of this server
+  pub fn served(&self, options: ConfigBuilder) -> soulseek_client::Config {
+    options
+      .server(self.address.ip().to_string(), self.address.port())
+      .build()
+      .unwrap()
+  }
+
+  /// connects and logs in `client`, made with [`Soulfind::served`], as `username`
   pub async fn connect(
     &self,
     client: &Client,
     username: &str,
     password: &str,
-  ) -> Result<(), soulseek_client::ClientError> {
-    tokio::time::timeout(
-      super::PATIENCE,
-      client.connect(
-        &self.address.ip().to_string(),
-        self.address.port(),
-        username,
-        password,
-        &CancellationToken::new(),
-      ),
-    )
-    .await
-    .expect("soulfind answers the login")
+  ) -> Result<(), soulseek_client::Error> {
+    tokio::time::timeout(super::PATIENCE, client.connect(username, password))
+      .await
+      .expect("soulfind answers the login")
   }
 }
 
@@ -239,7 +231,7 @@ pub fn username(prefix: &str) -> String {
 pub struct User {
   pub client: Client,
   pub username: String,
-  pub events: broadcast::Receiver<Event>,
+  pub events: Events,
   _server: Arc<Soulfind>,
 }
 
@@ -257,29 +249,9 @@ impl User {
   /// Asks the server about this user and waits for the answer. The server handles a user's
   /// messages in order, so everything written before has been handled when this returns.
   pub async fn settle(&self) {
-    let _: UserStatus = self
-      .ask(
-        WaitKey::ServerUser {
-          code: ServerCode::GetStatus,
-          username: self.username.clone(),
-        },
-        ServerRequest::GetStatus(GetStatusRequest {
-          username: self.username.clone(),
-        }),
-      )
-      .await;
-  }
-
-  /// writes `request` and returns what the wait under `key` completes with
-  pub async fn ask<T: Send + 'static>(&self, key: WaitKey, request: ServerRequest) -> T {
-    let wait = self
-      .client
-      .waiter()
-      .wait::<T>(key, None, CancellationToken::new());
-    self.send(request).await;
-    tokio::time::timeout(super::PATIENCE, wait)
+    tokio::time::timeout(super::PATIENCE, self.client.users().status(&self.username))
       .await
       .expect("the server answers")
-      .unwrap()
+      .unwrap();
   }
 }

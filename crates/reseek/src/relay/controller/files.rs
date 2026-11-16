@@ -15,7 +15,7 @@ use axum::extract::Multipart;
 use bytes::Bytes;
 use reseek_shares::lock;
 use reseek_shares::traverses;
-use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
+use tokio::io::{AsyncRead, ReadBuf};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Instant, timeout};
 use tokio_util::sync::CancellationToken;
@@ -69,8 +69,8 @@ impl StreamWait {
   }
 }
 
-/// An agent's file as an upload reads it, from the offset the peer asked for. It cannot seek:
-/// the agent starts at the offset.
+/// An agent's file as an upload reads it, from the offset the peer asked for, where the agent
+/// starts.
 pub struct RelayStream {
   chunks: Chunks,
   /// the part of the last chunk not read yet
@@ -103,19 +103,6 @@ impl AsyncRead for RelayStream {
     let chunk = self.rest.split_to(n);
     buf.put_slice(&chunk);
     Poll::Ready(Ok(()))
-  }
-}
-
-impl AsyncSeek for RelayStream {
-  fn start_seek(self: Pin<&mut Self>, _: io::SeekFrom) -> io::Result<()> {
-    Err(io::Error::new(
-      io::ErrorKind::Unsupported,
-      "an agent's file is sent from its offset and cannot seek",
-    ))
-  }
-
-  fn poll_complete(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<u64>> {
-    Poll::Ready(Ok(0))
   }
 }
 

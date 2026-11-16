@@ -3,7 +3,7 @@
 //! does not announce in time may still have been made. Giving up ownership it does not answer
 //! at all.
 
-use soulseek_client::ClientError;
+use soulseek_client::Error as ClientError;
 use tracing::{debug, warn};
 
 use super::not_in;
@@ -14,16 +14,14 @@ use crate::messaging::conversations::unsent;
 /// The answer to a change of a private room that came to no confirmation; `action` names it in
 /// the log.
 fn unconfirmed(room: &str, action: &str, error: ClientError) -> ApiError {
-  match error {
-    ClientError::Timeout(_) => {
-      warn!(room, action, error = %error, "private room change not confirmed in time");
-      ApiError::gateway_timeout(
-        "The server did not confirm the change in time; it may still have happened",
-      )
-      .logged()
-    }
-    other => unsent(other),
+  if error.is_timeout() {
+    warn!(room, action, error = %error, "private room change not confirmed in time");
+    return ApiError::gateway_timeout(
+      "The server did not confirm the change in time; it may still have happened",
+    )
+    .logged();
   }
+  unsent(error)
 }
 
 impl Messaging {
@@ -45,7 +43,8 @@ impl Messaging {
     self.belongs(room)?;
     self
       .client()
-      .add_private_room_member(room, username)
+      .rooms()
+      .add_member(room, username)
       .await
       .map_err(|e| unconfirmed(room, "add member", e))?;
     debug!(room, username, "member added to a private room");
@@ -60,7 +59,8 @@ impl Messaging {
     self.belongs(room)?;
     self
       .client()
-      .remove_private_room_member(room, username)
+      .rooms()
+      .remove_member(room, username)
       .await
       .map_err(|e| unconfirmed(room, "remove member", e))?;
     debug!(room, username, "member removed from a private room");
@@ -75,7 +75,8 @@ impl Messaging {
     self.belongs(room)?;
     self
       .client()
-      .add_private_room_operator(room, username)
+      .rooms()
+      .add_operator(room, username)
       .await
       .map_err(|e| unconfirmed(room, "add operator", e))?;
     debug!(room, username, "operator added to a private room");
@@ -90,7 +91,8 @@ impl Messaging {
     self.belongs(room)?;
     self
       .client()
-      .remove_private_room_operator(room, username)
+      .rooms()
+      .remove_operator(room, username)
       .await
       .map_err(|e| unconfirmed(room, "remove operator", e))?;
     debug!(room, username, "operator removed from a private room");
@@ -101,7 +103,8 @@ impl Messaging {
     self.belongs(room)?;
     self
       .client()
-      .drop_private_room_membership(room)
+      .rooms()
+      .give_up_membership(room)
       .await
       .map_err(|e| unconfirmed(room, "drop membership", e))?;
     self.dropped(room).await;
@@ -114,8 +117,8 @@ impl Messaging {
   pub(in crate::messaging) async fn drop_ownership(&self, room: &str) -> Result<(), ApiError> {
     self.belongs(room)?;
     let client = self.client();
-    let us =
-      super::own_username(client, &format!("give up private room {room}")).map_err(unsent)?;
+    let us = super::own_username(client, &format!("give up private room {room}"))
+      .map_err(super::refused)?;
     let owner = self
       .rooms
       .tracker()
@@ -127,13 +130,14 @@ impl Messaging {
       )));
     }
     client
-      .drop_private_room_ownership(room)
+      .rooms()
+      .give_up_ownership(room)
       .await
       .map_err(unsent)?;
     let joined = self.rooms.tracker().get(room).is_some_and(|r| r.joined);
     // ownership is given up either way; a leave that fails leaves the server with us in a public
     // room we no longer show, which the next join of it leaves and joins again
-    if joined && let Err(e) = client.leave_room(room).await {
+    if joined && let Err(e) = client.rooms().leave(room).await {
       warn!(room, error = %e, "room given up but not left");
     }
     self.dropped(room).await;

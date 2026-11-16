@@ -7,9 +7,9 @@ use soulseek_client::soulseek_proto;
 use std::net::IpAddr;
 use std::sync::Mutex;
 
+use super::NotTaken;
 use api_types::transfers::TransferOutcome;
 use chrono::Utc;
-use soulseek_client::ClientError;
 
 use super::*;
 use crate::testing::{TRUSTED, TestApp, app, sent_jobs};
@@ -68,7 +68,7 @@ async fn a_file_not_finished_or_canceled_within_a_day_is_refused_before_any_job(
   ] {
     let refused = downloads.receive("alice", HERE.into(), file, 3).await;
     assert!(
-      matches!(refused, Err(ClientError::TransferRejected(_))),
+      matches!(refused, Err(NotTaken::Refused(_))),
       "{file}: {refused:?}"
     );
   }
@@ -134,10 +134,7 @@ async fn a_buddy_is_refused_a_file_canceled_from_them_too() {
   let refused = downloads
     .receive("alice", HERE.into(), "@@s\\canceled.flac", 3)
     .await;
-  assert!(
-    matches!(refused, Err(ClientError::TransferRejected(_))),
-    "{refused:?}"
-  );
+  assert!(matches!(refused, Err(NotTaken::Refused(_))), "{refused:?}");
   let taken = downloads
     .receive("alice", HERE.into(), "@@s\\other.flac", 3)
     .await;
@@ -218,10 +215,7 @@ async fn a_sender_asked_about_and_refused_is_not_put_in_the_directory() {
     .downloads
     .receive("bob", localhost, "@@s\\spam.flac", 3)
     .await;
-  assert!(
-    matches!(refused, Err(ClientError::TransferRejected(_))),
-    "{refused:?}"
-  );
+  assert!(matches!(refused, Err(NotTaken::Refused(_))), "{refused:?}");
   // the writer takes touches in order, so once a row made after them is there, any touch of
   // bob's is written
   users.touch("carol", crate::users::Touch::Asked).await;
@@ -253,10 +247,7 @@ async fn a_sender_no_group_the_server_decides_could_let_in_is_refused_without_as
   )
   .await
   .expect("the server was asked about a sender no answer could let in");
-  assert!(
-    matches!(refused, Err(ClientError::TransferRejected(_))),
-    "{refused:?}"
-  );
+  assert!(matches!(refused, Err(NotTaken::Refused(_))), "{refused:?}");
 }
 
 #[test]

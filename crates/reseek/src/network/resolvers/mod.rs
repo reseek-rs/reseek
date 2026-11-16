@@ -19,20 +19,24 @@ use api_types::users::blocking::BlockScope;
 use cascade::Watcher;
 use reseek_shares::LogLimiter;
 use reseek_shares::{lock, traverses};
-use soulseek_client::{ClientError, Peer, Resolvers, UploadAsk, UploadDecision};
-use soulseek_proto::peer::UserInfo;
+use soulseek_client::Client;
+use soulseek_client::handler::{
+  self, BrowseReply, Handler, OfferReply, Peer, SearchReply, UploadReply,
+};
+use soulseek_proto::peer::{Directory, UserInfo};
 use soulseek_proto::{RemoteFilename, SearchQuery};
 use tracing::{debug, info, warn};
 
 pub use browse::{browse, directory_contents};
-pub use search::{IncomingSearches, search};
+pub(crate) use search::QUERY_BUDGET;
+pub use search::{IncomingSearches, dropped_by_client, search};
 
 use super::Network;
 use crate::activity::Activity;
 use crate::config::Options;
 use crate::shares::Shares;
 use crate::telemetry::Telemetry;
-use crate::transfers::downloads::Downloads;
+use crate::transfers::downloads::{Downloads, NotTaken};
 use crate::transfers::uploads::{ENQUEUE_FAILED, NotQueued, QUEUE_FULL, Uploads};
 pub use crate::transfers::uploads::{Forecast, NOT_SHARED, OVERWHELMED};
 use crate::users::{Directory as Users, upload_permitted};
@@ -150,92 +154,93 @@ impl Drop for UserSearch {
   }
 }
 
-/// The resolvers the client answers peers with.
-pub fn resolvers(edges: Arc<Edges>) -> Resolvers {
-  let receiving = edges.clone();
-  let enqueue = edges.clone();
-  let browsing = edges.clone();
-  let folder = edges.clone();
-  let searching = edges.clone();
-  let info = edges.clone();
-  let place = edges;
-  // a peer's `confirmed` is not read: whether a request counts as its user's is decided by
-  // `Directory::confirms` alone, which asks the server for the address at the time
-  Resolvers {
-    upload_request: Some(Arc::new(move |peer: Peer, ask: UploadAsk| {
-      let edges = enqueue.clone();
-      Box::pin(async move {
-        let queued = enqueue_download(&edges, &peer.username, peer.endpoint, &ask.filename).await;
-        Ok(decision(queued, &ask.filename))
-      })
-    })),
-    browse_response: Some(Arc::new(move |peer: Peer| {
-      let edges = browsing.clone();
-      Box::pin(async move { Ok(Some(browse(&edges, &peer.username, peer.endpoint).await)) })
-    })),
-    folder_contents: Some(Arc::new(move |peer: Peer, _token, directory| {
-      let edges = folder.clone();
-      Box::pin(async move {
-        Ok(directory_contents(&edges, &peer.username, peer.endpoint, &directory).await)
-      })
-    })),
-    search_response: Some(Arc::new(move |username, token, text| {
-      let edges = searching.clone();
-      Box::pin(
-        async move { Ok(search(&edges, &username, token, &SearchQuery::parse(&text)).await) },
-      )
-    })),
-    user_info: Some(Arc::new(move |peer: Peer| {
-      let edges = info.clone();
-      Box::pin(async move { Ok(Some(user_info(&edges, &peer.username, peer.endpoint).await)) })
-    })),
-    place_in_queue: Some(Arc::new(move |peer: Peer, filename| {
-      let edges = place.clone();
-      Box::pin(
-        async move { Ok(place_in_queue(&edges, &peer.username, peer.endpoint, &filename).await) },
-      )
-    })),
-    unasked_offer: Some(Arc::new(move |peer: Peer, filename, size| {
-      let edges = receiving.clone();
-      Box::pin(async move {
-        receive_offer(&edges, &peer.username, peer.endpoint, &filename, size)
-          .await
-          .map_err(not_taken)
-      })
-    })),
-    // every relayed request is dialed, the parent nearest the top of its branch is taken and
-    // every child is let in while a slot is free
-    connection_request: None,
-    distributed_parent: None,
-    distributed_child: None,
+/// How the client answers peers: from the answers at the network's edge. A peer's `confirmed`
+/// is not read: whether a request counts as its user's is decided by `Directory::confirms`
+/// alone, which asks the server for the address at the time. Every relayed request is dialed,
+/// the parent nearest the top of its branch is taken and every child is let in while a slot is
+/// free, as the client does by default.
+pub struct Answers(Arc<Edges>);
+
+impl Answers {
+  pub(super) fn new(edges: Arc<Edges>) -> Self {
+    Self(edges)
+  }
+}
+
+impl Handler for Answers {
+  async fn search(&self, _: &Client, search: &handler::SearchRequest) -> Option<SearchReply> {
+    let query = SearchQuery::parse(&search.query);
+    self::search(&self.0, &search.username, search.token, &query).await
+  }
+
+  async fn browse(&self, _: &Client, peer: &Peer) -> Option<BrowseReply> {
+    Some(self::browse(&self.0, &peer.username, peer.address).await)
+  }
+
+  async fn folder(
+    &self,
+    _: &Client,
+    peer: &Peer,
+    directory: &RemoteFilename,
+  ) -> Option<Vec<Directory>> {
+    directory_contents(&self.0, &peer.username, peer.address, directory).await
+  }
+
+  async fn user_info(&self, _: &Client, peer: &Peer) -> Option<UserInfo> {
+    Some(self::user_info(&self.0, &peer.username, peer.address).await)
+  }
+
+  async fn upload(&self, _: &Client, peer: &Peer, request: &handler::UploadRequest) -> UploadReply {
+    let queued = enqueue_download(&self.0, &peer.username, peer.address, &request.filename).await;
+    decision(queued, &request.filename)
+  }
+
+  async fn place_in_queue(
+    &self,
+    _: &Client,
+    peer: &Peer,
+    filename: &RemoteFilename,
+  ) -> Option<u32> {
+    self::place_in_queue(&self.0, &peer.username, peer.address, filename).await
+  }
+
+  async fn unasked_offer(
+    &self,
+    _: &Client,
+    peer: &Peer,
+    filename: &RemoteFilename,
+    size: u64,
+  ) -> OfferReply {
+    match receive_offer(&self.0, &peer.username, peer.address, filename, size).await {
+      Ok(()) => OfferReply::Taken,
+      Err(not_taken) => refused(&not_taken),
+    }
   }
 }
 
 /// What the sender of a file offered unasked is told when it is refused, whatever the reason.
 const NOT_TAKEN: &str = "Cancelled";
 
-/// The error a file offered unasked is refused with: our reason is logged here and the sender is
-/// told [`NOT_TAKEN`]. Any other error the client logs and answers the same way.
-fn not_taken(error: ClientError) -> ClientError {
-  match error {
-    ClientError::TransferRejected(reason) => {
-      debug!(reason, "file offered unasked refused");
-      ClientError::TransferRejected(NOT_TAKEN.into())
-    }
-    other => other,
+/// The answer a file offered unasked is refused with: our reason is logged here and the sender
+/// is told [`NOT_TAKEN`].
+fn refused(not_taken: &NotTaken) -> OfferReply {
+  match not_taken {
+    NotTaken::Refused(reason) => debug!(reason, "file offered unasked refused"),
+    NotTaken::Failed(error) => warn!(error, "file offered unasked not taken"),
   }
+  OfferReply::Refused(NOT_TAKEN.into())
 }
 
 /// What the peer is told of its request for `filename`, as `queued` went: a failure here is
 /// logged and refused with [`ENQUEUE_FAILED`].
-fn decision(queued: Result<(), NotQueued>, filename: &RemoteFilename) -> UploadDecision {
+fn decision(queued: Result<(), NotQueued>, filename: &RemoteFilename) -> UploadReply {
   match queued {
-    Ok(()) => UploadDecision::Queue,
-    Err(NotQueued::Refused(reason)) => UploadDecision::Deny(reason),
-    Err(NotQueued::Later) => UploadDecision::Later,
+    Ok(()) => UploadReply::Queue,
+    Err(NotQueued::Refused(reason)) => UploadReply::Deny(reason),
+    Err(NotQueued::Later) => UploadReply::Later,
     Err(NotQueued::Failed(error)) => {
       warn!(%filename, %error, "upload request resolver failed");
-      UploadDecision::Deny(ENQUEUE_FAILED.into())
+      UploadReply::Deny(ENQUEUE_FAILED.into())
     }
   }
 }
@@ -323,19 +328,15 @@ pub async fn receive_offer(
   endpoint: SocketAddr,
   filename: &RemoteFilename,
   size: u64,
-) -> Result<(), ClientError> {
+) -> Result<(), NotTaken> {
   if traverses(filename.as_str()) {
-    return Err(ClientError::TransferRejected(
-      "the file name has a . or .. part".into(),
-    ));
+    return Err(NotTaken::Refused("the file name has a . or .. part".into()));
   }
   if edges
     .users
     .is_blocked(username, Some(endpoint.ip()), BlockScope::Downloads)
   {
-    return Err(ClientError::TransferRejected(
-      "the sender is blocked".into(),
-    ));
+    return Err(NotTaken::Refused("the sender is blocked".into()));
   }
   edges
     .downloads
@@ -456,8 +457,8 @@ pub(crate) mod tests {
     matches!(result, Err(NotQueued::Refused(reason)) if reason == NOT_SHARED)
   }
 
-  fn empty_share(reply: soulseek_client::BrowseReply) -> bool {
-    matches!(reply, soulseek_client::BrowseReply::Response(r) if r.directories.is_empty())
+  fn empty_share(reply: BrowseReply) -> bool {
+    matches!(reply, BrowseReply::Response(r) if r.directories.is_empty())
   }
 
   #[tokio::test]
@@ -521,7 +522,7 @@ pub(crate) mod tests {
     assert_eq!(answer.status, 200);
     let edges = edges(&app);
     let peer = from("198.51.100.7");
-    let rejected = |result| matches!(result, Err(ClientError::TransferRejected(_)));
+    let rejected = |result| matches!(result, Err(NotTaken::Refused(_)));
     for no_file in ["", "\\", "@@s\\folder\\", " ", "\t"] {
       let offered = receive_offer(&edges, "alice", peer, &name(no_file), 3).await;
       assert!(rejected(offered), "{no_file:?}");
@@ -638,19 +639,16 @@ pub(crate) mod tests {
   #[test]
   fn a_request_is_answered_as_it_was_decided_and_a_failure_here_is_a_refusal() {
     let file = name("@@music\\a.mp3");
-    assert_eq!(decision(Ok(()), &file), UploadDecision::Queue);
+    assert_eq!(decision(Ok(()), &file), UploadReply::Queue);
     assert_eq!(
       decision(Err(NotQueued::Refused("Banned".into())), &file),
-      UploadDecision::Deny("Banned".into())
+      UploadReply::Deny("Banned".into())
     );
-    assert_eq!(
-      decision(Err(NotQueued::Later), &file),
-      UploadDecision::Later
-    );
-    let failed = ClientError::client("the queue was not written", None);
+    assert_eq!(decision(Err(NotQueued::Later), &file), UploadReply::Later);
+    let failed = "the queue was not written".to_string();
     assert_eq!(
       decision(Err(NotQueued::Failed(failed)), &file),
-      UploadDecision::Deny("Enqueue failed due to internal error".into())
+      UploadReply::Deny("Enqueue failed due to internal error".into())
     );
   }
 

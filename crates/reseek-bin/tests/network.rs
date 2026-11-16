@@ -46,7 +46,7 @@ async fn the_daemon_logs_in_with_its_shares_counted_and_connects_when_asked() {
   let watcher = server.login("watcher", quiet()).await;
   let started = Instant::now();
   loop {
-    let statistics = watcher.client.get_user_statistics(&name).await.unwrap();
+    let statistics = watcher.client.users().statistics(&name).await.unwrap();
     if statistics.stats.file_count == 2 {
       assert_eq!(statistics.stats.directory_count, state.shares.directories);
       break;

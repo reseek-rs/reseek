@@ -15,9 +15,10 @@ use api_types::users::blocking::BlockScope;
 use regex::Regex;
 use reseek_shares::LogLimiter;
 use reseek_shares::patterns;
-use soulseek_client::{ClientError, SearchReply};
+use soulseek_client::handler::{Matches as Reply, SearchReply};
+use soulseek_client::{Error as ClientError, ErrorKind, search};
 use soulseek_proto::SearchQuery;
-use soulseek_proto::peer::{File, SearchResponse};
+use soulseek_proto::peer::File;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
@@ -30,7 +31,7 @@ use crate::telemetry::millis;
 use crate::telemetry::registry::Gauge;
 
 /// How long the share query of one request may take before the request is dropped.
-const QUERY_BUDGET: Duration = Duration::from_secs(10);
+pub(crate) const QUERY_BUDGET: Duration = Duration::from_secs(10);
 
 /// Requests dropped for too many waiting, which comes in bursts.
 static CROWDED: LogLimiter = LogLimiter::new();
@@ -145,6 +146,48 @@ fn dropped(metrics: &SearchMetrics) {
   metrics.request_drop_rate.count_up(1);
 }
 
+/// The client left another user's search unanswered, as `dropped` says: counted and warned of
+/// as a search the daemon drops itself is. One dropped for want of room never reached the
+/// daemon, so it is counted as received too; one cut short for time was counted when it came.
+pub fn dropped_by_client(edges: &Edges, dropped: &search::Dropped) {
+  let metrics = &edges.telemetry.metrics().search;
+  let (username, token) = (dropped.username.as_str(), dropped.token);
+  match dropped.reason {
+    search::DropReason::Busy => {
+      metrics.requests_received.inc();
+      metrics.request_receive_rate.count_up(1);
+      self::dropped(metrics);
+      if let Some(suppressed) = CROWDED.allow() {
+        warn!(
+          username,
+          token, suppressed, "too many searches being answered; search request dropped"
+        );
+      }
+    }
+    search::DropReason::TimedOut => {
+      self::dropped(metrics);
+      if let Some(suppressed) = SLOW.allow() {
+        warn!(
+          username,
+          token,
+          query = dropped.query,
+          suppressed,
+          "search took too long to answer; search request dropped"
+        );
+      }
+    }
+    reason => {
+      self::dropped(metrics);
+      debug!(
+        username,
+        token,
+        ?reason,
+        "search request dropped by the client"
+      );
+    }
+  }
+}
+
 /// Another user's search reached us: the files we offer them, or `None`.
 pub async fn search(
   edges: &Edges,
@@ -209,11 +252,11 @@ async fn answer(
   // the network goes only when the daemon stops
   let network = edges.network.upgrade()?;
   let client = network.client();
-  let Some(own) = client.username() else {
+  if client.username().is_none() {
     trace!(username, token, "logged out before answering a search");
     return None;
-  };
-  if !answerable(edges, username, client.get_user_endpoint(username).await) {
+  }
+  if !answerable(edges, username, client.users().address(username).await) {
     return None;
   }
   if let Err(e) = network.refresh_user_statistics(false).await
@@ -230,15 +273,12 @@ async fn answer(
     query = query.search_text(),
     "Sending search response"
   );
-  let reply = SearchReply::Response(SearchResponse {
-    username: own,
-    token,
-    files,
-    has_free_upload_slot: forecast.free_slots > 0,
-    upload_speed,
-    queue_length: forecast.queue_length,
-    locked_files: Vec::new(),
-  });
+  let reply = SearchReply::Matches(
+    Reply::new(files)
+      .free_upload_slot(forecast.free_slots > 0)
+      .upload_speed(upload_speed)
+      .queue_length(forecast.queue_length),
+  );
   Some(match confined_to {
     Some(to) => SearchReply::Confined {
       reply: Box::new(reply),
@@ -299,7 +339,8 @@ async fn matches(
   let limit = options.throttling.search.incoming.response_file_limit as usize;
   let open = network
     .client()
-    .message_connection_address(username)
+    .users()
+    .connection_address(username)
     .map(|remote| remote.ip());
   let (sees, confined_to) = edges.users.search_sees(username, open).await;
   let view = edges.shares.view(&sees);
@@ -360,7 +401,7 @@ async fn query_shares(
 fn answerable(edges: &Edges, username: &str, lookup: Result<SocketAddr, ClientError>) -> bool {
   match lookup {
     Ok(endpoint) => !blocked(edges, username, Some(endpoint), BlockScope::Searches),
-    Err(ClientError::UserOffline(_)) => {
+    Err(e) if e.kind() == ErrorKind::UserOffline => {
       trace!(username, "the requester went offline; no search response");
       false
     }
@@ -499,8 +540,30 @@ mod tests {
       |ip: &str| -> Result<SocketAddr, ClientError> { Ok(format!("{ip}:2234").parse().unwrap()) };
     assert!(answerable(&edges, "alice", at("198.51.100.7")));
     assert!(!answerable(&edges, "alice", at("192.0.2.9")));
-    let offline = ClientError::UserOffline("User alice appears to be offline".into());
+    let offline = ClientError::new(ErrorKind::UserOffline, "user alice appears to be offline");
     assert!(!answerable(&edges, "alice", Err(offline)));
+  }
+
+  #[tokio::test]
+  async fn a_search_the_client_drops_counts_as_dropped_and_one_never_seen_as_received() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = shared(dir.path(), "").await;
+    let edges = edges(&app);
+    let dropped = |reason| search::Dropped {
+      username: "alice".into(),
+      token: 7,
+      query: "abbey".into(),
+      reason,
+    };
+    let (received, lost) = (
+      || metric(&app, "reseek_search_incoming_requests_received"),
+      || metric(&app, "reseek_search_incoming_requests_dropped"),
+    );
+    dropped_by_client(&edges, &dropped(search::DropReason::Busy));
+    assert_eq!((received(), lost()), (1.0, 1.0));
+    // one cut short for time was counted as received when it reached the daemon
+    dropped_by_client(&edges, &dropped(search::DropReason::TimedOut));
+    assert_eq!((received(), lost()), (1.0, 2.0));
   }
 
   #[tokio::test]

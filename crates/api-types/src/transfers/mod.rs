@@ -153,11 +153,11 @@ pub enum TransferDirection {
   Upload,
 }
 
-impl From<soulseek_client::TransferDirection> for TransferDirection {
-  fn from(direction: soulseek_client::TransferDirection) -> Self {
+impl From<soulseek_client::transfer::Direction> for TransferDirection {
+  fn from(direction: soulseek_client::transfer::Direction) -> Self {
     match direction {
-      soulseek_client::TransferDirection::Download => Self::Download,
-      soulseek_client::TransferDirection::Upload => Self::Upload,
+      soulseek_client::transfer::Direction::Download => Self::Download,
+      soulseek_client::transfer::Direction::Upload => Self::Upload,
     }
   }
 }

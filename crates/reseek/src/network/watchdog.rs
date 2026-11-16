@@ -18,7 +18,7 @@ use api_types::state::ConnectionWatchdogState;
 use cascade::Watcher;
 use chrono::Utc;
 use reseek_shares::{Outage, backoff, lock};
-use soulseek_client::{Client, ClientError};
+use soulseek_client::{Client, Error as ClientError, ErrorKind};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, info, info_span, warn};
@@ -475,7 +475,9 @@ impl Watchdog {
       super::warn_no_credentials();
       return Attempt::Stop;
     };
-    let (address, port) = (soulseek.address.as_str(), soulseek.port);
+    // the client connects to the server its configuration names, which follows the options
+    let config = inner.client.config();
+    let (address, port) = (config.server_host(), config.server_port());
     let told = "Attempting to connect to the Soulseek server";
     if first {
       info!(address, port, username, "{told}");
@@ -483,33 +485,39 @@ impl Watchdog {
       debug!(address, port, username, "{told}");
     }
     *lock(&inner.login) = Some((username.to_owned(), password.to_owned()));
-    match inner
-      .client
-      .connect(&soulseek.address, soulseek.port, username, password, cancel)
-      .await
-    {
-      Ok(()) => Attempt::Connected,
-      Err(ClientError::Canceled) => {
+    // a connect stops when its future is dropped
+    let connected = tokio::select! {
+      connected = inner.client.connect(username, password) => connected,
+      () = cancel.cancelled() => {
+        debug!("Reconnection attempt canceled");
+        return Attempt::Canceled;
+      }
+    };
+    let Err(error) = connected else {
+      return Attempt::Connected;
+    };
+    match error.kind() {
+      ErrorKind::Canceled => {
         debug!("Reconnection attempt canceled");
         Attempt::Canceled
       }
-      Err(ClientError::LoginNoResponse(message)) => {
+      ErrorKind::LoginNoResponse => {
         error!(
-          error = message,
+          %error,
           "Failed to reconnect: the server did not answer the login"
         );
         Attempt::Unanswered
       }
       // the disconnect handler logs why; nothing retries a refused login until asked to
-      Err(ClientError::LoginRejected(reason)) => {
-        debug!(reason, "login refused; not trying again");
+      ErrorKind::LoginRejected => {
+        debug!(reason = error.reason(), "login refused; not trying again");
         Attempt::Stop
       }
-      Err(error @ ClientError::InvalidArgument(_)) => {
+      ErrorKind::InvalidArgument => {
         error!(%error, "Not connecting to the Soulseek server; the options cannot log in");
         Attempt::Stop
       }
-      Err(error) => {
+      _ => {
         self.failed(&error);
         Attempt::Failed
       }
@@ -608,9 +616,9 @@ mod tests {
 
     let app = crate::testing::app(crate::testing::TRUSTED, &[]).await;
     let watchdog = app.state.network.watchdog();
-    let refused = ClientError::connection(soulseek_client::ConnectionErrorKind::Other, "refused");
-    let unreachable =
-      ClientError::connection(soulseek_client::ConnectionErrorKind::Other, "unreachable");
+    use soulseek_client::error::ConnectionKind;
+    let refused = ClientError::new(ErrorKind::Connection(ConnectionKind::Other), "refused");
+    let unreachable = ClientError::new(ErrorKind::Connection(ConnectionKind::Other), "unreachable");
     let (logs, capturing) = crate::testing::captured_logs();
     // two reasons taking turns, as a server that is down can give
     for error in [&refused, &unreachable, &refused, &unreachable] {

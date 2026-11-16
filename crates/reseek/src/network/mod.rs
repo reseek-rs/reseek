@@ -15,6 +15,7 @@ mod reachability;
 pub mod resolvers;
 pub mod watchdog;
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -22,8 +23,8 @@ use api_types::state::UserStatistics;
 use cascade::{Loaded, Watcher};
 use chrono::Utc;
 use reseek_shares::lock;
-use soulseek_client::{Client, ClientError, Event};
-use tokio::sync::broadcast;
+use soulseek_client::config::ConfigBuilder;
+use soulseek_client::{Client, Config, Error as ClientError, Events};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
@@ -42,7 +43,7 @@ pub use events::{follow_shared_counts, observe_client, observe_transfers};
 use mapping::{NatPmp, PortMapper, Upnp};
 use reachability::Reachability;
 pub use resolvers::UserSearch;
-use resolvers::{Edges, IncomingSearches, resolvers};
+use resolvers::{Answers, Edges, IncomingSearches};
 use watchdog::Watchdog;
 
 /// How long our own statistics and privileges are kept before a search response fetches them
@@ -52,8 +53,8 @@ const STATISTICS_FOR: Duration = Duration::from_secs(4 * 3600);
 /// The message the client is disconnected with at shutdown.
 const SHUTTING_DOWN: &str = "Shutting down";
 
-/// Why the daemon itself ended the server session, carried as the disconnect's error so that
-/// what follows the disconnect knows not to reconnect.
+/// Why the daemon itself ended the server session, kept until the disconnect it asked for is
+/// handled so that what follows the disconnect knows not to reconnect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 enum Intent {
   /// someone asked to disconnect
@@ -65,27 +66,6 @@ enum Intent {
   /// the session ends to log in again with new credentials
   #[error("logging in again with new credentials")]
   Relogin,
-}
-
-impl Intent {
-  /// The error a disconnect for this reason carries.
-  fn error(self) -> ClientError {
-    ClientError::Client {
-      message: self.to_string(),
-      source: Some(Arc::new(self)),
-    }
-  }
-
-  /// The reason a disconnect's `error` carries, when the daemon asked for it.
-  fn of(error: &ClientError) -> Option<Self> {
-    match error {
-      ClientError::Client {
-        source: Some(source),
-        ..
-      } => source.downcast_ref::<Self>().copied(),
-      _ => None,
-    }
-  }
 }
 
 /// The username and password to log in with, when both are set and not empty.
@@ -113,7 +93,10 @@ pub struct Network {
   /// when our own statistics were last fetched; held while they are fetched
   statistics: tokio::sync::Mutex<Option<Instant>>,
   /// the client's events, until the task that follows them takes them
-  events: Mutex<Option<broadcast::Receiver<Event>>>,
+  events: Mutex<Option<Events>>,
+  /// why the daemon asked the client to end a session, by the session's number, until its end
+  /// is handled
+  intents: Mutex<BTreeMap<u64, Intent>>,
   /// the task following the client's events
   following: Mutex<Option<JoinHandle<()>>>,
   /// tells that task to end once it has handled every event raised so far
@@ -152,8 +135,10 @@ impl Network {
     let startup = config.current();
     let alternative = state.current().alternative_speed_limits;
     let speeds = Global::new(&startup.values, alternative);
-    let mut client_options = options::client_options(&startup.values)?;
-    client_options.validate().map_err(|e| e.to_string())?;
+    let client_config = options::settings(&startup.values)?
+      .apply(Config::builder())
+      .build()
+      .map_err(|e| e.to_string())?;
     let searches = IncomingSearches::new(&startup.values, shutdown.clone());
     Ok(Arc::new_cyclic(|this| {
       let edges = Arc::new(Edges::new(
@@ -165,11 +150,14 @@ impl Network {
         this.clone(),
         searches,
       ));
-      client_options.resolvers = resolvers(edges.clone());
-      // the options were validated above, which is all a new client can fail on
-      let listen = (client_options.listen_ip_address, client_options.listen_port);
-      let client = Client::new(client_options).expect("the client options were validated");
-      let events = client.subscribe();
+      let listen = (client_config.listen_address(), client_config.listen_port());
+      // the configuration was checked above, and the handler changes nothing that is checked
+      let client_config = ConfigBuilder::from(client_config)
+        .handler(Answers::new(edges.clone()))
+        .build()
+        .expect("the client configuration was checked");
+      let client = Client::new(client_config);
+      let events = client.events();
       let reachability = Arc::new(Reachability::new(
         state.clone(),
         client.inbound_connections(),
@@ -198,6 +186,7 @@ impl Network {
         shown: Arc::default(),
         applied: Mutex::new(startup.clone()),
         events: Mutex::new(Some(events)),
+        intents: Mutex::default(),
         following: Mutex::new(None),
         drained: CancellationToken::new(),
         edges,
@@ -222,6 +211,11 @@ impl Network {
   /// search that asked us is answered.
   pub fn user_search(&self, token: u32, users: Vec<String>) -> UserSearch {
     self.edges.user_search(token, users)
+  }
+
+  /// A response came for our search `token`, which says other users can reach us.
+  pub fn search_answered(&self, token: u32) {
+    self.reachability.search_answered(token);
   }
 
   /// The Soulseek client, for the operations the engines start.
@@ -290,8 +284,8 @@ impl Network {
   /// not move keeps as they were, are mapped on the router when `mapping` is on, and a new
   /// port starts the judgment of who can reach us over.
   fn listening_changed(&self, mapping: bool) {
-    let options = self.client.options();
-    let (ip, port) = (options.listen_ip_address, options.listen_port);
+    let config = self.client.config();
+    let (ip, port) = (config.listen_address(), config.listen_port());
     self.mapper.options(mapping, ip, port);
     if self.state.current().server.listen.port != port {
       self.state.update(|state| state.server.listen.port = port);
@@ -315,10 +309,8 @@ impl Network {
   pub async fn disconnect(&self, reason: Option<String>) {
     self.watchdog.hold();
     let message = reason.unwrap_or_else(|| Intent::User.to_string());
-    self
-      .client
-      .disconnect(Some(&message), Some(Intent::User.error()))
-      .await;
+    self.intend(Intent::User);
+    self.client.disconnect_because(&message).await;
   }
 
   /// Ends the server session and connects again at once with the options in effect now, unless
@@ -327,10 +319,10 @@ impl Network {
     if !self.watchdog.pause() {
       return false;
     }
-    let message = Intent::Relogin.to_string();
+    self.intend(Intent::Relogin);
     self
       .client
-      .disconnect(Some(&message), Some(Intent::Relogin.error()))
+      .disconnect_because(&Intent::Relogin.to_string())
       .await;
     self.watchdog.resume()
   }
@@ -341,10 +333,8 @@ impl Network {
   pub async fn stop(&self) {
     self.watchdog.hold();
     self.mapper.stop().await;
-    self
-      .client
-      .disconnect(Some(SHUTTING_DOWN), Some(Intent::Shutdown.error()))
-      .await;
+    self.intend(Intent::Shutdown);
+    self.client.disconnect_because(SHUTTING_DOWN).await;
     self.client.shutdown().await;
     self.drained.cancel();
     let following = lock(&self.following).take();
@@ -367,8 +357,8 @@ impl Network {
     let Some(username) = self.client.username() else {
       return Ok(());
     };
-    let statistics = self.client.get_user_statistics(&username).await?;
-    let privileges = self.client.get_privileges().await?;
+    let statistics = self.client.users().statistics(&username).await?;
+    let privileges = self.client.account().privileges().await?;
     let stats = statistics.stats;
     // the server counts the seconds in 32 bits
     let seconds = u32::try_from(privileges.as_secs()).unwrap_or(u32::MAX);
@@ -388,6 +378,21 @@ impl Network {
     *fetched = Some(Instant::now());
     debug!(username, "own statistics refreshed");
     Ok(())
+  }
+
+  /// Keeps `intent` as why the daemon ends the client's current session, read before it asks.
+  fn intend(&self, intent: Intent) {
+    let session = self.client.session().number;
+    lock(&self.intents).insert(session, intent);
+  }
+
+  /// Why the daemon asked for the end of `session`, taken so it is told once; the reasons kept
+  /// for earlier sessions, whose ends came before, go with it.
+  fn take_intent(&self, session: u64) -> Option<Intent> {
+    let mut intents = lock(&self.intents);
+    let intent = intents.remove(&session);
+    intents.retain(|number, _| *number > session);
+    intent
   }
 
   /// Takes the phrases the server asks our search responses to leave out.
@@ -417,9 +422,7 @@ mod tests {
   use std::future::{Future, poll_fn};
   use std::task::Poll;
 
-  use soulseek_client::ClientState;
-
-  use super::*;
+  use soulseek_client::session::State as ClientState;
 
   /// The connect waits on its name lookup, which runs on the runtime's blocking pool: the test's
   /// runtime has one blocking thread and the test holds it, so the lookup cannot end on its own
@@ -444,8 +447,11 @@ mod tests {
         held.recv().unwrap_err();
       });
       holding.await.unwrap();
-      let cancel = CancellationToken::new();
-      let mut connecting = Box::pin(client.connect("localhost", port, "me", "secret", &cancel));
+      client
+        .reconfigure(|config| config.server("localhost", port))
+        .await
+        .unwrap();
+      let mut connecting = Box::pin(client.connect("me", "secret"));
       // one poll: the connect has its token and waits on the name lookup, no session begun
       let first = poll_fn(|cx| Poll::Ready(connecting.as_mut().poll(cx).is_pending())).await;
       assert!(first, "the connect ended in its first poll");
@@ -454,7 +460,10 @@ mod tests {
       // the lookup can end now, so a connect the disconnect missed goes on and fails by itself
       drop(release);
       let ended = connecting.await;
-      assert!(matches!(ended, Err(ClientError::Canceled)), "{ended:?}");
+      assert!(
+        matches!(&ended, Err(error) if error.is_canceled()),
+        "{ended:?}"
+      );
       assert_eq!(client.state(), ClientState::Disconnected);
       holder.await.unwrap();
     });

@@ -9,7 +9,6 @@
 use std::sync::Arc;
 
 use cascade::Loaded;
-use soulseek_client::ClientError;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, info, warn};
 
@@ -64,26 +63,37 @@ async fn apply(
   }
   let mut reconnect_required = false;
   if applied.soulseek != values.soulseek
+    || applied.throttling.search.incoming != values.throttling.search.incoming
     || applied.transfers.upload != values.transfers.upload
     || applied.transfers.download != values.transfers.download
   {
     let _reconfiguring = network.reconfiguring().lock().await;
     let alternative = app.state.current().alternative_speed_limits;
     network.speeds().set(&values, alternative);
-    let patch = match options::patch(applied, &values) {
-      Ok(patch) => patch,
+    let settings = match options::settings(&values) {
+      Ok(settings) => settings,
       Err(e) => {
         warn!(error = e, "Failed to apply option update");
         return None;
       }
     };
-    match network.client().reconfigure_options(patch).await {
-      Ok(required) => reconnect_required = required,
-      // the client took the rest of the patch and kept its listener where it was
-      Err(e @ ClientError::Listen { .. }) => {
-        warn!(error = %e, "Failed to move the listener; the other option updates are applied");
-        values.soulseek.listen_ip_address = applied.soulseek.listen_ip_address.clone();
-        values.soulseek.listen_port = applied.soulseek.listen_port;
+    match network
+      .client()
+      .reconfigure(|config| settings.apply(config))
+      .await
+    {
+      Ok(applied_now) => {
+        reconnect_required = applied_now.after_reconnect;
+        // the client took the rest of the change and kept its listener where it was
+        if let Some(e) = &applied_now.listener_error {
+          warn!(error = %e, "Failed to move the listener; the other option updates are applied");
+          values.soulseek.listen_ip_address = applied.soulseek.listen_ip_address.clone();
+          values.soulseek.listen_port = applied.soulseek.listen_port;
+        }
+        if let Some(e) = &applied_now.server_error {
+          warn!(error = %e, "Failed to apply option update");
+          return None;
+        }
       }
       Err(e) => {
         warn!(error = %e, "Failed to apply option update");
@@ -436,7 +446,7 @@ mod tests {
     );
     assert_eq!(
       network.client().state(),
-      soulseek_client::ClientState::Disconnected
+      soulseek_client::session::State::Disconnected
     );
 
     send("PUT", "/api/v0/server", None).await;

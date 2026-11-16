@@ -21,14 +21,13 @@ use api_types::transfers::{
   TransferDirection, TransferListQuery, TransferOutcome, TransferStates,
 };
 use serde_json::json;
-use soulseek_client::{ClientOptions, UploadInput, UploadRequest};
+use soulseek_client::Config;
 use support::soulfind::{self, Soulfind, User};
 use support::transfers::{self, Asked, asked, content, file, scratch};
 use support::{
   Daemon, PATIENCE, daemon, download_when, enqueue, events, free_port, job, logged_in, signed_in,
   until,
 };
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const SIZE: usize = 200_000;
@@ -36,11 +35,7 @@ const ALBUM: &str = "@@share\\album\\01 song.flac";
 
 /// An uploader that queues every request and hands it to the test.
 async fn uploader(server: &Arc<Soulfind>) -> (User, Asked) {
-  let mut options = ClientOptions {
-    listen_port: free_port(),
-    ..ClientOptions::default()
-  };
-  let requests = transfers::queueing(&mut options);
+  let (options, requests) = transfers::queueing_with(Config::builder().listen_port(free_port()));
   (server.login("up", options).await, requests)
 }
 
@@ -49,12 +44,8 @@ async fn uploader(server: &Arc<Soulfind>) -> (User, Asked) {
 async fn serve(uploader: &User, requests: &mut Asked, remote: &str, path: &Path) {
   let (username, filename) = asked(requests).await;
   assert_eq!(filename.as_str(), remote);
-  let client = uploader.client.clone();
-  let input = UploadInput::File(path.to_path_buf());
-  tokio::spawn(async move {
-    let request = UploadRequest::new(username, filename, input);
-    client.upload(request, &CancellationToken::new()).await
-  });
+  let upload = uploader.client.upload(username, filename);
+  tokio::spawn(upload.from_file(path).into_future());
 }
 
 /// The daemon in `dir` for `server`, logged in, and its client.

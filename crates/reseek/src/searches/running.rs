@@ -14,9 +14,10 @@ use api_types::search::{
 };
 use chrono::Utc;
 use reseek_shares::{backoff, lock};
-use soulseek_client::ClientError;
-use soulseek_client::SearchState as ClientState;
+use soulseek_client::Error as ClientError;
+use soulseek_client::search::{Outcome as ClientOutcome, State as ClientState};
 use soulseek_proto::peer;
+use soulseek_proto::queue_count;
 use tokio::sync::{Notify, oneshot, watch};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -25,13 +26,33 @@ use tracing::{debug, error, trace, warn};
 use super::{Searches, store, suspect};
 use crate::live::{Live, Topic};
 use crate::users::Directory;
-use soulseek_client::peer_count;
 
 /// How often the counts of a running search are written and pushed at most.
 const COUNTS_EVERY: Duration = Duration::from_millis(250);
 
 /// The longest wait before an end that could not be written is tried again.
 const RETRY_AT_MOST: Duration = Duration::from_secs(60);
+
+/// Why a search did not run to an end the client reported.
+#[derive(Clone, Debug)]
+pub(super) enum NotRun {
+  /// the client refused or failed it
+  Client(ClientError),
+  /// the session is not logged in, as said
+  LoggedOut(String),
+  /// it was canceled, by us or by the end of the session
+  Canceled,
+}
+
+impl std::fmt::Display for NotRun {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::Client(error) => error.fmt(f),
+      Self::LoggedOut(message) => f.write_str(message),
+      Self::Canceled => f.write_str("the operation was cancelled"),
+    }
+  }
+}
 
 /// A search while its task runs.
 pub(super) struct Running {
@@ -58,7 +79,7 @@ struct Progress {
   /// a state change not yet written
   moved: bool,
   /// told once the client took the search, or with the error it refused it with
-  accepted: Option<oneshot::Sender<Result<(), ClientError>>>,
+  accepted: Option<oneshot::Sender<Result<(), NotRun>>>,
 }
 
 /// The search's state as the API writes it, from the client's.
@@ -67,13 +88,12 @@ fn state(state: ClientState) -> SearchState {
     ClientState::Requested => SearchState::Requested,
     ClientState::InProgress => SearchState::InProgress,
     ClientState::Completed(outcome) => SearchState::Completed(match outcome {
-      soulseek_client::SearchOutcome::Canceled => SearchOutcome::Cancelled,
+      ClientOutcome::Canceled => SearchOutcome::Cancelled,
       // no search here has a maximum duration; one that had would have run out of time
-      soulseek_client::SearchOutcome::TimedOut
-      | soulseek_client::SearchOutcome::MaximumDurationReached => SearchOutcome::TimedOut,
-      soulseek_client::SearchOutcome::ResponseLimitReached => SearchOutcome::ResponseLimitReached,
-      soulseek_client::SearchOutcome::FileLimitReached => SearchOutcome::FileLimitReached,
-      soulseek_client::SearchOutcome::Errored => SearchOutcome::Errored,
+      ClientOutcome::Ended | ClientOutcome::MaximumDurationReached => SearchOutcome::TimedOut,
+      ClientOutcome::ResponseLimitReached => SearchOutcome::ResponseLimitReached,
+      ClientOutcome::FileLimitReached => SearchOutcome::FileLimitReached,
+      ClientOutcome::Errored => SearchOutcome::Errored,
     }),
   }
 }
@@ -101,7 +121,7 @@ fn response(response: peer::SearchResponse, country: Option<String>) -> SearchRe
     token: response.token,
     has_free_upload_slot: response.has_free_upload_slot,
     upload_speed: response.upload_speed,
-    queue_length: peer_count(response.queue_length),
+    queue_length: queue_count(response.queue_length),
     file_count: u32::try_from(files.len()).unwrap_or(u32::MAX),
     files,
     locked_file_count: u32::try_from(locked_files.len()).unwrap_or(u32::MAX),
@@ -111,7 +131,7 @@ fn response(response: peer::SearchResponse, country: Option<String>) -> SearchRe
 
 impl Running {
   /// The search `record`, not yet taken by the client, which says so on `accepted`.
-  pub fn new(record: Search, accepted: oneshot::Sender<Result<(), ClientError>>) -> Self {
+  pub fn new(record: Search, accepted: oneshot::Sender<Result<(), NotRun>>) -> Self {
     Self {
       cancel: CancellationToken::new(),
       canceled: AtomicBool::new(false),
@@ -201,7 +221,7 @@ impl Running {
 
   /// The client refused the search before taking it; false when it had taken it, and the
   /// error is how it ended.
-  pub fn refused(&self, error: ClientError) -> bool {
+  pub fn refused(&self, error: NotRun) -> bool {
     match lock(&self.progress).accepted.take() {
       Some(accepted) => {
         // the request waiting for this may have given up already
@@ -220,7 +240,7 @@ impl Searches {
   pub(super) async fn follow(
     &self,
     running: Arc<Running>,
-    search: impl Future<Output = Result<ClientState, ClientError>>,
+    search: impl Future<Output = Result<ClientState, NotRun>>,
   ) {
     tokio::pin!(search);
     let mut written: Option<Instant> = None;
@@ -255,9 +275,7 @@ impl Searches {
     };
     // a canceled search, by us or by a disconnect, is told apart by the cancel we made
     let result = result.and_then(|ended| match ended {
-      ClientState::Completed(soulseek_client::SearchOutcome::Canceled) => {
-        Err(ClientError::Canceled)
-      }
+      ClientState::Completed(ClientOutcome::Canceled) => Err(NotRun::Canceled),
       ended => Ok(ended),
     });
     if let Err(error) = &result
@@ -272,7 +290,7 @@ impl Searches {
     }
     let ended = match result {
       Ok(ended) => state(ended),
-      Err(ClientError::Canceled) if running.canceled.load(Ordering::Relaxed) => {
+      Err(NotRun::Canceled) if running.canceled.load(Ordering::Relaxed) => {
         SearchState::Completed(SearchOutcome::Cancelled)
       }
       Err(error) => {
@@ -389,7 +407,7 @@ mod tests {
 
   #[test]
   fn every_client_state_is_shown_by_the_name_the_daemon_keeps() {
-    use soulseek_client::SearchOutcome as Outcome;
+    use soulseek_client::search::Outcome;
     let rows = [
       (ClientState::Requested, "Requested"),
       (ClientState::InProgress, "InProgress"),
@@ -398,7 +416,7 @@ mod tests {
         "Completed, Cancelled",
       ),
       (
-        ClientState::Completed(Outcome::TimedOut),
+        ClientState::Completed(Outcome::Ended),
         "Completed, TimedOut",
       ),
       (
@@ -467,7 +485,7 @@ mod tests {
     acceptance.await.unwrap().unwrap();
     lock(&running.progress).moved = false;
 
-    let ended = ClientState::Completed(soulseek_client::SearchOutcome::TimedOut);
+    let ended = ClientState::Completed(ClientOutcome::Ended);
     running.state_changed(ended);
     {
       let progress = lock(&running.progress);
@@ -505,7 +523,7 @@ mod tests {
     let running = Arc::new(Running::new(record, accepted));
     running.state_changed(ClientState::InProgress);
     // the client ends a search it was not asked to cancel as canceled when the session ends
-    let ended = ClientState::Completed(soulseek_client::SearchOutcome::Canceled);
+    let ended = ClientState::Completed(ClientOutcome::Canceled);
     searches.follow(running, async move { Ok(ended) }).await;
     let stored = searches.get(id, false).await.unwrap();
     assert_eq!(stored.state, SearchState::Completed(SearchOutcome::Errored));
@@ -531,9 +549,7 @@ mod tests {
     searches.tasks.spawn(async move {
       let search = async move {
         cancel.cancelled().await;
-        Ok(ClientState::Completed(
-          soulseek_client::SearchOutcome::Canceled,
-        ))
+        Ok(ClientState::Completed(ClientOutcome::Canceled))
       };
       following.follow(running, search).await;
     });
@@ -609,7 +625,7 @@ mod tests {
 
   /// How the client's search ended once it timed out.
   fn timed_out() -> ClientState {
-    ClientState::Completed(soulseek_client::SearchOutcome::TimedOut)
+    ClientState::Completed(ClientOutcome::Ended)
   }
 
   /// Makes every write to a search's row fail while `refused` is true.

@@ -43,9 +43,9 @@ impl Messaging {
       return;
     }
     let asked = if feed.wanted {
-      self.client().start_public_chat().await
+      self.client().rooms().start_public_chat().await
     } else {
-      self.client().stop_public_chat().await
+      self.client().rooms().stop_public_chat().await
     };
     match asked {
       Ok(()) => {

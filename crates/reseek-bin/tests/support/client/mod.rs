@@ -15,27 +15,19 @@ use soulseek_client::soulseek_proto;
 use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::task::Poll;
 use std::time::Duration;
 
-use soulseek_client::testing::{Engine, WaitKey};
-use soulseek_client::{
-  BrowseReply, Client, ClientError, ClientOptions, ClientState, Event, Resolvers,
-};
+use soulseek_client::config::ConfigBuilder;
+use soulseek_client::handler::{self, BrowseReply, Handler, Peer, UploadReply};
+use soulseek_client::{Client, Config, Event, Events};
+use soulseek_proto::RemoteFilename;
 use soulseek_proto::frame::{self, FrameKind};
-use soulseek_proto::init::PeerInit;
 use soulseek_proto::peer::{BrowseResponse, UserInfo};
-use soulseek_proto::server::{
-  GetPeerAddressRequest, GetPeerAddressResponse, GlobalAdminMessage, LoginRequest, LoginResponse,
-  PrivateMessageRequest,
-};
-use soulseek_proto::{
-  InitMessage, Limits, PeerConnectionType, Secret, ServerCode, ServerRequest, ServerResponse,
-};
+use soulseek_proto::server::{LoginRequest, LoginResponse};
+use soulseek_proto::{Limits, Secret, ServerRequest, ServerResponse};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
-use tokio::sync::broadcast;
-use tokio_util::sync::CancellationToken;
+use tokio::sync::mpsc;
 
 pub const USERNAME: &str = "alice";
 pub const PASSWORD: &str = "hunter2";
@@ -44,51 +36,56 @@ pub const PUBLIC_IP: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 7);
 /// how long a test waits for something that should happen promptly
 pub const PATIENCE: Duration = Duration::from_secs(10);
 
-/// Resolvers that answer a browse with an empty listing and a user info request with a blank
+/// A handler that answers a browse with an empty listing and a user info request with a blank
 /// info, for the tests that ask either to see a connection carry messages
-pub fn answering() -> Resolvers {
-  Resolvers {
-    browse_response: Some(Arc::new(|_| {
-      Box::pin(async {
-        Ok(Some(BrowseReply::Response(BrowseResponse {
-          directories: Vec::new(),
-          locked_directories: Vec::new(),
-        })))
-      })
-    })),
-    user_info: Some(Arc::new(|_| {
-      Box::pin(async {
-        Ok(Some(UserInfo {
-          description: String::new(),
-          picture: None,
-          upload_slots: 0,
-          queue_length: 0,
-          has_free_upload_slot: false,
-          upload_permitted: Some(0),
-        }))
-      })
-    })),
-    ..Resolvers::default()
+#[derive(Clone, Default)]
+pub struct Answering;
+
+impl Handler for Answering {
+  async fn browse(&self, _: &Client, _: &Peer) -> Option<BrowseReply> {
+    Some(BrowseReply::Response(BrowseResponse {
+      directories: Vec::new(),
+      locked_directories: Vec::new(),
+    }))
+  }
+
+  async fn user_info(&self, _: &Client, _: &Peer) -> Option<UserInfo> {
+    Some(blank_info())
   }
 }
 
-/// options for a client that does not listen, so tests need no free port
-pub fn options() -> ClientOptions {
-  ClientOptions {
-    enable_listener: false,
-    resolvers: answering(),
-    ..ClientOptions::default()
+/// A handler that queues every upload a peer asks for and hands the request on, and answers
+/// nothing else
+#[derive(Clone)]
+pub struct Queueing {
+  pub asked: mpsc::UnboundedSender<(String, RemoteFilename)>,
+}
+
+impl Handler for Queueing {
+  async fn upload(&self, _: &Client, peer: &Peer, request: &handler::UploadRequest) -> UploadReply {
+    // the test may have stopped listening; the request is queued either way
+    let _ = self
+      .asked
+      .send((peer.username.clone(), request.filename.clone()));
+    UploadReply::Queue
   }
 }
 
-/// options for a client that listens on loopback, on a free port
-pub fn listening_options() -> ClientOptions {
-  ClientOptions {
-    listen_ip_address: Ipv4Addr::LOCALHOST.into(),
-    listen_port: free_port(),
-    resolvers: answering(),
-    ..ClientOptions::default()
+/// the user info [`Answering`] gives
+pub fn blank_info() -> UserInfo {
+  UserInfo {
+    description: String::new(),
+    picture: None,
+    upload_slots: 0,
+    queue_length: 0,
+    has_free_upload_slot: false,
+    upload_permitted: Some(0),
   }
+}
+
+/// a configuration for a client that does not listen, so tests need no free port
+pub fn options() -> ConfigBuilder {
+  Config::builder().listener(false).handler(Answering)
 }
 
 /// The server's listening socket
@@ -257,214 +254,22 @@ pub fn login_success() -> ServerResponse {
   })
 }
 
-/// a client logged in to a fake server, with everything a test looks at
-pub struct Session {
-  pub client: Client,
-  pub server: ServerSide,
-  pub events: broadcast::Receiver<Event>,
-  pub fake: FakeServer,
-}
-
-impl Session {
-  pub async fn start() -> Self {
-    Self::with_options(options()).await
-  }
-
-  pub async fn with_options(options: ClientOptions) -> Self {
-    Self::on(FakeServer::start().await, options).await
-  }
-
-  /// a client logged in to `fake`
-  pub async fn on(fake: FakeServer, options: ClientOptions) -> Self {
-    let client = Client::new(options).unwrap();
-    let events = client.subscribe();
-    let address = fake.address();
-    let mut connecting = {
-      let client = client.clone();
-      tokio::spawn(async move {
-        client
-          .connect(
-            &address.ip().to_string(),
-            address.port(),
-            USERNAME,
-            PASSWORD,
-            &CancellationToken::new(),
-          )
-          .await
-      })
-    };
-    // a connect that fails before reaching the server says why, rather than the accept timing out
-    let mut server = tokio::select! {
-      server = fake.accept() => server,
-      connected = &mut connecting => panic!("the client did not reach the server: {connected:?}"),
-    };
-    server.accept_login().await;
-    server.read_configuration().await;
-    connecting.await.unwrap().unwrap();
-    Self {
-      client,
-      server,
-      events,
-      fake,
-    }
-  }
-
-  /// the next event that `pick` accepts, skipping the others
-  pub async fn event<T>(&mut self, pick: impl FnMut(Event) -> Option<T>) -> T {
-    next_event(&mut self.events, pick).await
-  }
-
-  /// Has the client write more to the server than the sockets hold. Until the server reads
-  /// again, with [`ServerSide::discard`], every later write to it waits behind this one; the
-  /// server needs a small receive buffer and the client a write queue long enough for the
-  /// messages that pile up meanwhile.
-  pub fn stall_server_writes(&self) {
-    let filler = ServerRequest::PrivateMessage(PrivateMessageRequest {
-      username: "filler".into(),
-      message: "x".repeat(60 << 10),
-    });
-    let client = self.client.clone();
-    tokio::spawn(async move {
-      // the server reads it only when the test is done with the stall, or never. 15 MB is
-      // several times what a loopback socket pair holds with a small receive window
-      let _ = client.write_server_messages(&vec![filler; 256]).await;
-    });
-  }
-
-  /// where the client listens, when it does
-  pub fn listen_address(&self) -> SocketAddr {
-    SocketAddr::from((Ipv4Addr::LOCALHOST, self.client.options().listen_port))
-  }
-
-  /// a scripted peer named `username` that connected to the client for messages
-  pub async fn peer(&self, username: &str) -> peer::PeerSide {
-    let mut peer = peer::PeerSide::connect(self.listen_address()).await;
-    let introduce = InitMessage::PeerInit(PeerInit {
-      username: username.into(),
-      connection_type: PeerConnectionType::Peer,
-      token: 0,
-    });
-    peer.send(&introduce.encode()).await;
-    peer
-  }
-
-  /// answers the client's next lookup of `username`'s address with `address`
-  pub async fn give_address(&mut self, username: &str, address: SocketAddr) {
-    self
-      .server
-      .request_matching(|request| match request {
-        ServerRequest::GetPeerAddress(GetPeerAddressRequest { username: asked })
-          if asked == username =>
-        {
-          Some(())
-        }
-        _ => None,
-      })
-      .await;
-    let SocketAddr::V4(address) = address else {
-      panic!("the server gives IPv4 addresses");
-    };
-    self
-      .server
-      .send(&ServerResponse::GetPeerAddress(GetPeerAddressResponse {
-        username: username.into(),
-        ip: *address.ip(),
-        port: u32::from(address.port()),
-        obfuscation: None,
-      }))
-      .await;
-  }
-
-  /// registers a wait under `key`, sends `response` and returns what the wait completed with
-  pub async fn reply<T: Send + 'static>(&mut self, key: WaitKey, response: ServerResponse) -> T {
-    let wait = self
-      .client
-      .waiter()
-      .wait::<T>(key, None, CancellationToken::new());
-    self.server.send(&response).await;
-    tokio::time::timeout(PATIENCE, wait)
-      .await
-      .expect("the wait completes")
-      .unwrap()
-  }
-
-  /// sends a message every client handles by raising an event, and waits for that event, so
-  /// everything sent before it has been handled
-  pub async fn settle(&mut self) {
-    let marker = ServerResponse::GlobalAdminMessage(GlobalAdminMessage {
-      message: "marker".into(),
-    });
-    self.server.send(&marker).await;
-    self
-      .event(|event| {
-        matches!(event, Event::GlobalMessageReceived(message) if message == "marker").then_some(())
-      })
-      .await;
-  }
-}
-
-pub fn user_key(code: ServerCode, username: &str) -> WaitKey {
-  WaitKey::ServerUser {
-    code,
-    username: username.into(),
-  }
-}
-
-/// the next event that `pick` accepts, skipping the others
-pub async fn next_event<T>(
-  events: &mut broadcast::Receiver<Event>,
-  mut pick: impl FnMut(Event) -> Option<T>,
-) -> T {
+/// the next event that `pick` accepts, skipping the others and any lag
+pub async fn next_event<T>(events: &mut Events, mut pick: impl FnMut(Event) -> Option<T>) -> T {
   tokio::time::timeout(PATIENCE, async {
     loop {
-      if let Some(picked) = pick(events.recv().await.unwrap()) {
-        return picked;
+      match events.next().await.expect("the client is alive") {
+        Ok(event) => {
+          if let Some(picked) = pick(event) {
+            return picked;
+          }
+        }
+        Err(lagged) => eprintln!("{lagged}"),
       }
     }
   })
   .await
   .expect("the event is raised")
-}
-
-/// the state transitions among `events`, as (previous, state, message)
-pub fn transitions(events: &[Event]) -> Vec<(ClientState, ClientState, String)> {
-  events
-    .iter()
-    .filter_map(|event| match event {
-      Event::StateChanged {
-        previous_state,
-        state,
-        message,
-        ..
-      } => Some((*previous_state, *state, message.clone())),
-      _ => None,
-    })
-    .collect()
-}
-
-/// the message and cause of the one `Disconnected` among `events`
-pub fn disconnected(events: &[Event]) -> (String, Option<ClientError>) {
-  let mut disconnects = events.iter().filter_map(|event| match event {
-    Event::Disconnected { message, error, .. } => Some((message.clone(), error.clone())),
-    _ => None,
-  });
-  let disconnect = disconnects.next().expect("Disconnected is raised");
-  assert!(disconnects.next().is_none(), "Disconnected is raised once");
-  disconnect
-}
-
-/// polls `future` once, without letting any other task run first
-pub async fn poll_once<F: Future + Unpin>(future: &mut F) -> Poll<F::Output> {
-  std::future::poll_fn(|cx| Poll::Ready(std::pin::Pin::new(&mut *future).poll(cx))).await
-}
-
-/// every event received so far
-pub fn drain(events: &mut broadcast::Receiver<Event>) -> Vec<Event> {
-  let mut drained = Vec::new();
-  while let Ok(event) = events.try_recv() {
-    drained.push(event);
-  }
-  drained
 }
 
 /// Log lines written while the guard lives, for the thread the test runs on. Tests that use it

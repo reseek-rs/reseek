@@ -19,7 +19,6 @@ use api_types::jobs::{JobKind, JobStarter, JobStarterKind, JobState};
 use api_types::transfers::TransferDirection;
 use chrono::Utc;
 use rusqlite::{OptionalExtension, params};
-use soulseek_client::ClientError;
 use tokio::time::Instant;
 use tracing::{Instrument, info, warn};
 use uuid::Uuid;
@@ -37,6 +36,23 @@ use crate::transfers::{CANCEL_REMEMBERED, NEWEST_FIRST, Record, direction_text};
 use reseek_shares::lock;
 use senders::{Joined, Sender};
 pub(super) use senders::{Senders, Sending};
+
+/// Why a file a user offers unasked is not taken.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NotTaken {
+  /// the options or the file refuse it, for the reason given
+  Refused(String),
+  /// something here failed, as said
+  Failed(String),
+}
+
+impl std::fmt::Display for NotTaken {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::Refused(reason) | Self::Failed(reason) => f.write_str(reason),
+    }
+  }
+}
 
 /// Why a file a user offers unasked is refused by who may send files and how large, `None`
 /// when those let it in: its sender's groups, `in_group` telling of each, and its `size`.
@@ -67,16 +83,15 @@ fn counted_as(everyone: bool, username: &str, from: IpAddr) -> Sender {
 impl Downloads {
   /// Takes the file `filename` of `size` bytes that `username`, connected from `from`, offers
   /// to send unasked, as a download in the job their files go to; refused with
-  /// [`ClientError::TransferRejected`] and the reason when the options do not let it in. The
-  /// client logs the refusal.
+  /// [`NotTaken::Refused`] and the reason when the options do not let it in.
   pub async fn receive(
     &self,
     username: &str,
     from: IpAddr,
     filename: &str,
     size: u64,
-  ) -> Result<(), ClientError> {
-    let refused = |reason: &str| Err(ClientError::TransferRejected(reason.to_string()));
+  ) -> Result<(), NotTaken> {
+    let refused = |reason: &str| Err(NotTaken::Refused(reason.to_string()));
     let file = FileRequest {
       filename: filename.to_string(),
       size,
@@ -134,7 +149,7 @@ impl Downloads {
     match ran.await {
       Ok(taken) => taken,
       Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
-      Err(e) => Err(ClientError::client(e.to_string(), None)),
+      Err(e) => Err(NotTaken::Failed(e.to_string())),
     }
   }
 
@@ -161,7 +176,7 @@ impl Downloads {
     &self,
     username: &str,
     filename: &str,
-  ) -> Result<Option<&'static str>, ClientError> {
+  ) -> Result<Option<&'static str>, NotTaken> {
     let remembered =
       chrono::Duration::from_std(CANCEL_REMEMBERED).expect("a day is a chrono duration");
     let since = timestamp(Utc::now() - remembered);
@@ -187,7 +202,7 @@ impl Downloads {
           .optional()
       })
       .await
-      .map_err(|e| ClientError::client(format!("downloads not read: {e}"), None))?;
+      .map_err(|e| NotTaken::Failed(format!("downloads not read: {e}")))?;
     Ok(match latest {
       Some((true, _)) => Some("a download of the file from the sender is not finished"),
       Some((_, true)) => Some("its download from the sender was canceled"),
@@ -197,7 +212,7 @@ impl Downloads {
 
   /// Enqueues the one file of `group` that its user is sending unasked into the job their files
   /// go to, starting one when none gathers them.
-  async fn take_sent(self: Arc<Self>, group: Group, sending: Sending) -> Result<(), ClientError> {
+  async fn take_sent(self: Arc<Self>, group: Group, sending: Sending) -> Result<(), NotTaken> {
     let username = group.username.clone();
     let filename = group.files[0].filename.clone();
     let joined = lock(&self.senders).join(&username, &filename, Uuid::new_v4());
@@ -224,7 +239,7 @@ impl Downloads {
     if !listed {
       let reason = "its job could not be listed";
       lock(&self.senders).joined(&username, Err(reason.to_string()));
-      return Err(ClientError::client(reason.to_string(), None));
+      return Err(NotTaken::Failed(reason.to_string()));
     }
     let result = self.enqueue_group(job, group, &[], Some(sending)).await;
     let made = match &result {
@@ -244,8 +259,8 @@ impl Downloads {
         info!(username, filename, %job, "file sent unasked queued");
         Ok(())
       }
-      (Ok(_), Err(reason)) => Err(ClientError::TransferRejected(reason)),
-      (Err(_), Err(reason)) => Err(ClientError::client(reason, None)),
+      (Ok(_), Err(reason)) => Err(NotTaken::Refused(reason)),
+      (Err(_), Err(reason)) => Err(NotTaken::Failed(reason)),
     }
   }
 

@@ -11,10 +11,27 @@ use std::time::{Duration, Instant};
 use api_types::live::LiveFrame;
 use api_types::users::UserPresence;
 use futures_util::StreamExt;
-use soulseek_client::{BrowseReply, ClientOptions};
+use soulseek_client::handler::{BrowseReply, Handler, Peer};
+use soulseek_client::{Client, Config};
 use soulseek_proto::peer::{BrowseResponse, Directory, File, UserInfo};
 use support::soulfind;
 use support::{PATIENCE, daemon, free_port, logged_in, signed_in, until};
+
+/// A peer's answers: its info, and its listing when it has one.
+struct Answers {
+  info: Box<dyn Fn() -> UserInfo + Send + Sync>,
+  listing: Option<BrowseResponse>,
+}
+
+impl Handler for Answers {
+  async fn user_info(&self, _: &Client, _: &Peer) -> Option<UserInfo> {
+    Some((self.info)())
+  }
+
+  async fn browse(&self, _: &Client, _: &Peer) -> Option<BrowseReply> {
+    self.listing.clone().map(BrowseReply::Response)
+  }
+}
 
 /// A share listing of `folders` folders of 100 files each.
 fn listing(folders: usize) -> BrowseResponse {
@@ -47,10 +64,7 @@ async fn looking_up_a_name_nobody_has_keeps_nothing_of_them() {
   let running = daemon(dir.path(), &server, &name, &[]);
   let api = signed_in(&running).await;
   until(&api, "logged in", logged_in).await;
-  let options = ClientOptions {
-    listen_port: free_port(),
-    ..ClientOptions::default()
-  };
+  let options = Config::builder().listen_port(free_port());
   let peer = server.login("peer", options).await;
 
   let nobody = soulfind::username("nobody");
@@ -89,24 +103,19 @@ async fn a_profile_names_its_picture_by_a_url_that_serves_it_at_once() {
   until(&api, "logged in", logged_in).await;
 
   let picture = Arc::new(Mutex::new(b"\x89PNG\r\n\x1a\nfirst".to_vec()));
-  let mut options = ClientOptions {
-    listen_port: free_port(),
-    ..ClientOptions::default()
-  };
   let sent = picture.clone();
-  options.resolvers.user_info = Some(Arc::new(move |_| {
-    let picture = sent.lock().unwrap().clone();
-    Box::pin(async move {
-      Ok(Some(UserInfo {
-        description: String::new(),
-        picture: Some(picture),
-        upload_slots: 1,
-        queue_length: 0,
-        has_free_upload_slot: true,
-        upload_permitted: None,
-      }))
-    })
-  }));
+  let answers = Answers {
+    info: Box::new(move || UserInfo {
+      description: String::new(),
+      picture: Some(sent.lock().unwrap().clone()),
+      upload_slots: 1,
+      queue_length: 0,
+      has_free_upload_slot: true,
+      upload_permitted: None,
+    }),
+    listing: None,
+  };
+  let options = Config::builder().listen_port(free_port()).handler(answers);
   let peer = server.login("peer", options).await;
 
   let url = |profile: api_types::users::UserProfile| {
@@ -144,12 +153,9 @@ async fn a_first_view_of_an_offline_user_shows_the_row_it_made() {
   let running = daemon(dir.path(), &server, &name, &[]);
   let api = signed_in(&running).await;
   until(&api, "logged in", logged_in).await;
-  let options = ClientOptions {
-    listen_port: free_port(),
-    ..ClientOptions::default()
-  };
+  let options = Config::builder().listen_port(free_port());
   let gone = server.login("gone", options).await;
-  gone.client.disconnect(Some("gone"), None).await;
+  gone.client.disconnect_because("gone").await;
 
   let profile = api.user_profile(&gone.username, true).await.unwrap();
   assert!(profile.user.known, "{profile:?}");
@@ -177,27 +183,18 @@ async fn a_user_is_browsed_with_progress_asked_about_and_watched() {
   let api = signed_in(&running).await;
   until(&api, "logged in", logged_in).await;
 
-  let mut options = ClientOptions {
-    listen_port: free_port(),
-    ..ClientOptions::default()
+  let answers = Answers {
+    info: Box::new(|| UserInfo {
+      description: "hello from the peer".into(),
+      picture: None,
+      upload_slots: 2,
+      queue_length: 0,
+      has_free_upload_slot: true,
+      upload_permitted: Some(1),
+    }),
+    listing: Some(listing(200)),
   };
-  let shared = listing(200);
-  options.resolvers.browse_response = Some(Arc::new(move |_| {
-    let shared = shared.clone();
-    Box::pin(async move { Ok(Some(BrowseReply::Response(shared))) })
-  }));
-  options.resolvers.user_info = Some(Arc::new(|_| {
-    Box::pin(async {
-      Ok(Some(UserInfo {
-        description: "hello from the peer".into(),
-        picture: None,
-        upload_slots: 2,
-        queue_length: 0,
-        has_free_upload_slot: true,
-        upload_permitted: Some(1),
-      }))
-    })
-  }));
+  let options = Config::builder().listen_port(free_port()).handler(answers);
   let peer = server.login("peer", options).await;
 
   let mut stream = api.live(&["users"]).open().await.unwrap();

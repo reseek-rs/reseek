@@ -7,7 +7,7 @@ use soulseek_client::soulseek_proto;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
-use soulseek_client::ClientState;
+use soulseek_client::session::State as ClientState;
 use soulseek_proto::frame::{self, FrameKind};
 use soulseek_proto::server::{
   CheckPrivilegesResponse, LoginResponse, UserData, UserStatistics, UserStats,
@@ -16,7 +16,6 @@ use soulseek_proto::{Limits, Secret, ServerRequest, ServerResponse, UserPresence
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 
 use super::TestApp;
 
@@ -97,19 +96,12 @@ impl Server {
 
   /// Logs the client of `app` in as [`US`].
   pub async fn login(&self, app: &TestApp) {
-    app
-      .state
-      .network
-      .client()
-      .connect(
-        "127.0.0.1",
-        self.port,
-        US,
-        "secret",
-        &CancellationToken::new(),
-      )
+    let client = app.state.network.client();
+    client
+      .reconfigure(|config| config.server("127.0.0.1", self.port))
       .await
       .unwrap();
+    client.connect(US, "secret").await.unwrap();
   }
 
   /// Closes the connection, for a client that connects again by itself, which may be under way
@@ -269,42 +261,30 @@ pub fn member(username: &str) -> UserData {
   }
 }
 
-/// A download of `a.flac` from bob, as a client logged in to a [`Server`] reports it first,
-/// for a test of what takes the client's snapshots; the test sets the fields it looks at.
-pub async fn transfer_snapshot() -> soulseek_client::Transfer {
-  use soulseek_client::{Client, ClientOptions, DownloadOutput, DownloadRequest};
-
-  let server = Server::silent().await;
-  let client = Client::new(ClientOptions {
-    enable_listener: false,
-    ..ClientOptions::default()
-  })
-  .unwrap();
-  let cancel = CancellationToken::new();
-  client
-    .connect("127.0.0.1", server.port, US, "secret", &cancel)
-    .await
-    .unwrap();
-  let (reported, mut first) = mpsc::unbounded_channel();
-  let dir = tempfile::tempdir().unwrap();
-  let mut request = DownloadRequest::new(
-    "bob",
-    "a.flac",
-    Some(100),
-    DownloadOutput::File(dir.path().join("a.flac")),
-  );
-  request.options.state_changed = Some(std::sync::Arc::new(move |_, snapshot| {
-    // the receiver goes once the first one came
-    let _ = reported.send(snapshot.clone());
-  }));
-  let downloading = {
-    let (client, cancel) = (client.clone(), cancel.clone());
-    tokio::spawn(async move { client.download(request, &cancel).await })
-  };
-  let snapshot = first.recv().await.unwrap();
-  cancel.cancel();
-  // the download ends canceled, which the snapshot taken before does not show
-  let _ = downloading.await;
-  client.shutdown().await;
-  snapshot
+/// A download of `a.flac` from bob as the client reports it while queued here, for a test of
+/// what takes the client's snapshots; the test sets the fields it looks at.
+pub fn transfer_snapshot() -> soulseek_client::transfer::Transfer {
+  use soulseek_client::transfer::{Direction, State, Transfer};
+  Transfer {
+    direction: Direction::Download,
+    username: "bob".into(),
+    filename: "a.flac".into(),
+    token: 1,
+    remote_token: None,
+    state: State::QueuedLocally,
+    size: 100,
+    start_offset: 0,
+    bytes_transferred: 0,
+    bytes_remaining: 100,
+    percent_complete: 0.0,
+    average_speed: 0.0,
+    current_speed: 0.0,
+    start_time: None,
+    end_time: None,
+    elapsed_time: None,
+    remaining_time: None,
+    address: None,
+    closed_by_peer: None,
+    error: None,
+  }
 }

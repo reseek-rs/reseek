@@ -28,7 +28,7 @@ use api_types::users::{CachedUser, StatisticsSnapshot, UserPresence, UserStatus}
 use chrono::Utc;
 use reseek_shares::LogLimiter;
 use reseek_shares::lock;
-use soulseek_client::{Client, ClientError};
+use soulseek_client::{Client, Error as ClientError};
 use soulseek_proto::server::UserStats;
 use tracing::{Instrument, debug, info, trace, warn};
 
@@ -279,6 +279,30 @@ impl GroupCache {
   /// until it is dropped.
   pub async fn regrouping(&self) -> tokio::sync::MutexGuard<'_, ()> {
     self.regrouping.lock().await
+  }
+}
+
+/// Why a user's status was not read.
+#[derive(Debug)]
+pub enum StatusUnread {
+  /// the server was not asked, or did not answer
+  Client(ClientError),
+  /// the server gave a presence the protocol does not name, as said
+  Unnamed(String),
+}
+
+impl From<ClientError> for StatusUnread {
+  fn from(error: ClientError) -> Self {
+    Self::Client(error)
+  }
+}
+
+impl std::fmt::Display for StatusUnread {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::Client(error) => error.fmt(f),
+      Self::Unnamed(message) => f.write_str(message),
+    }
   }
 }
 
@@ -564,7 +588,7 @@ impl Directory {
     client: &Client,
     username: &str,
   ) -> Result<StatisticsSnapshot, ClientError> {
-    let fetched = client.get_user_statistics(username).await?;
+    let fetched = client.users().statistics(username).await?;
     Ok(self.statistics_fetched(username, &fetched.stats).await)
   }
 
@@ -575,7 +599,7 @@ impl Directory {
     client: &Client,
     username: &str,
   ) -> Result<StatisticsSnapshot, ClientError> {
-    let fetched = client.get_user_statistics(username).await?;
+    let fetched = client.users().statistics(username).await?;
     Ok(self.statistics_kept(username, &fetched.stats))
   }
 
@@ -621,7 +645,7 @@ impl Directory {
     &self,
     client: &Client,
     username: &str,
-  ) -> Result<UserStatus, ClientError> {
+  ) -> Result<UserStatus, StatusUnread> {
     let (status, moved) = self.status_unpushed(client, username).await?;
     if moved {
       self.push(username).await;
@@ -635,19 +659,18 @@ impl Directory {
     &self,
     client: &Client,
     username: &str,
-  ) -> Result<(UserStatus, bool), ClientError> {
+  ) -> Result<(UserStatus, bool), StatusUnread> {
     let before = self.groups.facts(username).unwrap_or_default();
-    let status = client.get_user_status(username).await?;
+    let status = client.users().status(username).await?;
     let Some(presence) = UserPresence::known(status.presence) else {
       let presence = format!("{:?}", status.presence);
       debug!(
         username,
         presence, "user status with a presence the protocol does not name"
       );
-      return Err(ClientError::client(
-        format!("the server gave {username} a presence the protocol does not name"),
-        None,
-      ));
+      return Err(StatusUnread::Unnamed(format!(
+        "the server gave {username} a presence the protocol does not name"
+      )));
     };
     let moved = self.status_fetched(username, presence, status.is_privileged, &before);
     let status = UserStatus {
@@ -736,7 +759,7 @@ impl Directory {
       return Ok(());
     }
     let asking = Asking::new(&self.groups, username);
-    let watched = client.watch_user(username).await?;
+    let watched = client.users().watch(username).await?;
     // the server watches them from its answer on, so the status asked for next, which the
     // follower of the client's events may take before this task does, finds them watched
     if !self.watch_taken(asking) {
@@ -758,7 +781,7 @@ impl Directory {
 
   /// Stops the server's status reports of `username`.
   pub async fn unwatch(&self, client: &Client, username: &str) -> Result<(), ClientError> {
-    client.unwatch_user(username).await?;
+    client.users().unwatch(username).await?;
     self.groups.watched().remove(username);
     debug!(username, "user no longer watched");
     Ok(())
@@ -809,7 +832,7 @@ impl Directory {
     let Some(client) = self.client.get() else {
       return;
     };
-    match client.unwatch_user(username).await {
+    match client.users().unwatch(username).await {
       Ok(()) => debug!(username, "forgotten user no longer watched"),
       Err(e) => debug!(
         username,

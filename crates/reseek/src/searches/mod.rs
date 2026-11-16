@@ -28,7 +28,7 @@ use async_trait::async_trait;
 use cascade::Watcher;
 use chrono::Utc;
 use reseek_shares::lock;
-use soulseek_client::{ClientError, SearchOptions, SearchStateChanged};
+use soulseek_client::{ErrorKind, search};
 use soulseek_proto::SearchQuery;
 use tokio::sync::{Semaphore, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -44,7 +44,7 @@ use crate::network::Network;
 use crate::services::{Canceled, SearchService};
 use crate::state::StateOwner;
 use crate::users::Directory;
-use running::Running;
+use running::{NotRun, Running};
 
 /// How long canceling or deleting a running search waits for it to end.
 const ENDING: Duration = Duration::from_secs(5);
@@ -103,8 +103,8 @@ fn normalized(text: &str) -> String {
 }
 
 /// Where the client sends a search with `scope`, whose subjects name the rooms or users.
-fn client_scope(scope: &SearchScope) -> soulseek_client::SearchScope {
-  use soulseek_client::SearchScope as To;
+fn client_scope(scope: &SearchScope) -> search::Scope {
+  use search::Scope as To;
   match scope.scope_type {
     SearchScopeType::Network => To::Network,
     SearchScopeType::Wishlist => To::Wishlist,
@@ -113,27 +113,27 @@ fn client_scope(scope: &SearchScope) -> soulseek_client::SearchScope {
   }
 }
 
-/// The client's options for `request`, which waits `search_timeout` for another response.
+/// The client's bound on a responder's queue for the API's `longest`: the client keeps a queue
+/// as long as its bound, the API drops one as long as its own.
+fn queue_bound(longest: Option<u32>) -> u32 {
+  longest.map_or(u32::MAX, |longest| longest.saturating_sub(1))
+}
+
+/// The client's search for `request`, which waits `search_timeout` for another response.
 fn options(
+  search: search::Request,
   request: &SearchRequest,
   search_timeout: Duration,
-  state_changed: SearchStateChanged,
-) -> SearchOptions {
-  SearchOptions {
-    search_timeout,
-    response_limit: request.response_limit,
-    file_limit: request.file_limit,
-    filter_responses: request.filter_responses,
-    minimum_response_file_count: request.minimum_response_file_count,
-    // the client keeps a queue as long as its bound, the API drops one as long as its own
-    maximum_peer_queue_length: request
-      .maximum_peer_queue_length
-      .map_or(u32::MAX, |longest| longest.saturating_sub(1)),
-    minimum_peer_upload_speed: request.minimum_peer_upload_speed,
-    remove_single_character_search_terms: true,
-    state_changed: Some(state_changed),
-    ..SearchOptions::default()
-  }
+) -> search::Request {
+  search
+    .idle_timeout(search_timeout)
+    .response_limit(request.response_limit)
+    .file_limit(request.file_limit)
+    .filter_responses(request.filter_responses)
+    .minimum_response_file_count(request.minimum_response_file_count)
+    .maximum_peer_queue_length(queue_bound(request.maximum_peer_queue_length))
+    .minimum_peer_upload_speed(request.minimum_peer_upload_speed)
+    .remove_single_character_terms(true)
 }
 
 /// A stored blob that could not be read back.
@@ -338,18 +338,25 @@ impl Searches {
   }
 
   /// The answer to a search the client refused with `error`.
-  fn refusal(&self, error: ClientError) -> ApiError {
-    match error {
-      ClientError::InvalidOperation(_) => ApiError::conflict(
+  fn refusal(&self, error: NotRun) -> ApiError {
+    let logged_out = || {
+      ApiError::conflict(
         format!(
           "The server connection must be connected and logged in to perform a search \
            (currently: {})",
           self.network.client().state()
         ),
         None,
-      ),
-      ClientError::InvalidArgument(message) => ApiError::bad_request(message),
-      other => ApiError::internal(other),
+      )
+    };
+    match error {
+      NotRun::LoggedOut(_) => logged_out(),
+      NotRun::Client(error) => match error.kind() {
+        ErrorKind::InvalidOperation => logged_out(),
+        ErrorKind::InvalidArgument => ApiError::bad_request(error.to_string()),
+        _ => ApiError::internal(error),
+      },
+      NotRun::Canceled => ApiError::internal(error),
     }
   }
 }
@@ -400,13 +407,9 @@ impl SearchService for Searches {
     let (accepted, acceptance) = oneshot::channel();
     let running = Arc::new(Running::new(record.clone(), accepted));
     self.running().insert(id, running.clone());
-    let reported = running.clone();
-    let state_changed: SearchStateChanged =
-      Arc::new(move |_, snapshot| reported.state_changed(snapshot.state));
-    let options = options(&request, search_timeout, state_changed);
     let scope = client_scope(&scope);
     let asked = match &scope {
-      soulseek_client::SearchScope::Users(users) => Some(users.clone()),
+      search::Scope::Users(users) => Some(users.clone()),
       _ => None,
     };
     let network = self.network.clone();
@@ -419,29 +422,43 @@ impl SearchService for Searches {
         let taker = running.clone();
         let (live, users) = (this.live.clone(), this.users.clone());
         let search = async {
-          // a search the client would refuse is refused before it waits for a slot
-          let request = soulseek_client::SearchRequest::new(&text, scope, options)?;
           if !client.state().is_logged_in() {
-            return Err(ClientError::InvalidOperation(format!(
+            return Err(NotRun::LoggedOut(format!(
               "Search for {text} needs a logged-in session"
             )));
           }
           running.queued();
           let _slot = tokio::select! {
             biased;
-            () = running.cancel.cancelled() => return Err(ClientError::Canceled),
-            () = session.cancelled() => return Err(ClientError::Canceled),
+            () = running.cancel.cancelled() => return Err(NotRun::Canceled),
+            () = session.cancelled() => return Err(NotRun::Canceled),
             slot = slots.acquire_owned() => slot.expect("the slots are never closed"),
           };
-          let _asking = asked.map(|users| network.user_search(reserved.token(), users));
-          let search = client
-            .search_with(
-              request.with_token(reserved),
-              move |response| taker.response_taken(response, &live, &users),
-              &running.cancel,
-            )
-            .await?;
-          Ok(search.state)
+          let token = reserved.token();
+          let _asking = asked.map(|users| network.user_search(token, users));
+          let sent = client.search(text.clone()).scope(scope).token(reserved);
+          let mut responses = options(sent, &request, search_timeout)
+            .await
+            .map_err(NotRun::Client)?;
+          // the search is sent; the client says no more of its state until it ends
+          running.state_changed(search::State::InProgress);
+          loop {
+            tokio::select! {
+              biased;
+              // dropping the responses cancels the search
+              () = running.cancel.cancelled() => {
+                return Ok(search::State::Completed(search::Outcome::Canceled));
+              }
+              response = responses.next() => match response {
+                Some(response) => {
+                  network.search_answered(token);
+                  taker.response_taken(response, &live, &users);
+                }
+                None => break,
+              },
+            }
+          }
+          Ok(responses.search().state)
         };
         this.follow(running.clone(), search).await;
         this.running().remove(&id);
@@ -832,13 +849,7 @@ mod tests {
 
   #[test]
   fn the_apis_queue_bound_drops_a_queue_as_long_as_it() {
-    let bound = |longest: Option<u32>| {
-      let request = SearchRequest {
-        maximum_peer_queue_length: longest,
-        ..serde_json::from_value(json!({ "searchText": "x" })).unwrap()
-      };
-      options(&request, Duration::from_secs(1), Arc::new(|_, _| {})).maximum_peer_queue_length
-    };
+    let bound = queue_bound;
     assert_eq!(
       bound(Some(3)),
       2,

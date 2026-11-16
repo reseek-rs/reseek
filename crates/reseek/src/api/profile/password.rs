@@ -59,6 +59,7 @@ async fn change_password(
   let _writing = app.profile_writes.lock().await;
   let target = target(&app.config.current(), &admin.principal, PASSWORD, false)?;
   client
+    .account()
     .change_password(&change.password)
     .await
     .map_err(|e| {

@@ -51,9 +51,6 @@ const STOPPING: Duration = Duration::from_secs(5);
 /// Why a transfer canceled because its user was blocked ended.
 const BLOCKED: &str = "Blocked";
 
-/// More states than one try of a transfer reports.
-const STATES: usize = 16;
-
 /// How often a transfer's progress is written and pushed at most.
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 

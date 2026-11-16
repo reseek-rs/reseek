@@ -26,7 +26,7 @@ use api_types::live::LiveFrame;
 use api_types::transfers::{TransferDirection, TransferOutcome, TransferStates};
 use cascade::Watcher;
 use reseek_shares::lock;
-use soulseek_client::{Client, ClientError};
+use soulseek_client::Client;
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -50,6 +50,9 @@ use intake::Intake;
 pub use intake::{ENQUEUE_FAILED, NOT_SHARED, NotQueued, OVERWHELMED, QUEUE_FULL};
 pub use queue::Forecast;
 use queue::UploadQueue;
+
+/// Why an upload fails once the client is gone, as the daemon stops.
+const SHUT_DOWN: &str = "the client has been shut down";
 
 /// What is kept for an upload whose task runs.
 struct InFlight {
@@ -164,12 +167,12 @@ impl Uploads {
   }
 
   /// The Soulseek client; gone only once the daemon is torn down.
-  fn client(&self) -> Result<Client, ClientError> {
+  fn client(&self) -> Result<Client, String> {
     self
       .network
       .upgrade()
       .map(|network| network.client().clone())
-      .ok_or(ClientError::Shutdown)
+      .ok_or_else(|| SHUT_DOWN.to_string())
   }
 
   /// Where a new upload request from `username` would land in the queue, by the group known

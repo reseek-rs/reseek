@@ -17,7 +17,7 @@ use api_types::options::OptionsPatch;
 use api_types::transfers::{Transfer, TransferDirection, TransferOutcome, TransferStates};
 use api_types::users::BuddyChange;
 use serde_json::json;
-use soulseek_client::{ClientError, ClientOptions, UploadInput, UploadRequest};
+use soulseek_client::{Config, ErrorKind};
 use soulseek_proto::PeerMessage;
 use soulseek_proto::peer::{QueueDownload, TransferRequest, TransferResponse, UploadFailed};
 use support::peer::PeerSide;
@@ -27,7 +27,6 @@ use support::transfers::{self, Asked, asked, content, file, scratch};
 use support::{
   PATIENCE, daemon_listening, download_when, enqueue, free_port, logged_in, signed_in, until,
 };
-use tokio_util::sync::CancellationToken;
 
 const SIZE: usize = 200_000;
 const GIFT: &str = "@@share\\gift\\01 song.flac";
@@ -35,30 +34,25 @@ const TAKEN_BACK: &str = "@@share\\gift\\02 song.flac";
 
 /// A sender that queues every request it is asked, so a download from it waits there.
 async fn sender(server: &Arc<Soulfind>) -> (User, Asked) {
-  let mut options = ClientOptions {
-    listen_port: free_port(),
-    ..ClientOptions::default()
-  };
-  let requests = transfers::queueing(&mut options);
+  let (options, requests) = transfers::queueing_with(Config::builder().listen_port(free_port()));
   (server.login("sender", options).await, requests)
 }
 
 /// What sending a file unasked came to, on the sender's side.
-type Sent = Result<soulseek_client::Transfer, ClientError>;
+type Sent = Result<soulseek_client::transfer::Transfer, soulseek_client::Error>;
 
 /// Sends `remote` to the daemon `to` unasked, as `sender`'s upload.
 async fn send(sender: &User, to: &str, remote: &str) -> Sent {
   let source = file(&scratch(), "gift.flac", SIZE);
-  let request = UploadRequest::new(to, remote, UploadInput::File(source));
-  sender
-    .client
-    .upload(request, &CancellationToken::new())
-    .await
+  sender.client.upload(to, remote).from_file(source).await
 }
 
 /// Whether a send was refused the way the daemon refuses a file it does not take.
 fn refused(sent: &Sent) -> bool {
-  matches!(sent, Err(ClientError::TransferRejected(reason)) if reason == "Cancelled")
+  matches!(
+    sent,
+    Err(error) if error.kind() == ErrorKind::TransferRejected && error.reason() == Some("Cancelled")
+  )
 }
 
 /// Lets the users in `groups` send the daemon files.
@@ -215,7 +209,8 @@ async fn a_file_sent_unasked_never_replaces_a_file_and_keeps_its_size() {
   let given = sender
     .user
     .client
-    .get_user_endpoint(sender.name())
+    .users()
+    .address(sender.name())
     .await
     .unwrap();
   let IpAddr::V4(from) = given.ip() else {

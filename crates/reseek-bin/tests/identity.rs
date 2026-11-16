@@ -9,10 +9,12 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use api_types::transfers::{TransferOutcome, TransferStates};
-use soulseek_client::{BrowseReply, ClientOptions, PeerRequestOptions, UploadInput, UploadRequest};
+use soulseek_client::handler::{self, BrowseReply, Handler, Peer, UploadReply};
+use soulseek_client::{Client, Config};
 use soulseek_proto::PeerMessage;
 use soulseek_proto::frame::FrameKind;
 use soulseek_proto::peer::{BrowseResponse, Directory, File};
+use support::client::Queueing;
 use support::peer::PeerSide;
 use support::scripted::introduced;
 use support::soulfind::{self, Soulfind, User};
@@ -20,7 +22,6 @@ use support::transfers::{self, Asked, asked, content, file, scratch};
 use support::{
   PATIENCE, daemon_listening, download_when, enqueue, free_port, logged_in, signed_in, until,
 };
-use tokio_util::sync::CancellationToken;
 
 const SIZE: usize = 200_000;
 const WANTED: &str = "@@share\\album\\01 song.flac";
@@ -28,13 +29,30 @@ const WANTED: &str = "@@share\\album\\01 song.flac";
 /// an address on loopback the server gives for nobody
 const ELSEWHERE: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
 
+/// The user's answers: one shared folder, and every file asked of them queued.
+struct Sharing {
+  queueing: Queueing,
+  shared: BrowseResponse,
+}
+
+impl Handler for Sharing {
+  async fn browse(&self, _: &Client, _: &Peer) -> Option<BrowseReply> {
+    Some(BrowseReply::Response(self.shared.clone()))
+  }
+
+  async fn upload(
+    &self,
+    client: &Client,
+    peer: &Peer,
+    request: &handler::UploadRequest,
+  ) -> UploadReply {
+    self.queueing.upload(client, peer, request).await
+  }
+}
+
 /// The user the stranger names, sharing one folder and queueing every file asked of them.
 async fn user(server: &Arc<Soulfind>) -> (User, Asked) {
-  let mut options = ClientOptions {
-    listen_port: free_port(),
-    ..ClientOptions::default()
-  };
-  let requests = transfers::queueing(&mut options);
+  let (queueing, requests) = transfers::queueing();
   let shared = BrowseResponse {
     directories: vec![Directory {
       name: "@@share\\album".into(),
@@ -48,10 +66,9 @@ async fn user(server: &Arc<Soulfind>) -> (User, Asked) {
     }],
     locked_directories: Vec::new(),
   };
-  options.resolvers.browse_response = Some(Arc::new(move |_| {
-    let shared = shared.clone();
-    Box::pin(async move { Ok(Some(BrowseReply::Response(shared))) })
-  }));
+  let options = Config::builder()
+    .listen_port(free_port())
+    .handler(Sharing { queueing, shared });
   (server.login("user", options).await, requests)
 }
 
@@ -99,10 +116,10 @@ async fn a_browse_and_a_download_go_to_the_user_a_stranger_named_first() {
   assert_eq!((from.as_str(), asked_for.as_str()), (name.as_str(), WANTED));
   // the user sends it, and it is theirs that lands
   let source = file(&scratch(), "song.flac", SIZE);
-  let request = UploadRequest::new(&name, WANTED, UploadInput::File(source));
   user
     .client
-    .upload(request, &CancellationToken::new())
+    .upload(&name, WANTED)
+    .from_file(source)
     .await
     .unwrap();
   let done = download_when(&api, &user.username, id, "landed", |t| {
@@ -134,16 +151,9 @@ async fn the_users_request_to_connect_is_taken_while_a_stranger_holds_the_name()
   };
   // soulfind gives out the daemon's LAN address, where it does not listen, so the user reaches
   // it only by having the server ask it to connect
-  let info = tokio::time::timeout(
-    PATIENCE,
-    user.client.get_user_info(
-      &name,
-      PeerRequestOptions::default(),
-      &CancellationToken::new(),
-    ),
-  )
-  .await
-  .expect("the daemon answers the user");
+  let info = tokio::time::timeout(PATIENCE, user.client.users().info(&name).into_future())
+    .await
+    .expect("the daemon answers the user");
   assert!(info.is_ok(), "{info:?}");
   assert!(
     stranger

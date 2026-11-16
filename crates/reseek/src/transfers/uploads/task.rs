@@ -15,11 +15,8 @@ use api_types::transfers::{TransferDirection, TransferOutcome, TransferStates};
 use chrono::Utc;
 use reseek_shares::LogLimiter;
 use reseek_shares::lock;
-use soulseek_client::{
-  ClientError, InputFactory, SlotAwaiter, SlotReleased, Transfer as Snapshot, TransferOptions,
-  TransferStateChanged as StateChanged, UploadInput, UploadRequest, UploadSource,
-};
-use tokio::sync::{mpsc, watch};
+use soulseek_client::transfer::{Handle, Slot, Source, Transfer as Snapshot, Upload, UploadNotice};
+use soulseek_client::{Error as ClientError, ErrorKind};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, trace, warn};
@@ -30,7 +27,7 @@ use super::intake::{Located, Locating, NOT_SHARED};
 use crate::relay::Controller;
 use crate::shares::LOCAL_HOST;
 use crate::transfers::state::{self, State};
-use crate::transfers::{PROGRESS_EVERY, Record, STATES, removal, store};
+use crate::transfers::{PROGRESS_EVERY, Record, removal, store};
 
 /// Why an upload whose file is gone when it starts ended.
 const FILE_GONE: &str = "File could not be found";
@@ -41,26 +38,39 @@ pub(super) const CANCELED: &str = "the operation was cancelled";
 /// Progress not written, which a failing database would repeat four times a second.
 static PROGRESS_UNWRITTEN: LogLimiter = LogLimiter::new();
 
+/// How an upload ended without succeeding.
+#[derive(Debug)]
+enum Failed {
+  /// the client's upload ended with this error
+  Client(ClientError),
+  /// something here failed, as said, before the client had the upload
+  Here(String),
+  /// its file is gone from the shares
+  Gone,
+}
+
 /// The I/O error from the input that `error` ended with, when it ended with one: a relay agent's
 /// file that is not there, or did not come in time, fails its upload as such.
 fn input_error(error: &ClientError) -> Option<&std::io::Error> {
-  match error {
-    ClientError::Io {
-      source: Some(source),
-      ..
-    } => source.downcast_ref::<std::io::Error>(),
-    _ => None,
+  if error.kind() != ErrorKind::Io {
+    return None;
   }
+  std::error::Error::source(error).and_then(|source| source.downcast_ref::<std::io::Error>())
 }
 
-/// How an upload that ended with `error` ended.
-fn outcome(error: &ClientError) -> TransferOutcome {
-  match error {
-    ClientError::Canceled => TransferOutcome::Cancelled,
-    ClientError::Timeout(_) => TransferOutcome::TimedOut,
-    ClientError::TransferRejected(_) => TransferOutcome::Rejected,
-    ClientError::NotFound(_) => TransferOutcome::Aborted,
-    other => match input_error(other).map(std::io::Error::kind) {
+/// How an upload that ended as `failed` ended.
+fn outcome(failed: &Failed) -> TransferOutcome {
+  let error = match failed {
+    Failed::Client(error) => error,
+    Failed::Here(_) => return TransferOutcome::Errored,
+    Failed::Gone => return TransferOutcome::Aborted,
+  };
+  match error.kind() {
+    ErrorKind::Canceled => TransferOutcome::Cancelled,
+    ErrorKind::Timeout => TransferOutcome::TimedOut,
+    ErrorKind::TransferRejected => TransferOutcome::Rejected,
+    ErrorKind::FileNotFound => TransferOutcome::Aborted,
+    _ => match input_error(error).map(std::io::Error::kind) {
       Some(std::io::ErrorKind::NotFound) => TransferOutcome::Aborted,
       Some(std::io::ErrorKind::TimedOut) => TransferOutcome::TimedOut,
       _ => TransferOutcome::Errored,
@@ -68,25 +78,42 @@ fn outcome(error: &ClientError) -> TransferOutcome {
   }
 }
 
-/// Why an upload that ended with `error` failed, as its record shows it: the peer's refusal as
+/// Why an upload that ended as `failed` failed, as its record shows it: the peer's refusal as
 /// it sent it, why a relay agent's file did not come, [`CANCELED`], else the error's text.
-fn reason(error: &ClientError) -> String {
-  match error {
-    ClientError::TransferRejected(reason) | ClientError::NotFound(reason) => reason.clone(),
-    ClientError::Canceled => CANCELED.to_string(),
-    other => match input_error(other) {
-      Some(input) => input.to_string(),
-      None => other.to_string(),
+fn reason(failed: &Failed) -> String {
+  let error = match failed {
+    Failed::Client(error) => error,
+    Failed::Here(reason) => return reason.clone(),
+    Failed::Gone => return FILE_GONE.to_string(),
+  };
+  match error.kind() {
+    ErrorKind::Canceled => CANCELED.to_string(),
+    _ => match (error.reason(), input_error(error)) {
+      (Some(reason), _) => reason.to_string(),
+      (None, Some(input)) => input.to_string(),
+      (None, None) => error.to_string(),
     },
   }
 }
 
 /// How the relay controller tells the agent an upload of its file ended.
-fn relayed(result: &Result<Snapshot, ClientError>, record: &Record) -> (RelayUploadOutcome, u64) {
+fn relayed(result: Result<&Snapshot, &ClientError>, record: &Record) -> (RelayUploadOutcome, u64) {
   match result {
     Ok(transfer) => (RelayUploadOutcome::Succeeded, transfer.bytes_transferred),
-    Err(ClientError::Canceled) => (RelayUploadOutcome::Cancelled, record.bytes_transferred),
+    Err(error) if error.is_canceled() => (RelayUploadOutcome::Cancelled, record.bytes_transferred),
     Err(_) => (RelayUploadOutcome::Failed, record.bytes_transferred),
+  }
+}
+
+/// The slot of an upload in the queue, given back when the upload lets go of it.
+struct Held {
+  uploads: Arc<Uploads>,
+  id: Uuid,
+}
+
+impl Drop for Held {
+  fn drop(&mut self) {
+    self.uploads.queue.complete(self.id);
   }
 }
 
@@ -115,7 +142,7 @@ impl Uploads {
   async fn run(&self, mut record: Record, located: Located, cancel: &CancellationToken) {
     let client = match self.client() {
       Ok(client) => client,
-      Err(e) => return self.fail(&mut record, &e, None).await,
+      Err(e) => return self.fail(&mut record, &Failed::Here(e), None).await,
     };
     self.users.watch(&client, &record.username).await;
     info!(filename = record.filename, "Initializing upload");
@@ -125,8 +152,7 @@ impl Uploads {
     let located = match self.locate(&sees, &record.filename).await {
       Ok(Locating::Found(found)) => found,
       Ok(Locating::NotShared) => {
-        let gone = ClientError::NotFound(FILE_GONE.to_string());
-        self.fail(&mut record, &gone, None).await;
+        self.fail(&mut record, &Failed::Gone, None).await;
         // a request of the user's since it was sent unasked makes it theirs to be told about
         let asked = lock(&self.in_flight)
           .get(&record.id)
@@ -137,14 +163,14 @@ impl Uploads {
         // the answer a request for a file not shared gets, so the peer stops waiting for it; sent
         // on a task of its own, so the upload leaves the queue without waiting for the peer, and
         // given up when the upload is canceled or the daemon stops
-        let (username, filename) = (record.username.clone(), record.filename.as_str().into());
+        let (username, filename) = (record.username.clone(), record.filename.clone());
         let (cancel, stop) = (cancel.clone(), self.shutdown.clone());
         self.tasks.spawn(
           async move {
             tokio::select! {
               () = cancel.cancelled() => debug!("the peer is not told the file is gone; canceled"),
               () = stop.cancelled() => debug!("the peer is not told the file is gone; stopping"),
-              () = client.deny_upload(&username, filename, NOT_SHARED.to_string()) => {}
+              () = client.transfers().deny(&username, filename, NOT_SHARED.to_string()) => {}
             }
           }
           .in_current_span(),
@@ -162,75 +188,25 @@ impl Uploads {
         located
       }
     };
-    let (states_sent, mut states) = mpsc::channel(STATES);
-    let ending = self.this();
-    let id = record.id;
-    let state_changed: StateChanged = Arc::new(move |_, snapshot: &Snapshot| {
-      if snapshot.state.is_terminal() {
-        ending.shown.ended(snapshot);
-      }
-      // marked before the client tells the peer, which may ask again at once
-      if snapshot.state.is_terminal()
-        && let Some(entry) = lock(&ending.in_flight).get_mut(&id)
-      {
-        entry.ended = true;
-      }
-      if let Err(e) = states_sent.try_send(snapshot.clone()) {
-        warn!(error = %e, "upload state not recorded");
-      }
-    });
-    let (progress_sent, mut progress) = watch::channel((0u64, 0.0f64));
-    let progress_updated = self.shown.reporter(progress_sent);
     let username = record.username.clone();
     let users = self.users.clone();
     let (governor, reporter) = self
       .governor
       .pace(Arc::new(move || users.speed_group(&username)))
       .callbacks();
-    let (input, relay) = self.input(&record, &located);
-    let request = UploadRequest {
-      username: record.username.clone(),
-      filename: record.filename.clone().into(),
-      input,
-      token: None,
-      options: TransferOptions {
-        // an agent sends its file from the offset already
-        seek_input_stream_automatically: relay.is_none(),
-        governor: Some(governor),
-        reporter: Some(reporter),
-        state_changed: Some(state_changed),
-        progress_updated: Some(progress_updated),
-        slot_awaiter: Some(self.slot_awaiter(record.id)),
-        slot_released: Some(self.slot_released(record.id)),
-        ..TransferOptions::default()
-      },
+    let upload = client
+      .upload(record.username.clone(), record.filename.clone())
+      .governor(governor)
+      .reporter(reporter)
+      .slot(self.slot(record.id))
+      .ended(self.ended(record.id));
+    let (upload, relay) = self.input(upload, &record, &located);
+    let result = match upload.start().await {
+      Ok(handle) => self.follow(&mut record, handle, cancel).await,
+      Err(error) => Err((error, None)),
     };
-    let running = client.upload(request, cancel);
-    tokio::pin!(running);
-    let throttle = tokio::time::sleep(Duration::ZERO);
-    tokio::pin!(throttle);
-    let mut throttled = false;
-    let mut ended: Option<(Snapshot, TransferOutcome)> = None;
-    let result = loop {
-      tokio::select! {
-        biased;
-        Some(snapshot) = states.recv() => self.state_changed(&mut record, snapshot, &mut ended).await,
-        result = &mut running => break result,
-        Ok(()) = progress.changed(), if !throttled => {
-          let (bytes, speed) = *progress.borrow_and_update();
-          self.progressed(&mut record, bytes, speed).await;
-          throttled = true;
-          throttle.as_mut().reset(Instant::now() + PROGRESS_EVERY);
-        }
-        () = &mut throttle, if throttled => throttled = false,
-      }
-    };
-    // the states the client reported before its task ended are all queued by now
-    while let Ok(snapshot) = states.try_recv() {
-      self.state_changed(&mut record, snapshot, &mut ended).await;
-    }
     if let Some(relay) = relay {
-      let (outcome, bytes) = relayed(&result, &record);
+      let (outcome, bytes) = relayed(result.as_ref().map_err(|(error, _)| error), &record);
       relay.finished(record.id, outcome, bytes);
     }
     if self.shutdown.is_cancelled() {
@@ -238,15 +214,90 @@ impl Uploads {
     }
     match result {
       Ok(transfer) => self.succeeded(&mut record, &transfer, &located).await,
-      Err(error) => self.fail(&mut record, &error, ended.as_ref()).await,
+      Err((error, ended)) => {
+        let ended = ended.map(|snapshot| {
+          let snapshot = *snapshot;
+          let outcome = match state::reported(snapshot.state) {
+            TransferStates::Completed(outcome) => outcome,
+            _ => outcome(&Failed::Client(error.clone())),
+          };
+          (snapshot, outcome)
+        });
+        self
+          .fail(&mut record, &Failed::Client(error), ended.as_ref())
+          .await;
+      }
     }
   }
 
-  /// What the upload of `record` reads: the local file, or the bytes the relay agent holding it
+  /// Follows the upload `handle` of `record` to its end, writing each state the client reports
+  /// and the progress at most every [`PROGRESS_EVERY`], and canceling it when `cancel` is. Its
+  /// error comes with the client's last snapshot, when the upload had one that ended it.
+  async fn follow(
+    &self,
+    record: &mut Record,
+    handle: Handle,
+    cancel: &CancellationToken,
+  ) -> Result<Snapshot, (ClientError, Option<Box<Snapshot>>)> {
+    // every state the upload enters, in order, with its progress between them
+    let mut changes = handle.changes();
+    // the state of the last snapshot written, so one that only moved bytes is progress
+    let mut written = None;
+    let throttle = tokio::time::sleep(Duration::ZERO);
+    tokio::pin!(throttle);
+    let mut throttled = false;
+    let mut canceled = false;
+    let mut ended: Option<Box<Snapshot>> = None;
+    loop {
+      tokio::select! {
+        biased;
+        () = cancel.cancelled(), if !canceled => {
+          canceled = true;
+          handle.cancel();
+        }
+        snapshot = changes.next() => {
+          let Some(snapshot) = snapshot else { break };
+          if snapshot.state.is_terminal() {
+            self.shown.ended(&snapshot);
+            self.mark_ended(record.id);
+            ended = Some(Box::new(snapshot));
+          } else if written != Some(snapshot.state) {
+            written = Some(snapshot.state);
+            self.state_changed(record, snapshot).await;
+          } else if !throttled {
+            let speed = self.shown.progressed(&snapshot);
+            self.progressed(record, snapshot.bytes_transferred, speed).await;
+            throttled = true;
+            throttle.as_mut().reset(Instant::now() + PROGRESS_EVERY);
+          }
+        }
+        () = &mut throttle, if throttled => throttled = false,
+      }
+    }
+    match handle.await {
+      Ok(transfer) => Ok(transfer),
+      Err(error) => Err((error, ended)),
+    }
+  }
+
+  /// Marks the upload `id` as one the client let go of, so a request for its file is not taken
+  /// for this one.
+  fn mark_ended(&self, id: Uuid) {
+    if let Some(entry) = lock(&self.in_flight).get_mut(&id) {
+      entry.ended = true;
+    }
+  }
+
+  /// `upload` of `record` reading the local file, or the bytes the relay agent holding it
   /// sends from the offset the peer asks for, with the controller then.
-  fn input(&self, record: &Record, located: &Located) -> (UploadInput, Option<Arc<Controller>>) {
+  fn input(
+    &self,
+    upload: Upload,
+    record: &Record,
+    located: &Located,
+  ) -> (Upload<Source>, Option<Arc<Controller>>) {
     if located.resolved.host == LOCAL_HOST {
-      return (UploadInput::File(located.resolved.path.clone()), None);
+      return (upload.from_file(located.resolved.path.clone()), None);
     }
     let relay = self
       .relay
@@ -258,58 +309,61 @@ impl Uploads {
       record.id,
     );
     let opening = relay.clone();
-    let open: InputFactory = Box::new(move |start| {
-      Box::pin(async move {
-        let stream = opening
-          .open_stream(&agent, &filename, start, transfer)
-          .await?;
-        Ok(Box::new(stream) as Box<dyn UploadSource>)
-      })
+    // the agent sends its file from the offset the peer asked for
+    let upload = upload.from_source(located.size, move |start| async move {
+      opening
+        .open_stream(&agent, &filename, start, transfer)
+        .await
     });
-    let input = UploadInput::Stream {
-      size: located.size,
-      open,
-    };
-    (input, Some(relay))
+    (upload, Some(relay))
   }
 
-  /// What the client waits on for the upload `id`'s slot: the queue's start, or the cancel.
-  fn slot_awaiter(&self, id: Uuid) -> SlotAwaiter {
+  /// What the client waits on for the upload `id`'s slot: the queue's start. The slot goes back
+  /// to the queue once the upload lets go of it.
+  fn slot(
+    &self,
+    id: Uuid,
+  ) -> impl Fn(&Snapshot) -> std::pin::Pin<Box<dyn std::future::Future<Output = Slot> + Send>>
+  + Send
+  + Sync
+  + 'static {
     let this = self.this();
-    Arc::new(move |_, cancel: CancellationToken| {
+    move |_| {
       let start = this.queue.await_start(id);
+      let uploads = this.clone();
       Box::pin(async move {
-        let start = start.map_err(|e| ClientError::client(e.to_string(), None))?;
-        tokio::select! {
-          biased;
-          () = cancel.cancelled() => Err(ClientError::Canceled),
-          started = start => started.map_err(|_| {
-            ClientError::client(format!("upload {id} left the queue before its slot"), None)
-          }),
+        let start = match start {
+          Ok(start) => start,
+          Err(e) => return Slot::Fail(e.to_string()),
+        };
+        match start.await {
+          Ok(()) => Slot::granted(Held { uploads, id }),
+          Err(_) => Slot::Fail(format!("upload {id} left the queue before its slot")),
         }
       })
-    })
+    }
   }
 
-  /// What the client calls once the upload `id` lets go of its slot.
-  fn slot_released(&self, id: Uuid) -> SlotReleased {
-    let this = self.this();
-    Arc::new(move |_| {
-      this.queue.complete(id);
-    })
-  }
-
-  /// Takes a state the client reported into `record` and writes it; a final state is kept in
-  /// `ended` with its outcome for the task to write.
-  async fn state_changed(
+  /// What the client asks before it tells the peer an upload `id` that did not succeed ended:
+  /// the upload is marked ended first, since the peer may ask again at once, and what the peer
+  /// is told is left to the client.
+  fn ended(
     &self,
-    record: &mut Record,
-    snapshot: Snapshot,
-    ended: &mut Option<(Snapshot, TransferOutcome)>,
-  ) {
+    id: Uuid,
+  ) -> impl Fn(&Snapshot, &ClientError) -> Option<UploadNotice> + Send + Sync + 'static {
+    let this = self.this();
+    move |snapshot, _| {
+      this.shown.ended(snapshot);
+      this.mark_ended(id);
+      None
+    }
+  }
+
+  /// Takes a state the client reported into `record` and writes it; a final state is left for
+  /// the task to write.
+  async fn state_changed(&self, record: &mut Record, snapshot: Snapshot) {
     let state = state::reported(snapshot.state);
-    if let TransferStates::Completed(outcome) = state {
-      *ended = Some((snapshot, outcome));
+    if let TransferStates::Completed(_) = state {
       return;
     }
     // records are left as they are once the daemon stops
@@ -402,16 +456,16 @@ impl Uploads {
   async fn fail(
     &self,
     record: &mut Record,
-    error: &ClientError,
+    failed: &Failed,
     ended: Option<&(Snapshot, TransferOutcome)>,
   ) {
     let canceled_for = lock(&self.in_flight)
       .get(&record.id)
       .and_then(|entry| entry.reason);
-    let outcome = ended.map_or_else(|| outcome(error), |(_, outcome)| *outcome);
+    let outcome = ended.map_or_else(|| outcome(failed), |(_, outcome)| *outcome);
     let exception = match canceled_for {
       Some(why) if outcome == TransferOutcome::Cancelled => why.to_string(),
-      _ => reason(error),
+      _ => reason(failed),
     };
     if let Err(refused) = record.complete(outcome, Some(exception)) {
       return debug!(%refused, "upload ended already");
@@ -452,21 +506,42 @@ mod tests {
   use super::*;
 
   #[test]
+  fn a_file_gone_aborts_its_upload_and_a_failure_here_errs() {
+    assert_eq!(outcome(&Failed::Gone), TransferOutcome::Aborted);
+    assert_eq!(reason(&Failed::Gone), FILE_GONE);
+    let here = Failed::Here("the client has been shut down".into());
+    assert_eq!(outcome(&here), TransferOutcome::Errored);
+    assert_eq!(reason(&here), "the client has been shut down");
+  }
+
+  #[test]
   fn an_input_whose_file_is_gone_or_late_aborts_or_times_out_its_upload() {
-    use std::io::{Error, ErrorKind};
-    let gone = ClientError::io("read", Error::new(ErrorKind::NotFound, "no such file"));
+    use std::io::{Error, ErrorKind as IoKind};
+    let read =
+      |error: Error| Failed::Client(ClientError::new(ErrorKind::Io, "read").with_source(error));
+    let gone = read(Error::new(IoKind::NotFound, "no such file"));
     assert_eq!(outcome(&gone), TransferOutcome::Aborted);
     assert_eq!(reason(&gone), "no such file");
-    let late = ClientError::io("read", Error::new(ErrorKind::TimedOut, "too slow"));
+    let late = read(Error::new(IoKind::TimedOut, "too slow"));
     assert_eq!(outcome(&late), TransferOutcome::TimedOut);
-    let other = ClientError::io("read", Error::other("disk"));
+    let other = read(Error::other("disk"));
     assert_eq!(outcome(&other), TransferOutcome::Errored);
   }
 
   #[test]
+  fn a_refused_upload_shows_the_peers_reason() {
+    let refused = ClientError::new(ErrorKind::TransferRejected, "transfer rejected: Queue full")
+      .with_reason("Queue full");
+    let failed = Failed::Client(refused);
+    assert_eq!(outcome(&failed), TransferOutcome::Rejected);
+    assert_eq!(reason(&failed), "Queue full");
+  }
+
+  #[test]
   fn a_canceled_upload_says_so_as_it_always_has() {
+    let canceled = ClientError::new(ErrorKind::Canceled, "the operation was canceled");
     assert_eq!(
-      reason(&ClientError::Canceled),
+      reason(&Failed::Client(canceled)),
       "the operation was cancelled"
     );
   }

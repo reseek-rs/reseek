@@ -6,12 +6,9 @@ mod support;
 
 use std::time::Duration;
 
-use soulseek_client::{
-  BrowseOptions, ClientOptions, PeerRequestOptions, SearchOptions, SearchRequest, SearchScope,
-};
+use soulseek_client::{Config, search};
 use support::soulfind;
 use support::{PATIENCE, daemon, free_port, logged_in, signed_in, until};
-use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 async fn another_user_searches_browses_and_asks_the_daemon() {
@@ -38,34 +35,21 @@ async fn another_user_searches_browses_and_asks_the_daemon() {
   .await;
 
   let other = server
-    .login(
-      "other",
-      ClientOptions {
-        listen_port: free_port(),
-        ..ClientOptions::default()
-      },
-    )
+    .login("other", Config::builder().listen_port(free_port()))
     .await;
-  let cancel = CancellationToken::new();
-  let options = SearchOptions {
-    search_timeout: Duration::from_millis(1500),
-    ..SearchOptions::default()
-  };
-  let (search, responses) = tokio::time::timeout(
-    PATIENCE,
-    other.client.search(
-      SearchRequest::new(
-        "abbey -something",
-        SearchScope::Users(vec![name.clone()]),
-        options,
-      )
-      .unwrap(),
-      &cancel,
-    ),
-  )
+  let (search, responses) = tokio::time::timeout(PATIENCE, async {
+    other
+      .client
+      .search("abbey -something")
+      .scope(search::Scope::Users(vec![name.clone()]))
+      .idle_timeout(Duration::from_millis(1500))
+      .await
+      .unwrap()
+      .all()
+      .await
+  })
   .await
-  .expect("the search ends")
-  .unwrap();
+  .expect("the search ends");
   assert_eq!(responses.len(), 1, "{responses:?}");
   let response = &responses[0];
   assert_eq!(response.username, name);
@@ -81,11 +65,7 @@ async fn another_user_searches_browses_and_asks_the_daemon() {
   );
   assert!(response.locked_files.is_empty());
 
-  let listing = other
-    .client
-    .browse(&name, BrowseOptions::default(), &cancel)
-    .await
-    .unwrap();
+  let listing = other.client.users().browse(&name).await.unwrap();
   let directories: Vec<(&str, usize)> = listing
     .directories
     .iter()
@@ -95,12 +75,8 @@ async fn another_user_searches_browses_and_asks_the_daemon() {
 
   let folder = other
     .client
-    .get_folder_contents(
-      &name,
-      "Music\\Abbey Road",
-      PeerRequestOptions::default(),
-      &cancel,
-    )
+    .users()
+    .folder(&name, "Music\\Abbey Road")
     .await
     .unwrap();
   assert_eq!(folder.len(), 1);
@@ -111,11 +87,7 @@ async fn another_user_searches_browses_and_asks_the_daemon() {
     .collect();
   assert_eq!(names, ["01 - Come Together.mp3", "02 - Something.mp3"]);
 
-  let info = other
-    .client
-    .get_user_info(&name, PeerRequestOptions::default(), &cancel)
-    .await
-    .unwrap();
+  let info = other.client.users().info(&name).await.unwrap();
   assert_eq!(info.description, "A reseek user.");
   assert_eq!(
     (
@@ -143,11 +115,7 @@ async fn another_user_searches_browses_and_asks_the_daemon() {
   .unwrap();
   api.set_profile_picture(png, "image/png").await.unwrap();
   let sent = api.profile_picture().await.unwrap();
-  let info = other
-    .client
-    .get_user_info(&name, PeerRequestOptions::default(), &cancel)
-    .await
-    .unwrap();
+  let info = other.client.users().info(&name).await.unwrap();
   assert_eq!(info.description, "Jazz, mostly.");
   let picture = info.picture.expect("the new picture is sent");
   assert_eq!(picture, sent);

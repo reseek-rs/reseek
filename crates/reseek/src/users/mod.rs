@@ -53,7 +53,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{Instrument, debug, error, info, info_span, warn};
 
-pub use group_cache::StatusReceived;
+pub use group_cache::{StatusReceived, StatusUnread};
 pub use network::Users;
 pub(crate) use service::{picture_response, picture_tag};
 pub use touch::Touch;
@@ -306,7 +306,7 @@ impl Directory {
 
   /// `username`'s address from the client's cache, never a round trip.
   fn endpoint_of(&self, username: &str) -> Option<UserEndpoint> {
-    let endpoint = self.client.get()?.cached_user_endpoint(username)?;
+    let endpoint = self.client.get()?.users().cached_address(username)?;
     Some(endpoint.into())
   }
 
@@ -366,7 +366,7 @@ impl Directory {
   /// checked, so a blocked address counts for messages too.
   pub fn is_blocked(&self, username: &str, ip: Option<IpAddr>, scope: BlockScope) -> bool {
     let ip = ip.or_else(|| {
-      let endpoint = self.client.get()?.cached_user_endpoint(username)?;
+      let endpoint = self.client.get()?.users().cached_address(username)?;
       Some(endpoint.ip())
     });
     self.blocks.is_blocked(username, ip, scope)

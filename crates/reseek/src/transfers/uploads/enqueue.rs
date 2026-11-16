@@ -10,7 +10,6 @@ use api_types::live::LiveFrame;
 use api_types::transfers::TransferDirection;
 use reseek_shares::lock;
 use rusqlite::{Connection, params};
-use soulseek_client::ClientError;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use uuid::Uuid;
@@ -115,14 +114,14 @@ impl Uploads {
     username: &str,
     filename: &str,
     asked: bool,
-  ) -> Result<bool, ClientError> {
+  ) -> Result<bool, String> {
     let live = Self::live(&lock(&self.in_flight));
     let (name, file) = (username.to_string(), filename.to_string());
     let running = self
       .db
       .read(move |conn| running(conn, &name, &file, &live))
       .await
-      .map_err(|e| ClientError::client(format!("the uploads were not read: {e}"), None))?;
+      .map_err(|e| format!("the uploads were not read: {e}"))?;
     if asked {
       self.asked_for(&running);
     }
@@ -150,7 +149,7 @@ impl Uploads {
     filename: &str,
     located: Located,
     asked: bool,
-  ) -> Result<Enqueued, ClientError> {
+  ) -> Result<Enqueued, String> {
     let client = self.client()?;
     let record = Record::upload(username, filename, located.size);
     let id = record.id;
@@ -176,6 +175,7 @@ impl Uploads {
     // read after the snapshot: an upload is marked ended just before the client lets go of it,
     // so one the snapshot saw end is no longer the client's either
     let tracked = client
+      .transfers()
       .uploads()
       .iter()
       .any(|t| t.username == username && t.filename.as_str() == filename);
@@ -198,14 +198,11 @@ impl Uploads {
       }
       Ok(Written::Duplicate) => {
         lock(&self.in_flight).remove(&id);
-        return Err(ClientError::client(DUPLICATE, None));
+        return Err(DUPLICATE.to_string());
       }
       Err(e) => {
         lock(&self.in_flight).remove(&id);
-        return Err(ClientError::client(
-          format!("the upload record was not written: {e}"),
-          None,
-        ));
+        return Err(format!("the upload record was not written: {e}"));
       }
     };
     removal::push(&self.live, TransferDirection::Upload, &superseded);

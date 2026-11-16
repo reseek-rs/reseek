@@ -19,7 +19,6 @@ use api_types::transfers::{EnqueueFailure, SendFilesResponse};
 use chrono::Utc;
 use reseek_shares::LogLimiter;
 use reseek_shares::lock;
-use soulseek_client::ClientError;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, SemaphorePermit};
 use tracing::{Instrument, debug, info, trace, warn};
 
@@ -48,12 +47,12 @@ pub enum NotQueued {
   Refused(String),
   /// the file cannot be queued now; the peer is told the upload failed, so it asks again
   Later,
-  /// something here failed
-  Failed(ClientError),
+  /// something here failed, as said
+  Failed(String),
 }
 
-impl From<ClientError> for NotQueued {
-  fn from(error: ClientError) -> Self {
+impl From<String> for NotQueued {
+  fn from(error: String) -> Self {
     Self::Failed(error)
   }
 }
@@ -63,7 +62,7 @@ impl std::fmt::Display for NotQueued {
     match self {
       Self::Refused(reason) => f.write_str(reason),
       Self::Later => f.write_str("the file cannot be queued now"),
-      Self::Failed(error) => error.fmt(f),
+      Self::Failed(error) => f.write_str(error),
     }
   }
 }
@@ -191,8 +190,8 @@ pub(super) enum Refusal {
   Peer(&'static str),
   /// the file is a relay agent's that is away; the peer is told to ask again later
   Later,
-  /// something here failed; the peer is told only that
-  Failed(ClientError),
+  /// something here failed, as said; the peer is told only that
+  Failed(String),
 }
 
 /// Where a requested file stands.
@@ -303,9 +302,8 @@ impl Uploads {
     match ran.await {
       Ok(result) => result,
       Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
-      Err(e) => Err(NotQueued::Failed(ClientError::client(
-        format!("the upload request was not decided: {e}"),
-        None,
+      Err(e) => Err(NotQueued::Failed(format!(
+        "the upload request was not decided: {e}"
       ))),
     }
   }
@@ -494,9 +492,8 @@ impl Uploads {
       .read(move |conn| limits::statistics(conn, &name, now))
       .await
       .map_err(|e| {
-        Refusal::Failed(ClientError::client(
-          format!("the upload figures of {username} were not read: {e}"),
-          None,
+        Refusal::Failed(format!(
+          "the upload figures of {username} were not read: {e}"
         ))
       })?;
     trace!(username, ?figures, "upload figures");
@@ -516,13 +513,13 @@ impl Uploads {
     &self,
     sees: &BTreeSet<String>,
     filename: &str,
-  ) -> Result<Locating, ClientError> {
+  ) -> Result<Locating, String> {
     let view = self.shares.view(sees);
     let resolved = self
       .shares
       .resolve_file(filename, &view)
       .await
-      .map_err(|e| ClientError::client(format!("the share index could not be read: {e}"), None))?;
+      .map_err(|e| format!("the share index could not be read: {e}"))?;
     let Some(resolved) = resolved else {
       if self.agent_away(sees, filename).await {
         return Ok(Locating::Later);
@@ -681,7 +678,7 @@ mod tests {
       NotQueued::Later.to_string(),
       "the file cannot be queued now"
     );
-    let failed = ClientError::client("the queue was not written", None);
+    let failed = "the queue was not written".to_string();
     assert_eq!(
       NotQueued::Failed(failed).to_string(),
       "the queue was not written"

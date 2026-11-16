@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use api_types::telemetry as figures;
-use soulseek_client::{Transfer, TransferState};
+use soulseek_client::transfer::{State as TransferState, Transfer};
 
 use crate::transfers::shown::ShownSpeeds;
 
@@ -266,7 +266,7 @@ mod tests {
   async fn the_speed_of_a_transfer_under_way_is_the_speed_it_shows() {
     let app = crate::testing::app("", &[]).await;
     let shown = ShownSpeeds::default();
-    let mut transfer = crate::testing::soulseek::transfer_snapshot().await;
+    let mut transfer = crate::testing::soulseek::transfer_snapshot();
     transfer.state = TransferState::InProgress;
     (transfer.size, transfer.start_offset) = (10_000, 0);
     transfer.bytes_transferred = 3000;

@@ -10,9 +10,10 @@ use std::time::{Duration, Instant};
 
 use api_client::Client;
 use api_types::search::{Search, SearchOutcome, SearchRequest, SearchState, SuspectReason};
-use soulseek_client::{ClientOptions, SearchReply};
+use soulseek_client::handler::{self, Handler, Matches, SearchReply};
+use soulseek_client::{Client as SoulseekClient, Config};
 use soulseek_proto::FileAttributeType;
-use soulseek_proto::peer::{File, FileAttribute, SearchResponse};
+use soulseek_proto::peer::{File, FileAttribute};
 use support::soulfind::{self, Soulfind, User};
 use support::{PATIENCE, daemon, free_port, logged_in, signed_in, until};
 use uuid::Uuid;
@@ -37,30 +38,35 @@ fn file(name: &str, size: u64, seconds: u32, kbps: u32) -> File {
   }
 }
 
-/// A user whose client answers every search with two files, one of them a "320 kbps" MP3 only
-/// big enough for 128, and one locked file.
+/// Answers every search with two files, one of them a "320 kbps" MP3 only big enough for 128,
+/// and one locked file.
+struct Responding;
+
+impl Handler for Responding {
+  async fn search(&self, _: &SoulseekClient, _: &handler::SearchRequest) -> Option<SearchReply> {
+    let matches = Matches::new(vec![
+      file("@@music\\Animals\\01 Dogs.mp3", 3_840_000, 240, 320),
+      file("@@music\\Animals\\02 Pigs.mp3", 9_600_000, 240, 320),
+    ])
+    .locked_files(vec![file(
+      "@@music\\Animals\\03 Sheep.mp3",
+      9_600_000,
+      240,
+      320,
+    )])
+    .free_upload_slot(true)
+    .upload_speed(5000)
+    .queue_length(0);
+    Some(SearchReply::Matches(matches))
+  }
+}
+
+/// A user whose client answers every search as [`Responding`] does.
 async fn responder(server: &Arc<Soulfind>) -> User {
   let username = soulfind::username("responder");
-  let mut options = ClientOptions {
-    listen_port: free_port(),
-    ..ClientOptions::default()
-  };
-  let answering = username.clone();
-  options.resolvers.search_response = Some(Arc::new(move |_, token, _| {
-    let response = SearchResponse {
-      username: answering.clone(),
-      token,
-      files: vec![
-        file("@@music\\Animals\\01 Dogs.mp3", 3_840_000, 240, 320),
-        file("@@music\\Animals\\02 Pigs.mp3", 9_600_000, 240, 320),
-      ],
-      has_free_upload_slot: true,
-      upload_speed: 5000,
-      queue_length: 0,
-      locked_files: vec![file("@@music\\Animals\\03 Sheep.mp3", 9_600_000, 240, 320)],
-    };
-    Box::pin(async move { Ok(Some(SearchReply::Response(response))) })
-  }));
+  let options = Config::builder()
+    .listen_port(free_port())
+    .handler(Responding);
   server.login_as(username, options).await
 }
 

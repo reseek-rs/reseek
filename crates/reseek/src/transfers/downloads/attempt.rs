@@ -4,20 +4,16 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::task::Poll;
 use std::time::Duration;
 
 use api_types::live::LiveFrame;
 use api_types::transfers::{TransferOutcome, TransferStates};
 use chrono::Utc;
 use reseek_shares::LogLimiter;
-use soulseek_client::{
-  ClientError, DownloadOutput, DownloadRequest, DownloadSink, OutputFactory, PeerRequestOptions,
-  RequestStyle, SizeMismatchResolver, Transfer as Snapshot, TransferOptions,
-  TransferStateChanged as StateChanged,
-};
-use tokio::sync::{mpsc, watch};
+use soulseek_client::soulseek_proto::queue_count;
+use soulseek_client::transfer::{RequestStyle, Transfer as Snapshot};
+use soulseek_client::{Error as ClientError, ErrorKind};
+use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
@@ -33,8 +29,7 @@ use crate::files::{WriteGuard, create_file};
 use crate::network::options::request_style;
 use crate::safety::Os;
 use crate::transfers::state::{self, State};
-use crate::transfers::{PROGRESS_EVERY, Record, STATES, store};
-use soulseek_client::peer_count;
+use crate::transfers::{PROGRESS_EVERY, Record, store};
 
 /// The smallest size an old 32-bit client reports as 0, one byte short of 2 GiB.
 const OVERFLOWED_SIZE: u64 = i32::MAX as u64;
@@ -131,54 +126,54 @@ pub(super) fn failure(error: &ClientError) -> Failure {
     message,
     retryable: true,
   };
-  match error {
-    ClientError::Canceled => Failure::canceled(),
-    ClientError::Timeout(_) => retry(TransferOutcome::TimedOut, error.to_string()),
-    ClientError::TransferRejected(reason) => Failure {
+  match error.kind() {
+    ErrorKind::Canceled => Failure::canceled(),
+    ErrorKind::Timeout => retry(TransferOutcome::TimedOut, error.to_string()),
+    ErrorKind::TransferRejected => Failure {
       outcome: TransferOutcome::Rejected,
-      message: reason.clone(),
+      message: error
+        .reason()
+        .map_or_else(|| error.to_string(), str::to_string),
       retryable: false,
     },
-    ClientError::SizeMismatch { local, remote, .. } => Failure {
+    ErrorKind::SizeMismatch => Failure {
       outcome: TransferOutcome::Aborted,
-      message: format!("the remote size of {remote} does not match expected size {local}"),
+      message: match error.size_mismatch() {
+        Some((local, remote)) => {
+          format!("the remote size of {remote} does not match expected size {local}")
+        }
+        None => error.to_string(),
+      },
       retryable: false,
     },
-    ClientError::DuplicateTransfer { .. } => Failure::terminal(
+    ErrorKind::DuplicateTransfer => Failure::terminal(
       "A duplicate download of the same file to the same user is already registered".to_string(),
     ),
-    ClientError::Io { message, source } => Failure {
+    ErrorKind::Io => Failure {
       outcome: TransferOutcome::Errored,
-      message: message.clone(),
-      retryable: !source
-        .as_deref()
+      message: error.to_string(),
+      retryable: !std::error::Error::source(error)
         .and_then(|source| source.downcast_ref::<io::Error>())
         .is_some_and(lasting),
     },
-    other => retry(TransferOutcome::Errored, other.to_string()),
+    _ => retry(TransferOutcome::Errored, error.to_string()),
   }
 }
 
-/// Settles a size the peer reports differently from ours: the peer's is taken when no partial
-/// file was resumed, else the download is aborted, the partial left for a later try with the
-/// size a fresh search gives. The 0 an old client reports for a file of `OVERFLOWED_SIZE`
-/// bytes or more keeps ours.
-fn peers_size() -> SizeMismatchResolver {
-  Arc::new(|transfer, remote| settled_size(transfer.size, transfer.start_offset, remote))
-}
-
-/// The size [`peers_size`] settles on for a download of `size` bytes from `start_offset` that
-/// the peer reports as `remote`.
-fn settled_size(size: u64, start_offset: u64, remote: u64) -> Result<u64, ClientError> {
+/// Settles a size the peer reports differently from ours, for a download of `size` bytes from
+/// `start_offset` that the peer reports as `remote`: the peer's is taken when no partial file
+/// was resumed, else the download is aborted, the partial left for a later try with the size a
+/// fresh search gives. The 0 an old client reports for a file of `OVERFLOWED_SIZE` bytes or
+/// more keeps ours.
+fn settled_size(size: u64, start_offset: u64, remote: u64) -> Option<u64> {
   if remote == 0 && size >= OVERFLOWED_SIZE {
-    return Ok(size);
+    return Some(size);
   }
   if start_offset > 0 {
-    return Err(ClientError::transfer(
-      "a partial file of the size asked for was resumed",
-    ));
+    debug!("a partial file of the size asked for was resumed; the peer's size is refused");
+    return None;
   }
-  Ok(remote)
+  Some(remote)
 }
 
 /// Where a try starts in the incomplete file.
@@ -242,15 +237,11 @@ async fn start_offset(incomplete: &Path, size: u64, partial: RetryPartial) -> io
 
 /// Opens the incomplete file at `path` for a try starting at `offset`, once the peer is ready
 /// to send: made with `mode` when new, cut at `offset`.
-fn output(path: PathBuf, mode: Option<u32>, offset: u64) -> OutputFactory {
-  Box::new(move || {
-    Box::pin(async move {
-      let file = tokio::task::spawn_blocking(move || create_file(&path, mode, offset))
-        .await
-        .map_err(io::Error::other)??;
-      Ok(Box::new(tokio::fs::File::from_std(file)) as Box<dyn DownloadSink>)
-    })
-  })
+async fn output(path: PathBuf, mode: Option<u32>, offset: u64) -> io::Result<tokio::fs::File> {
+  let file = tokio::task::spawn_blocking(move || create_file(&path, mode, offset))
+    .await
+    .map_err(io::Error::other)??;
+  Ok(tokio::fs::File::from_std(file))
 }
 
 impl Downloads {
@@ -339,50 +330,36 @@ impl Downloads {
       .mode
       .as_deref()
       .and_then(|text| to_unix_file_mode(text).ok());
-    let (states_sent, mut states) = mpsc::channel(STATES);
     let shown = self.network.shown_speeds();
-    let ending = shown.clone();
-    let state_changed: StateChanged = Arc::new(move |_, snapshot: &Snapshot| {
-      if snapshot.state.is_terminal() {
-        ending.ended(snapshot);
-      }
-      if let Err(e) = states_sent.try_send(snapshot.clone()) {
-        warn!(error = %e, "download state not recorded");
-      }
-    });
     let (governor, reporter) = self.network.speeds().download_pace().callbacks();
-    let (progress_sent, mut progress) = watch::channel((start, 0.0));
-    let progress_updated = shown.reporter(progress_sent);
-    let request = DownloadRequest {
-      username: record.username.clone(),
-      filename: record.filename.clone().into(),
-      size: Some(record.size),
-      start_offset: start,
-      token: None,
-      output: DownloadOutput::Stream(output(incomplete.to_path_buf(), mode, start)),
-      options: TransferOptions {
-        governor: Some(governor),
-        reporter: Some(reporter),
-        state_changed: Some(state_changed),
-        progress_updated: Some(progress_updated),
-        size_mismatch_resolver: (!pushed).then(peers_size),
-        request_style: if offered {
-          RequestStyle::Offered
-        } else {
-          request_style(&options)
-        },
-        ..TransferOptions::default()
-      },
+    let path = incomplete.to_path_buf();
+    let request = self
+      .network
+      .client()
+      .download(record.username.clone(), record.filename.clone())
+      .size(record.size)
+      .start_offset(start)
+      .governor(governor)
+      .reporter(reporter)
+      .request_style(if offered {
+        RequestStyle::Offered
+      } else {
+        request_style(&options)
+      });
+    let request = if pushed {
+      request
+    } else {
+      request.size_mismatch(|transfer, remote| {
+        settled_size(transfer.size, transfer.start_offset, remote)
+      })
     };
+    let request = request.to_sink(move || output(path, mode, start));
     let stop = cancel.child_token();
-    let client = self.network.client().clone();
-    let running = client.download(request, &stop);
-    tokio::pin!(running);
-    // the client takes a download's place among its user's downloads at its first poll
+    // the client takes a download's place among its user's downloads once it is tracked
     if let Some(ask) = &ask {
       ask.ready().await;
     }
-    let first = std::future::poll_fn(|cx| Poll::Ready(running.as_mut().poll(cx))).await;
+    let started = request.start().await;
     drop(ask);
     // a turn the download no longer holds never fires
     let limited = gate.as_ref().and_then(|g| g.deadline);
@@ -402,92 +379,102 @@ impl Downloads {
     let mut settling: Option<std::pin::Pin<Box<dyn Future<Output = Settled> + Send>>> = None;
     // only word that comes during the try stops it
     away.borrow_and_update();
-    let result = if let Poll::Ready(result) = first {
-      result
-    } else {
-      loop {
-        let asking = gate.as_ref().is_some_and(|g| g.pending.is_some());
-        if !asking {
-          // the ask is over; a question still out would take the file's next place answer
-          settling = None;
-        }
-        let queued = matches!(record.state, State::QueuedRemotely { .. });
-        if queued && asking && settling.is_none() {
-          // a peer that left an earlier ask unsettled is not waited for until it answers again:
-          // its slot goes to the next file at once
-          if self.away.silent(&record.username) {
-            if let Some(gate) = gate {
-              gate.pending = None;
-            }
-            continue;
+    let result = match started {
+      Err(error) => Err(error),
+      Ok(handle) => {
+        // every state the download enters, in order, with its progress between them
+        let mut changes = handle.changes();
+        // the state of the last snapshot written, so one that only moved bytes is progress
+        let mut written = None;
+        let mut canceled = false;
+        loop {
+          let asking = gate.as_ref().is_some_and(|g| g.pending.is_some());
+          if !asking {
+            // the ask is over; a question still out would take the file's next place answer
+            settling = None;
           }
-          settling = Some(self.settling(record, &stop));
-        }
-        tokio::select! {
-          biased;
-          Some(snapshot) = states.recv() => {
-            self.state_changed(record, snapshot, gate, &mut moving, &mut ended).await;
-          }
-          result = &mut running => break result,
-          place = async { settling.as_mut().expect("polled only while set").await },
-            if settling.is_some() && gate.as_ref().is_some_and(|g| g.pending.is_some()) =>
-          {
-            if let Some(gate) = gate {
-              gate.pending = None;
-            }
-            match place {
-              Settled::Placed(place) => {
-                self.heard_from(&record.username);
-                self.place_answered(record, place).await;
+          let queued = matches!(record.state, State::QueuedRemotely { .. });
+          if queued && asking && settling.is_none() {
+            // a peer that left an earlier ask unsettled is not waited for until it answers
+            // again: its slot goes to the next file at once
+            if self.away.silent(&record.username) {
+              if let Some(gate) = gate {
+                gate.pending = None;
               }
-              Settled::Unanswered { asked } => {
-                if self.away.went_silent(&record.username, asked) {
-                  debug!("the peer neither offered the file nor said its place; its next asks hold no slot");
+              continue;
+            }
+            settling = Some(self.settling(record, &stop));
+          }
+          tokio::select! {
+            biased;
+            () = stop.cancelled(), if !canceled => {
+              canceled = true;
+              handle.cancel();
+            }
+            snapshot = changes.next() => {
+              let Some(snapshot) = snapshot else { break };
+              if snapshot.state.is_terminal() {
+                shown.ended(&snapshot);
+              }
+              if written != Some(snapshot.state) {
+                written = Some(snapshot.state);
+                self.state_changed(record, snapshot, gate, &mut moving, &mut ended).await;
+              } else if !throttled {
+                let speed = shown.progressed(&snapshot);
+                self.progressed(record, snapshot.bytes_transferred, speed).await;
+                throttled = true;
+                throttle.as_mut().reset(Instant::now() + PROGRESS_EVERY);
+              }
+            }
+            place = async { settling.as_mut().expect("polled only while set").await },
+              if settling.is_some() && gate.as_ref().is_some_and(|g| g.pending.is_some()) =>
+            {
+              if let Some(gate) = gate {
+                gate.pending = None;
+              }
+              match place {
+                Settled::Placed(place) => {
+                  self.heard_from(&record.username);
+                  self.place_answered(record, place).await;
                 }
+                Settled::Unanswered { asked } => {
+                  if self.away.went_silent(&record.username, asked) {
+                    debug!("the peer neither offered the file nor said its place; its next asks hold no slot");
+                  }
+                }
+                Settled::Unasked => {}
               }
-              Settled::Unasked => {}
             }
-          }
-          // a user who goes offline before their file moves is waited for; one who offered a
-          // file unasked is online
-          Ok(()) = away.changed(), if !went_offline && !offered => {
-            let asking = matches!(
-              record.state,
-              State::QueuedLocally { .. } | State::Requested | State::QueuedRemotely { .. }
-            );
-            if *away.borrow_and_update() != Heard::Nothing && asking {
-              debug!(state = %record.state, "the user went offline; the download stops asking");
-              went_offline = true;
+            // a user who goes offline before their file moves is waited for; one who offered a
+            // file unasked is online
+            Ok(()) = away.changed(), if !went_offline && !offered => {
+              let asking = matches!(
+                record.state,
+                State::QueuedLocally { .. } | State::Requested | State::QueuedRemotely { .. }
+              );
+              if *away.borrow_and_update() != Heard::Nothing && asking {
+                debug!(state = %record.state, "the user went offline; the download stops asking");
+                went_offline = true;
+                stop.cancel();
+              }
+            }
+            () = &mut deadline, if gate.as_ref().is_some_and(|g| g.turn.is_some()) => {
+              let history = self.history(record.id).await;
+              warn!(
+                state = %record.state,
+                history,
+                "download not queued by the peer within the time limit"
+              );
+              hard_limited = true;
+              gate.take();
               stop.cancel();
             }
+            () = &mut throttle, if throttled => throttled = false,
           }
-          () = &mut deadline, if gate.as_ref().is_some_and(|g| g.turn.is_some()) => {
-            let history = self.history(record.id).await;
-            warn!(
-              state = %record.state,
-              history,
-              "download not queued by the peer within the time limit"
-            );
-            hard_limited = true;
-            gate.take();
-            stop.cancel();
-          }
-          Ok(()) = progress.changed(), if !throttled => {
-            let (bytes, speed) = *progress.borrow_and_update();
-            self.progressed(record, bytes, speed).await;
-            throttled = true;
-            throttle.as_mut().reset(Instant::now() + PROGRESS_EVERY);
-          }
-          () = &mut throttle, if throttled => throttled = false,
         }
+        handle.await
       }
     };
-    // the states the client reported before its task ended are all queued by now
-    while let Ok(snapshot) = states.try_recv() {
-      self
-        .state_changed(record, snapshot, gate, &mut moving, &mut ended)
-        .await;
-    }
     gate.take();
     drop(moving);
     if self.shutdown.is_cancelled() {
@@ -521,7 +508,7 @@ impl Downloads {
           record.take_figures(snapshot);
         }
         debug!(%error, "download try ended");
-        let found_offline = matches!(error, ClientError::UserOffline(_));
+        let found_offline = error.kind() == ErrorKind::UserOffline;
         if found_offline {
           self.away.heard(&record.username, true);
         }
@@ -570,18 +557,19 @@ impl Downloads {
     Box::pin(async move {
       // the question stops with the try or the window, whichever ends first
       let _stops = stopped.clone().drop_guard();
-      let place = client.get_download_place_in_queue(
-        &username,
-        filename,
-        PeerRequestOptions::default(),
-        &stopped,
-      );
+      let place = async {
+        tokio::select! {
+          place = client.transfers().place_in_queue(username, filename) => Some(place),
+          () = stopped.cancelled() => None,
+        }
+      };
       // a question that ended early still waits out the window, in which an offer may come; one
       // still out when the window ends may not have been written yet
       let settled_as = match tokio::time::timeout_at(settled, place).await {
-        Ok(Ok(place)) => return Settled::Placed(place),
-        Ok(Err(ClientError::NoResponse(_))) => Settled::Unanswered { asked },
-        Ok(Err(e)) => {
+        Ok(Some(Ok(place))) => return Settled::Placed(place),
+        Ok(Some(Err(e))) if e.kind() == ErrorKind::NoResponse => Settled::Unanswered { asked },
+        Ok(None) => Settled::Unasked,
+        Ok(Some(Err(e))) => {
           debug!(error = %e, "place in the peer's queue not asked");
           Settled::Unasked
         }
@@ -598,7 +586,7 @@ impl Downloads {
     if !matches!(record.state, State::QueuedRemotely { .. }) {
       return;
     }
-    let place = peer_count(place);
+    let place = queue_count(place);
     record.state = State::QueuedRemotely {
       place_in_queue: place,
     };
@@ -752,27 +740,26 @@ impl Downloads {
 
 #[cfg(test)]
 mod tests {
-  use soulseek_client::ConnectionErrorKind;
-
   use super::*;
 
   #[test]
   fn a_refused_or_duplicate_download_is_not_tried_again_and_a_lost_peer_is() {
+    use soulseek_client::error::ConnectionKind;
     let cases = [
       (
-        ClientError::TransferRejected("File not shared.".into()),
+        ClientError::new(ErrorKind::TransferRejected, "File not shared."),
         false,
       ),
       (
-        ClientError::DuplicateTransfer {
-          username: "bob".into(),
-          filename: "a".into(),
-        },
+        ClientError::new(ErrorKind::DuplicateTransfer, "a duplicate of bob's a"),
         false,
       ),
-      (ClientError::UserOffline("bob".into()), true),
+      (ClientError::new(ErrorKind::UserOffline, "bob"), true),
       (
-        ClientError::connection(ConnectionErrorKind::Read, "Remote connection closed"),
+        ClientError::new(
+          ErrorKind::Connection(ConnectionKind::Read),
+          "Remote connection closed",
+        ),
         true,
       ),
     ];
@@ -783,7 +770,10 @@ mod tests {
 
   #[test]
   fn a_wait_that_timed_out_keeps_the_clients_words() {
-    let timed_out = ClientError::Timeout("the wait timed out after 15000 milliseconds".into());
+    let timed_out = ClientError::new(
+      ErrorKind::Timeout,
+      "the wait timed out after 15000 milliseconds",
+    );
     let failure = failure(&timed_out);
     assert_eq!(failure.outcome, TransferOutcome::TimedOut);
     assert_eq!(failure.message, timed_out.to_string());
@@ -791,27 +781,38 @@ mod tests {
 
   #[test]
   fn a_lasting_disk_error_is_not_tried_again() {
-    let full = ClientError::io(
-      "Failed to write the download: disk full",
-      io::Error::new(io::ErrorKind::StorageFull, "disk full"),
-    );
+    let full = ClientError::new(ErrorKind::Io, "Failed to write the download: disk full")
+      .with_source(io::Error::new(io::ErrorKind::StorageFull, "disk full"));
     let failure = failure(&full);
     assert_eq!(failure.message, "Failed to write the download: disk full");
     assert!(!failure.retryable);
-    let passing = ClientError::io("Failed to write", io::Error::other("interrupted"));
+    let passing = ClientError::new(ErrorKind::Io, "Failed to write")
+      .with_source(io::Error::other("interrupted"));
     assert!(super::failure(&passing).retryable);
   }
 
   #[test]
+  fn a_refused_download_shows_the_peers_reason() {
+    let refused = ClientError::new(
+      ErrorKind::TransferRejected,
+      "transfer rejected: File not shared.",
+    )
+    .with_reason("File not shared.");
+    let failure = failure(&refused);
+    assert_eq!(failure.outcome, TransferOutcome::Rejected);
+    assert_eq!(failure.message, "File not shared.");
+  }
+
+  #[test]
   fn the_peers_size_is_taken_only_without_a_partial() {
-    assert_eq!(settled_size(100, 0, 120).unwrap(), 120);
-    assert!(settled_size(100, 40, 120).is_err());
+    assert_eq!(settled_size(100, 0, 120), Some(120));
+    assert!(settled_size(100, 40, 120).is_none());
     assert_eq!(
-      settled_size(OVERFLOWED_SIZE, 0, 0).unwrap(),
-      OVERFLOWED_SIZE,
+      settled_size(OVERFLOWED_SIZE, 0, 0),
+      Some(OVERFLOWED_SIZE),
       "an old client's 0 for a large file"
     );
-    assert_eq!(settled_size(OVERFLOWED_SIZE - 1, 0, 0).unwrap(), 0);
+    assert_eq!(settled_size(OVERFLOWED_SIZE - 1, 0, 0), Some(0));
   }
 
   #[tokio::test]

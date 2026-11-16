@@ -3,12 +3,11 @@
 //! or the transfer is over. Nothing shows for its first second.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use reseek_shares::lock;
-use soulseek_client::{Transfer, TransferDirection, TransferProgressUpdated};
-use tokio::sync::watch;
+use soulseek_client::transfer::{Direction as TransferDirection, Transfer};
 use tokio::time::Instant;
 
 /// How long each figure of the moving average is measured over.
@@ -29,15 +28,6 @@ impl ShownSpeeds {
       .entry((transfer.direction, transfer.token))
       .or_default()
       .take(&progress, Instant::now())
-  }
-
-  /// The progress callback of one transfer: each report sends its position and the speed it
-  /// shows on `sent`.
-  pub fn reporter(self: &Arc<Self>, sent: watch::Sender<(u64, f64)>) -> TransferProgressUpdated {
-    let shown = self.clone();
-    Arc::new(move |_, transfer| {
-      sent.send_replace((transfer.bytes_transferred, shown.progressed(transfer)));
-    })
   }
 
   /// The speed `transfer` showed at its last progress, 0 before any.
@@ -135,19 +125,15 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn a_report_sends_the_speed_shown_until_the_transfer_ends() {
-    let shown = Arc::new(ShownSpeeds::default());
-    let (sent, progress) = watch::channel((0, 0.0));
-    let report = shown.reporter(sent);
-    let mut transfer = crate::testing::soulseek::transfer_snapshot().await;
-    transfer.state = soulseek_client::TransferState::InProgress;
+  async fn a_report_gives_the_speed_shown_until_the_transfer_ends() {
+    let shown = ShownSpeeds::default();
+    let mut transfer = crate::testing::soulseek::transfer_snapshot();
+    transfer.state = soulseek_client::transfer::State::InProgress;
     (transfer.size, transfer.start_offset) = (10_000, 0);
     transfer.start_time = Some(SystemTime::now() - Duration::from_secs(2));
     transfer.bytes_transferred = 3000;
     transfer.average_speed = 777.0;
-    report(0, &transfer);
-    let (bytes, speed) = *progress.borrow();
-    assert_eq!(bytes, 3000);
+    let speed = shown.progressed(&transfer);
     // the first figure, 3000 bytes over the two seconds since the start, on a running clock
     assert!((1400.0..=1500.0).contains(&speed), "{speed}");
     assert_eq!(shown.of(&transfer), speed);

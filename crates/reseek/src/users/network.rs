@@ -19,13 +19,12 @@ use async_trait::async_trait;
 use axum::response::Response;
 use base64::Engine;
 use cascade::Watcher;
-use soulseek_client::{BrowseOptions, ClientError, PeerRequestOptions};
-use tokio_util::sync::CancellationToken;
+use soulseek_client::{Error as ClientError, ErrorKind};
 use tracing::debug;
 
 use super::browse::Browses;
 use super::info::PeerInfo;
-use super::{Directory, Touch};
+use super::{Directory, StatusUnread, Touch};
 use crate::api::error::ApiError;
 use crate::config::Options;
 use crate::live::Live;
@@ -49,11 +48,21 @@ pub struct Users {
 
 /// The answer to asking the network about `username` that failed with `error`.
 fn unanswered(username: &str, error: ClientError) -> ApiError {
-  match error {
-    ClientError::UserOffline(_) => ApiError::offline(username),
-    ClientError::UserNotFound(message) => ApiError::not_found(message),
-    ClientError::InvalidOperation(detail) => ApiError::unavailable(Some(detail)),
-    other => ApiError::upstream(format!("Could not ask {username}"), Some(other.to_string())),
+  match error.kind() {
+    ErrorKind::UserOffline => ApiError::offline(username),
+    ErrorKind::UserNotFound => ApiError::not_found(error.to_string()),
+    ErrorKind::InvalidOperation => ApiError::unavailable(Some(error.to_string())),
+    _ => ApiError::upstream(format!("Could not ask {username}"), Some(error.to_string())),
+  }
+}
+
+/// The answer to asking the server for `username`'s status that failed as `unread` says.
+fn status_unread(username: &str, unread: StatusUnread) -> ApiError {
+  match unread {
+    StatusUnread::Client(error) => unanswered(username, error),
+    StatusUnread::Unnamed(message) => {
+      ApiError::upstream(format!("Could not ask {username}"), Some(message))
+    }
   }
 }
 
@@ -139,15 +148,7 @@ impl Users {
     username: &str,
     creates: bool,
   ) -> Result<(UserInfo, bool), ClientError> {
-    let fetched = self
-      .network
-      .client()
-      .get_user_info(
-        username,
-        PeerRequestOptions::default(),
-        &CancellationToken::new(),
-      )
-      .await?;
+    let fetched = self.network.client().users().info(username).await?;
     let shown = info(&fetched);
     let said = PeerInfo {
       description: fetched.description.clone(),
@@ -231,15 +232,15 @@ impl Users {
   /// A user the server did not watch for us before is not watched afterwards.
   async fn exists(&self, username: &str) -> bool {
     let client = self.network.client();
-    match client.watch_user(username).await {
-      Err(ClientError::UserNotFound(_)) => false,
+    match client.users().watch(username).await {
+      Err(e) if e.kind() == ErrorKind::UserNotFound => false,
       Err(e) => {
         debug!(username, error = %e, "whether the user exists not asked; taken as existing");
         true
       }
       Ok(_) => {
         if !self.directory.is_watched(username)
-          && let Err(e) = client.unwatch_user(username).await
+          && let Err(e) = client.users().unwatch(username).await
         {
           debug!(username, error = %e, "user watched to ask whether they exist not unwatched");
         }
@@ -256,7 +257,8 @@ impl UserService for Users {
     let endpoint = self
       .network
       .client()
-      .get_user_endpoint(username)
+      .users()
+      .address(username)
       .await
       .map_err(|e| unanswered(username, e))?;
     Ok(endpoint.into())
@@ -269,26 +271,20 @@ impl UserService for Users {
     let browsing = self.browses.started(username);
     let browse = browsing.browse;
     let browses = self.browses.clone();
-    let options = BrowseOptions {
-      timeout: Some(
-        self
-          .config
-          .current()
-          .values
-          .soulseek
-          .browse
-          .response_timeout,
-      ),
-      progress_updated: Some(Arc::new(
-        move |progress: &soulseek_client::BrowseProgress| {
-          browses.progressed(browse, progress);
-        },
-      )),
-    };
+    let timeout = self
+      .config
+      .current()
+      .values
+      .soulseek
+      .browse
+      .response_timeout;
     let result = self
       .network
       .client()
-      .browse(username, options, &CancellationToken::new())
+      .users()
+      .browse(username)
+      .timeout(timeout)
+      .progress(move |progress| browses.progressed(browse, progress))
       .await;
     drop(browsing);
     let response = result.map_err(|e| unanswered(username, e))?;
@@ -316,14 +312,9 @@ impl UserService for Users {
     let directories = self
       .network
       .client()
-      .get_folder_contents(
-        username,
-        directory,
-        PeerRequestOptions {
-          timeout: Some(FOLDER_TIMEOUT),
-        },
-        &CancellationToken::new(),
-      )
+      .users()
+      .folder(username, directory)
+      .timeout(FOLDER_TIMEOUT)
       .await
       .map_err(|e| unanswered(username, e))?;
     Ok(directories.into_iter().map(SharedDirectory::from).collect())
@@ -350,7 +341,7 @@ impl UserService for Users {
       .directory
       .status_of(self.network.client(), username)
       .await
-      .map_err(|e| unanswered(username, e))?;
+      .map_err(|e| status_unread(username, e))?;
     self.directory.refetch_statistics(username);
     Ok(status)
   }
@@ -369,7 +360,8 @@ impl UserService for Users {
     let interests = self
       .network
       .client()
-      .get_user_interests(username)
+      .interests()
+      .of(username)
       .await
       .map_err(|e| unanswered(username, e))?;
     Ok(Interests {
@@ -392,6 +384,7 @@ impl UserService for Users {
   async fn unwatch(&self, username: &str) -> Result<(), ApiError> {
     let client = self.network.client();
     let uploading = client
+      .transfers()
       .uploads()
       .iter()
       .any(|t| t.username == username && !t.state.is_terminal());
@@ -487,10 +480,10 @@ impl UserService for Users {
 
 /// What asking for `what` of `username` within the refresh's time gave; `None`, with the
 /// reason logged, when it failed or took too long, and the stored value is shown instead.
-fn refreshed<T>(
+fn refreshed<T, E: std::fmt::Display>(
   what: &str,
   username: &str,
-  asked: Result<Result<T, ClientError>, tokio::time::error::Elapsed>,
+  asked: Result<Result<T, E>, tokio::time::error::Elapsed>,
 ) -> Option<T> {
   match asked {
     Ok(Ok(value)) => Some(value),

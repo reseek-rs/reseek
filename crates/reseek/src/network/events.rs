@@ -14,12 +14,13 @@ use api_types::state::{DistributedNetworkState, ServerConnectionState};
 use api_types::users::UserPresence;
 use chrono::Utc;
 use reseek_shares::LogLimiter;
+use soulseek_client::session::State as ClientState;
 use soulseek_client::soulseek_proto;
+use soulseek_client::transfer::{Direction, State as TransferState, Transfer};
 use soulseek_client::{
-  Client, ClientError, ClientState, DistributedNetworkInfo, Event, PrivateMessage, SessionEnd,
-  SessionStatus, Transfer, TransferState,
+  Client, Error as ClientError, ErrorKind, Event, Events, Lagged, PrivateMessage, distributed,
+  room, search, session, transfer, user,
 };
-use tokio::sync::broadcast::{self, error::RecvError};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, info, trace, warn};
 
@@ -65,10 +66,10 @@ impl Default for Session {
 #[derive(Debug)]
 enum Missed {
   /// the session ended as `end` says; `reached` when it had reached the server
-  Ended { end: SessionEnd, reached: bool },
+  Ended { end: session::End, reached: bool },
   /// the handled session ended and a newer one is under way; `end` is the latest end before
   /// the newer session, the handled one's or one after it
-  Superseded(SessionEnd),
+  Superseded(session::End),
   /// the newest session's TCP connection came up
   Connected,
   /// the newest session logged in as `username`
@@ -94,7 +95,7 @@ impl Session {
 
   /// Moves on to where the client's session stands in `status`, returning the edges skipped on
   /// the way, in order. Several sessions that came and went unseen count as one end.
-  fn catch_up(&mut self, status: &SessionStatus) -> Vec<Missed> {
+  fn catch_up(&mut self, status: &session::Status) -> Vec<Missed> {
     // the current session's own end, once it has one
     let ended = status
       .last_end
@@ -148,22 +149,18 @@ impl Session {
 
 /// Handles the client's events in order until `drained` is canceled and every event raised
 /// before has been handled.
-pub(super) async fn follow(
-  app: AppState,
-  mut events: broadcast::Receiver<Event>,
-  drained: CancellationToken,
-) {
+pub(super) async fn follow(app: AppState, mut events: Events, drained: CancellationToken) {
   let mut session = Session::default();
   loop {
     let event = tokio::select! {
       biased;
-      event = events.recv() => event,
+      event = events.next() => event,
       () = drained.cancelled() => return,
     };
     match event {
-      Ok(event) => handle(&app, event, &mut session).await,
-      Err(RecvError::Lagged(missed)) => caught_up(&app, missed, &mut session).await,
-      Err(RecvError::Closed) => return,
+      Some(Ok(event)) => handle(&app, event, &mut session).await,
+      Some(Err(Lagged(missed))) => caught_up(&app, missed, &mut session).await,
+      None => return,
     }
   }
 }
@@ -182,7 +179,7 @@ async fn caught_up(app: &AppState, missed: u64, session: &mut Session) {
   let client = app.network.client();
   let status = client.session();
   server_state(app, status.state);
-  distributed_network(app, &client.distributed_network());
+  distributed_network(app, &client.distributed().info());
   let number = status.number;
   let edges = session.catch_up(&status);
   if edges.is_empty() {
@@ -199,7 +196,9 @@ async fn caught_up(app: &AppState, missed: u64, session: &mut Session) {
           session = end.session,
           "a missed disconnect is handled now; a newer session is under way"
         );
-        raise_disconnected(app, &end.message, end.error.as_ref());
+        let intent = app.network.take_intent(end.session);
+        let intent = end.error.is_none().then_some(intent).flatten();
+        raise_disconnected(app, &end.message, end.error.as_ref(), intent);
         logged_out(app, end).await;
       }
       Missed::Connected => {
@@ -222,41 +221,137 @@ async fn login(app: &AppState, number: u64, username: String) {
   app.network.reachability.logged_in();
   app
     .messaging
-    .take(Event::LoggedIn {
+    .take(Event::Session(session::Event::LoggedIn {
       session: number,
       username,
-    })
+    }))
     .await;
 }
 
 /// A session ended as `end` says, after reaching the server when `reached`.
-async fn ended(app: &AppState, end: SessionEnd, reached: bool) {
-  disconnected(app, &end.message, end.error.as_ref(), reached);
+async fn ended(app: &AppState, end: session::End, reached: bool) {
+  disconnected(app, end.session, &end.message, end.error.as_ref(), reached);
   logged_out(app, end).await;
 }
 
 /// What a session's end ends besides the connection: the searches waiting for a slot end, the
 /// port mapping and reachability stop counting on a login, and the messaging engine closes its
 /// session when it ended.
-async fn logged_out(app: &AppState, end: SessionEnd) {
+async fn logged_out(app: &AppState, end: session::End) {
   app.searches.session_ended();
   app.network.mapper.logged_in(false);
   app.network.reachability.logged_out();
   app
     .messaging
-    .take(Event::Disconnected {
+    .take(Event::Session(session::Event::Disconnected {
       session: end.session,
       message: end.message,
       error: end.error,
       at: end.at,
-    })
+    }))
     .await;
 }
 
 async fn handle(app: &AppState, event: Event, session: &mut Session) {
   match event {
-    Event::StateChanged { state, .. } => server_state(app, state),
-    Event::Connected { session: number } => {
+    Event::Session(event) => session_event(app, event, session).await,
+    Event::PrivateMessage(message) => private_message(app, message).await,
+    Event::Transfer(transfer::Event::StateChanged { previous, transfer }) => {
+      transfer_state(app, previous, &transfer);
+    }
+    // a download these end logs its own end; they also come for a file we have no download
+    // of, such as one sent unasked that we refused
+    Event::Transfer(transfer::Event::DownloadDenied {
+      username,
+      filename,
+      message,
+    }) => debug!(
+      username,
+      %filename,
+      message,
+      "Download was denied by the remote user"
+    ),
+    Event::Transfer(transfer::Event::PlaceInQueue {
+      username,
+      filename,
+      place,
+    }) => {
+      app
+        .downloads
+        .place_sent(username, filename.as_str().to_string(), place)
+        .await;
+    }
+    Event::Transfer(transfer::Event::DownloadFailed { username, filename }) => debug!(
+      username,
+      %filename,
+      "Download was reported as failed by the remote user"
+    ),
+    Event::Room(
+      room @ (room::Event::MembershipAdded(_)
+      | room::Event::MembershipRemoved(_)
+      | room::Event::OperatorshipAdded(_)
+      | room::Event::OperatorshipRemoved(_)),
+    ) => {
+      private_room(app, &room);
+      app.messaging.take(Event::Room(room)).await;
+    }
+    Event::Room(room::Event::PublicChat {
+      room,
+      username,
+      message,
+    }) => app.messaging.public_message(room, username, message),
+    Event::Room(room::Event::List(list)) => app.messaging.room_list_received(list).await,
+    Event::Room(room) => app.messaging.take(Event::Room(room)).await,
+    Event::User(user::Event::StatusChanged { status, asked }) => {
+      user_status(app, &status, asked).await;
+    }
+    Event::User(user::Event::StatisticsChanged { statistics, asked }) => {
+      app
+        .users
+        .statistics_received(&statistics.username, &statistics.stats, asked)
+        .await;
+    }
+    Event::Distributed(distributed::Event::StateChanged(info)) => {
+      distributed_network(app, &info);
+    }
+    Event::SearchReply(search::ReplyEvent::Delivered(delivery)) => {
+      // the daemon answers with the files themselves, never a frame encoded ahead, so the count
+      // is always known
+      let results = delivery.reply.file_count().unwrap_or(0);
+      app.activity.record(
+        Some(&delivery.username),
+        ActivityKind::Search {
+          query: delivery.query,
+          results: u32::try_from(results).unwrap_or(u32::MAX),
+        },
+      );
+    }
+    Event::SearchReply(search::ReplyEvent::Dropped(dropped)) => {
+      super::resolvers::dropped_by_client(&app.network.edges, &dropped);
+    }
+    // the transfer, search, room, user and distributed engines follow these themselves, and the
+    // rest change nothing the daemon keeps
+    Event::User(user::Event::CannotConnect { .. })
+    | Event::Distributed(
+      distributed::Event::Reset
+      | distributed::Event::ParentAdopted(_)
+      | distributed::Event::ParentDisconnected(_)
+      | distributed::Event::ChildAdded { .. }
+      | distributed::Event::ChildDisconnected { .. }
+      | distributed::Event::Promoted
+      | distributed::Event::Demoted,
+    )
+    | Event::SearchReply(search::ReplyEvent::NotDelivered(_)) => {}
+    // an event a newer client raises that the daemon has no use for yet
+    other => trace!(?other, "client event not followed"),
+  }
+}
+
+/// An event about the server session.
+async fn session_event(app: &AppState, event: session::Event, session: &mut Session) {
+  match event {
+    session::Event::StateChanged { state, .. } => server_state(app, state),
+    session::Event::Connected { session: number } => {
       if session.advance(number, Phase::Connected).is_some() {
         connected(app, number).await;
       } else {
@@ -266,7 +361,7 @@ async fn handle(app: &AppState, event: Event, session: &mut Session) {
         );
       }
     }
-    Event::LoggedIn {
+    session::Event::LoggedIn {
       session: number,
       username,
     } => {
@@ -279,14 +374,14 @@ async fn handle(app: &AppState, event: Event, session: &mut Session) {
         );
       }
     }
-    Event::Disconnected {
+    session::Event::Disconnected {
       session: number,
       message,
       error,
       at,
     } => match session.advance(number, Phase::Ended) {
       Some(left) => {
-        let end = SessionEnd {
+        let end = session::End {
           session: number,
           message,
           error,
@@ -299,9 +394,8 @@ async fn handle(app: &AppState, event: Event, session: &mut Session) {
         "disconnect handled already when it was taken for missed"
       ),
     },
-    Event::KickedFromServer => debug!("kicked from the server; the disconnect follows"),
-    Event::DistributedNetworkStateChanged(info) => distributed_network(app, &info),
-    Event::ExcludedSearchPhrasesReceived(phrases) => {
+    session::Event::Kicked => debug!("kicked from the server; the disconnect follows"),
+    session::Event::ExcludedSearchPhrases(phrases) => {
       debug!(
         count = phrases.len(),
         ?phrases,
@@ -309,109 +403,15 @@ async fn handle(app: &AppState, event: Event, session: &mut Session) {
       );
       app.network.exclude(phrases);
     }
-    Event::PrivateMessageReceived(message) => private_message(app, message).await,
-    Event::TransferStateChanged {
-      previous_state,
-      transfer,
-    } => transfer_state(app, previous_state, &transfer),
-    // a download these end logs its own end; they also come for a file we have no download
-    // of, such as one sent unasked that we refused
-    Event::DownloadDenied {
-      username,
-      filename,
-      message,
-    } => debug!(
-      username,
-      %filename,
-      message,
-      "Download was denied by the remote user"
-    ),
-    Event::PlaceInQueueReceived {
-      username,
-      filename,
-      place,
-    } => {
-      app
-        .downloads
-        .place_sent(username, filename.as_str().to_string(), place)
-        .await;
-    }
-    Event::DownloadFailed { username, filename } => debug!(
-      username,
-      %filename,
-      "Download was reported as failed by the remote user"
-    ),
-    room @ (Event::PrivateRoomMembershipAdded(_)
-    | Event::PrivateRoomMembershipRemoved(_)
-    | Event::PrivateRoomOperatorshipAdded(_)
-    | Event::PrivateRoomOperatorshipRemoved(_)) => {
-      private_room(app, &room);
-      app.messaging.take(room).await;
-    }
-    room @ (Event::RoomJoined { .. }
-    | Event::RoomLeft { .. }
-    | Event::RoomMessageReceived { .. }
-    | Event::RoomTickerListReceived { .. }
-    | Event::RoomTickerAdded { .. }
-    | Event::RoomTickerRemoved { .. }
-    | Event::PrivateRoomUserAdded { .. }
-    | Event::PrivateRoomUserRemoved { .. }
-    | Event::PrivateRoomOperatorAdded { .. }
-    | Event::PrivateRoomOperatorRemoved { .. }
-    | Event::PrivateRoomUserListReceived(_)
-    | Event::PrivateRoomOperatorListReceived(_)) => app.messaging.take(room).await,
-    Event::GlobalMessageReceived(message) => server_message(app, message),
-    Event::PublicChatMessageReceived {
-      room_name,
-      username,
-      message,
-    } => app.messaging.public_message(room_name, username, message),
-    Event::UserStatusChanged { status, asked } => user_status(app, &status, asked).await,
-    Event::UserStatisticsChanged { statistics, asked } => {
-      app
-        .users
-        .statistics_received(&statistics.username, &statistics.stats, asked)
-        .await;
-    }
-    Event::PrivilegedUserListReceived(usernames) => app.users.privileged_listed(&usernames),
-    Event::PrivilegeNotificationReceived { username, id } => {
+    session::Event::GlobalMessage(message) => server_message(app, message),
+    session::Event::PrivilegedUsers(usernames) => app.users.privileged_listed(&usernames),
+    session::Event::PrivilegeNotification { username, id } => {
       if let Some(id) = id {
         acknowledge_privileges(app, id);
       }
       privileges_granted(app, username);
     }
-    Event::RoomListReceived(list) => app.messaging.room_list_received(list).await,
-    // the transfer, search, room, user and distributed engines follow these themselves, and the
-    // rest change nothing the daemon keeps
-    Event::ServerInfoReceived(_)
-    | Event::UserCannotConnect { .. }
-    | Event::BrowseProgressUpdated(_)
-    | Event::DistributedNetworkReset
-    | Event::DistributedParentAdopted(_)
-    | Event::DistributedParentDisconnected(_)
-    | Event::DistributedChildAdded { .. }
-    | Event::DistributedChildDisconnected { .. }
-    | Event::PromotedToDistributedBranchRoot
-    | Event::DemotedFromDistributedBranchRoot
-    | Event::SearchResponseDeliveryFailed(_)
-    | Event::TransferProgressUpdated { .. }
-    | Event::SearchStateChanged { .. } => {}
-    Event::SearchResponseDelivered(delivery) => {
-      // the daemon answers with the files themselves, never a frame encoded ahead, so the count
-      // is always known
-      let results = delivery.search_response.file_count().unwrap_or(0);
-      app.activity.record(
-        Some(&delivery.username),
-        ActivityKind::Search {
-          query: delivery.query,
-          results: u32::try_from(results).unwrap_or(u32::MAX),
-        },
-      );
-    }
-    Event::SearchResponseReceived { search, .. } => {
-      app.network.reachability.search_answered(search.token);
-    }
-    // an event a newer client raises that the daemon has no use for yet
+    session::Event::ServerInfo(_) => {}
     other => trace!(?other, "client event not followed"),
   }
 }
@@ -460,7 +460,11 @@ fn acknowledge_privileges(app: &AppState, id: u32) {
   let client = app.network.client().clone();
   tokio::spawn(
     async move {
-      if let Err(e) = client.acknowledge_privilege_notification(id).await {
+      if let Err(e) = client
+        .account()
+        .acknowledge_privilege_notification(id)
+        .await
+      {
         debug!(error = %e, id, "privilege notification not acknowledged");
       }
     }
@@ -494,8 +498,8 @@ fn server_state(app: &AppState, state: ClientState) {
   let username = state.is_logged_in().then(|| client.username()).flatten();
   let (address, ip_end_point) = if state.is_connected() {
     (
-      client.server_address(),
-      client.server_endpoint().map(|e| e.to_string()),
+      client.server_host(),
+      client.server_address().map(|e| e.to_string()),
     )
   } else {
     (None, None)
@@ -565,7 +569,7 @@ fn logged_in(app: &AppState, username: &str) {
 pub(super) fn tell_invitations(client: Client, accept: bool) {
   tokio::spawn(
     async move {
-      match client.set_private_room_invitations(accept).await {
+      match client.rooms().accept_invitations(accept).await {
         Ok(confirmed) => debug!(accept, confirmed, "private room invitations set"),
         Err(e) => warn!(error = %e, accept, "private room invitations not set"),
       }
@@ -583,6 +587,7 @@ async fn after_login(app: AppState) {
   let client = app.network.client();
   let counts = *app.shares.shared_counts().borrow();
   if let Err(e) = client
+    .account()
     .set_shared_counts(counts.directories, counts.files)
     .await
   {
@@ -615,6 +620,7 @@ pub async fn follow_shared_counts(app: AppState) {
       continue;
     }
     if let Err(e) = client
+      .account()
       .set_shared_counts(current.directories, current.files)
       .await
     {
@@ -631,11 +637,19 @@ pub async fn follow_shared_counts(app: AppState) {
 /// reached the server unless a disconnect was asked for, by this end or since, the end is for
 /// logging in again, which starts it itself, the server refused our login or another session
 /// took our name, and the event is raised.
-fn disconnected(app: &AppState, message: &str, error: Option<&ClientError>, reached: bool) {
+fn disconnected(
+  app: &AppState,
+  session: u64,
+  message: &str,
+  error: Option<&ClientError>,
+  reached: bool,
+) {
   app.network.forget_reconnect();
-  let intent = error.and_then(Intent::of);
-  match error {
-    Some(ClientError::Shutdown) => {
+  // the daemon's own disconnects end the session with no error
+  let intent = app.network.take_intent(session);
+  let intent = error.is_none().then_some(intent).flatten();
+  match error.map(ClientError::kind) {
+    Some(ErrorKind::Shutdown) => {
       info!("Disconnected from the Soulseek server: the client is shutting down");
     }
     _ if intent == Some(Intent::Shutdown) => {
@@ -653,14 +667,14 @@ fn disconnected(app: &AppState, message: &str, error: Option<&ClientError>, reac
       );
     }
     // a restart or a disconnect asked for canceled the attempt
-    Some(ClientError::Canceled) => debug!("connection attempt canceled"),
-    Some(ClientError::LoginRejected(reason)) => {
+    Some(ErrorKind::Canceled) => debug!("connection attempt canceled"),
+    Some(ErrorKind::LoginRejected) => {
       error!(
-        reason,
+        reason = error.and_then(ClientError::reason),
         "Disconnected from the Soulseek server: invalid username or password"
       );
     }
-    Some(ClientError::KickedFromServer) => error!(
+    Some(ErrorKind::Kicked) => error!(
       "Disconnected from the Soulseek server: another client logged in using the same username"
     ),
     // the watchdog's own attempt failed before reaching the server; its loop goes on
@@ -670,58 +684,72 @@ fn disconnected(app: &AppState, message: &str, error: Option<&ClientError>, reac
       app.network.watchdog().lost();
     }
   }
-  raise_disconnected(app, message, error);
+  raise_disconnected(app, message, error, intent);
 }
 
 /// Raises the disconnect on the event bus.
-fn raise_disconnected(app: &AppState, message: &str, error: Option<&ClientError>) {
+fn raise_disconnected(
+  app: &AppState,
+  message: &str,
+  error: Option<&ClientError>,
+  intent: Option<Intent>,
+) {
+  let exception = match (error, intent) {
+    (Some(error), _) => Some(EventError {
+      kind: error_kind(error).to_string(),
+      message: error.to_string(),
+    }),
+    (None, Some(intent)) => Some(EventError {
+      kind: intent_kind(intent).to_string(),
+      message: intent.to_string(),
+    }),
+    (None, None) => None,
+  };
   app.events.raise(BusEvent::SoulseekClientDisconnected(
     SoulseekClientDisconnected {
       version: 0,
       message: message.to_string(),
-      exception: error.map(|error| EventError {
-        kind: error_kind(error).to_string(),
-        message: error.to_string(),
-      }),
+      exception,
     },
   ));
 }
 
+/// The short name of the daemon's reason for a disconnect, as the disconnect event carries it.
+fn intent_kind(intent: Intent) -> &'static str {
+  match intent {
+    Intent::User => "IntentionalDisconnect",
+    Intent::Shutdown => "ApplicationShutdown",
+    Intent::Relogin => "Relogin",
+  }
+}
+
 /// The short name of an error's kind, as the disconnect event carries it.
 fn error_kind(error: &ClientError) -> &'static str {
-  if let Some(intent) = Intent::of(error) {
-    return match intent {
-      Intent::User => "IntentionalDisconnect",
-      Intent::Shutdown => "ApplicationShutdown",
-      Intent::Relogin => "Relogin",
-    };
-  }
-  match error {
-    ClientError::InvalidArgument(_) => "InvalidArgument",
-    ClientError::InvalidOperation(_) => "InvalidOperation",
-    ClientError::Timeout(_) => "Timeout",
-    ClientError::Canceled => "Cancelled",
-    ClientError::Address(_) => "Address",
-    ClientError::Listen { .. } => "Listen",
-    ClientError::Connect { .. } => "Connect",
-    ClientError::LoginRejected(_) => "LoginRejected",
-    ClientError::LoginNoResponse(_) => "LoginNoResponse",
-    ClientError::KickedFromServer => "KickedFromServer",
-    ClientError::Connection { .. } => "Connection",
-    ClientError::Message { .. } => "Message",
-    ClientError::Shutdown => "Disposed",
+  match error.kind() {
+    ErrorKind::InvalidArgument => "InvalidArgument",
+    ErrorKind::InvalidOperation => "InvalidOperation",
+    ErrorKind::Timeout => "Timeout",
+    ErrorKind::Canceled => "Cancelled",
+    ErrorKind::Address => "Address",
+    ErrorKind::Listen => "Listen",
+    ErrorKind::LoginRejected => "LoginRejected",
+    ErrorKind::LoginNoResponse => "LoginNoResponse",
+    ErrorKind::Kicked => "KickedFromServer",
+    ErrorKind::Connection(_) => "Connection",
+    ErrorKind::Message(_) => "Message",
+    ErrorKind::Shutdown => "Disposed",
     _ => "Client",
   }
 }
 
 /// Our place in the distributed network into `State.distributedNetwork` and its metrics.
-fn distributed_network(app: &AppState, info: &DistributedNetworkInfo) {
+fn distributed_network(app: &AppState, info: &distributed::Info) {
   let metrics = &app.telemetry.metrics().distributed;
   metrics.children.set(info.children.len() as f64);
   metrics.child_limit.set(f64::from(info.child_limit));
   metrics
     .has_parent
-    .set(if info.has_parent { 1.0 } else { 0.0 });
+    .set(if info.parent.is_some() { 1.0 } else { 0.0 });
   metrics.branch_level.set(f64::from(info.branch_level));
   let named = |name: &str| (!name.is_empty()).then(|| name.to_string());
   let network = DistributedNetworkState {
@@ -729,10 +757,17 @@ fn distributed_network(app: &AppState, info: &DistributedNetworkInfo) {
     branch_root: named(&info.branch_root),
     can_accept_children: info.can_accept_children,
     child_limit: info.child_limit,
-    children: info.children.iter().map(|(name, _)| name.clone()).collect(),
-    has_parent: info.has_parent,
+    children: info
+      .children
+      .iter()
+      .map(|child| child.username.clone())
+      .collect(),
+    has_parent: info.parent.is_some(),
     is_branch_root: info.is_branch_root,
-    parent: named(&info.parent.0),
+    parent: info
+      .parent
+      .as_ref()
+      .and_then(|parent| named(&parent.username)),
   };
   app
     .state
@@ -755,7 +790,7 @@ async fn private_message(app: &AppState, message: PrivateMessage) {
     let client = app.network.client().clone();
     tokio::spawn(
       async move {
-        if let Err(e) = client.acknowledge_private_message(message.id).await {
+        if let Err(e) = client.users().acknowledge_message(message.id).await {
           debug!(error = %e, "dropped private message not acknowledged");
         }
       }
@@ -763,10 +798,7 @@ async fn private_message(app: &AppState, message: PrivateMessage) {
     );
     return;
   }
-  app
-    .messaging
-    .take(Event::PrivateMessageReceived(message))
-    .await;
+  app.messaging.take(Event::PrivateMessage(message)).await;
 }
 
 /// A transfer moved on: logged, the upload gauges counted again for an upload, and an upload
@@ -777,8 +809,8 @@ fn transfer_state(app: &AppState, previous: Option<TransferState>, transfer: &Tr
   let name = transfer.filename.as_str();
   let basename = name.rsplit(['\\', '/']).next().unwrap_or(name);
   let direction = match transfer.direction {
-    soulseek_client::TransferDirection::Download => "Download",
-    soulseek_client::TransferDirection::Upload => "Upload",
+    Direction::Download => "Download",
+    Direction::Upload => "Upload",
   };
   info!(
     direction,
@@ -791,7 +823,7 @@ fn transfer_state(app: &AppState, previous: Option<TransferState>, transfer: &Tr
     speed = transfer.average_speed,
     "transfer state changed"
   );
-  if transfer.direction != soulseek_client::TransferDirection::Upload {
+  if transfer.direction != Direction::Upload {
     return;
   }
   upload_activity(app, previous, transfer);
@@ -801,14 +833,14 @@ fn transfer_state(app: &AppState, previous: Option<TransferState>, transfer: &Tr
     .metrics()
     .transfers()
     .uploads
-    .count(&client.uploads());
+    .count(&client.transfers().uploads());
   if transfer.state.succeeded() && transfer.average_speed > 0.0 {
     // servers read the speed as a signed 32-bit number
     let speed = transfer.average_speed.ceil().min(f64::from(i32::MAX)) as u32;
     let client = client.clone();
     tokio::spawn(
       async move {
-        if let Err(e) = client.send_upload_speed(speed).await {
+        if let Err(e) = client.account().report_upload_speed(speed).await {
           warn!(error = %e, speed, "Failed to report upload speed");
         }
       }
@@ -843,12 +875,12 @@ fn upload_activity(app: &AppState, previous: Option<TransferState>, transfer: &T
 }
 
 /// A change to our own membership of a private room, into the activity log.
-fn private_room(app: &AppState, event: &Event) {
+fn private_room(app: &AppState, event: &room::Event) {
   let (room, change) = match event {
-    Event::PrivateRoomMembershipAdded(room) => (room, PrivateRoomChange::Added),
-    Event::PrivateRoomMembershipRemoved(room) => (room, PrivateRoomChange::Removed),
-    Event::PrivateRoomOperatorshipAdded(room) => (room, PrivateRoomChange::Operator),
-    Event::PrivateRoomOperatorshipRemoved(room) => (room, PrivateRoomChange::NoLongerOperator),
+    room::Event::MembershipAdded(room) => (room, PrivateRoomChange::Added),
+    room::Event::MembershipRemoved(room) => (room, PrivateRoomChange::Removed),
+    room::Event::OperatorshipAdded(room) => (room, PrivateRoomChange::Operator),
+    room::Event::OperatorshipRemoved(room) => (room, PrivateRoomChange::NoLongerOperator),
     _ => return,
   };
   app.activity.record(
@@ -876,9 +908,10 @@ fn server_message(app: &AppState, message: String) {
 pub fn observe_client(app: &AppState) {
   let client = app.network.client();
   let latency = client
-    .distributed_network()
+    .distributed()
+    .info()
     .average_broadcast_latency
-    .unwrap_or(0.0);
+    .map_or(0.0, |latency| latency.as_secs_f64() * 1000.0);
   let metrics = app.telemetry.metrics();
   metrics.distributed.broadcast_latency.observe(latency);
   metrics.distributed.broadcast_latency_current.set(latency);
@@ -893,7 +926,8 @@ pub async fn observe_transfers(app: &AppState) {
   // downloads waiting here are queued too, which the client does not hold yet
   let tallies = app.downloads.tallies().await;
   let client = app.network.client();
-  let (uploads, downloads) = (client.uploads(), client.downloads());
+  let transfers = client.transfers();
+  let (uploads, downloads) = (transfers.uploads(), transfers.downloads());
   let family = app.telemetry.metrics().transfers();
   family.uploads.count(&uploads);
   let shown = app.network.shown_speeds();
@@ -907,10 +941,12 @@ pub async fn observe_transfers(app: &AppState) {
 
 #[cfg(test)]
 mod tests {
+  use soulseek_client::error::ConnectionKind;
+
   use super::*;
 
-  fn end(session: u64) -> SessionEnd {
-    SessionEnd {
+  fn end(session: u64) -> session::End {
+    session::End {
       session,
       message: "Connection reset".into(),
       error: None,
@@ -918,8 +954,8 @@ mod tests {
     }
   }
 
-  fn status(number: u64, state: ClientState, reached: bool) -> SessionStatus {
-    SessionStatus {
+  fn status(number: u64, state: ClientState, reached: bool) -> session::Status {
+    session::Status {
       number,
       state,
       reached,
@@ -959,7 +995,7 @@ mod tests {
       matches!(
         missed.as_slice(),
         [
-          Missed::Superseded(SessionEnd { session: 1, .. }),
+          Missed::Superseded(session::End { session: 1, .. }),
           Missed::Connected,
           Missed::LoggedIn { .. }
         ]
@@ -1001,8 +1037,8 @@ mod tests {
   }
 
   /// a download as the client reports it while its peer has it queued
-  async fn queued_download() -> Transfer {
-    let mut transfer = crate::testing::soulseek::transfer_snapshot().await;
+  fn queued_download() -> Transfer {
+    let mut transfer = crate::testing::soulseek::transfer_snapshot();
     transfer.state = TransferState::QueuedRemotely;
     transfer
   }
@@ -1029,7 +1065,7 @@ mod tests {
     observe_transfers(&app.state).await;
     assert_eq!(queued(), 2);
     // the client holds none of the downloads waiting here
-    let transfer = queued_download().await;
+    let transfer = queued_download();
     let (logs, _capturing) = crate::testing::captured_logs();
     transfer_state(&app.state, None, &transfer);
     assert_eq!(queued(), 2);
@@ -1048,13 +1084,27 @@ mod tests {
     let app = crate::testing::app(crate::testing::TRUSTED, &[]).await;
     app.state.network.disconnect(None).await;
     // the end of the session the disconnect found gone already, handled after it
-    let lost = ClientError::Connection {
-      kind: soulseek_client::ConnectionErrorKind::Read,
-      message: "Read error".into(),
-      source: None,
-    };
-    disconnected(&app.state, "Read error", Some(&lost), true);
+    let lost = ClientError::new(ErrorKind::Connection(ConnectionKind::Read), "Read error");
+    let session = app.state.network.client().session().number;
+    disconnected(&app.state, session, "Read error", Some(&lost), true);
     assert!(!app.state.network.watchdog().is_enabled());
+  }
+
+  #[tokio::test]
+  async fn a_disconnect_asked_for_marks_only_the_session_it_was_asked_in() {
+    let app = crate::testing::app(crate::testing::TRUSTED, &[]).await;
+    let network = &app.state.network;
+    let asked_in = network.client().session().number;
+    network.disconnect(None).await;
+    // a later session that ends with no error was not ended by that disconnect
+    assert_eq!(network.take_intent(asked_in + 1), None);
+    assert_eq!(
+      network.take_intent(asked_in),
+      None,
+      "gone with the later end"
+    );
+    network.intend(Intent::Relogin);
+    assert_eq!(network.take_intent(asked_in), Some(Intent::Relogin));
   }
 
   #[tokio::test]

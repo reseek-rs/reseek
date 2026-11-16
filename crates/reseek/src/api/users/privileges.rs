@@ -90,7 +90,7 @@ async fn give_privileges(
       None,
     ));
   }
-  let left = client.get_privileges().await.map_err(|e| {
+  let left = client.account().privileges().await.map_err(|e| {
     ApiError::upstream(
       "The server did not say how many privileges are left",
       Some(e.to_string()),
@@ -104,7 +104,8 @@ async fn give_privileges(
     ));
   }
   client
-    .grant_user_privileges(&username, gift.days)
+    .users()
+    .grant_privileges(&username, gift.days)
     .await
     .map_err(|e| ApiError::upstream("The privileges were not given", Some(e.to_string())))?;
   info!(

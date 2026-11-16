@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension};
-use soulseek_client::{TransferGovernor as Governor, TransferReporter as Reporter};
+use soulseek_client::transfer::{Chunk, Transfer};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
@@ -63,6 +63,9 @@ impl Global {
   }
 }
 
+/// The bytes a chunk may move, once some may.
+pub type Granted = std::pin::Pin<Box<dyn std::future::Future<Output = u32> + Send>>;
+
 /// The pace of one download: each chunk asks the download bucket, and what it granted and the
 /// chunk did not move goes back to it.
 pub struct DownloadPace(Arc<TokenBucket>);
@@ -80,14 +83,20 @@ impl DownloadPace {
   }
 
   /// The governor and the reporter the client calls at each chunk.
-  pub fn callbacks(self) -> (Governor, Reporter) {
+  pub fn callbacks(
+    self,
+  ) -> (
+    impl Fn(&Transfer, u32) -> Granted + Send + Sync + 'static,
+    impl Fn(&Transfer, Chunk) + Send + Sync + 'static,
+  ) {
     let pace = Arc::new(self);
     let reporting = pace.clone();
-    let governor: Governor = Arc::new(move |_, want, cancel| {
+    let governor = move |_: &Transfer, want| -> Granted {
       let pace = pace.clone();
-      Box::pin(async move { pace.chunk(want, &cancel).await })
-    });
-    let reporter: Reporter = Arc::new(move |_, _, granted, moved| reporting.report(granted, moved));
+      // the client drops the wait when it ends the download
+      Box::pin(async move { pace.chunk(want, &CancellationToken::new()).await })
+    };
+    let reporter = move |_: &Transfer, chunk: Chunk| reporting.report(chunk.allowed, chunk.moved);
     (governor, reporter)
   }
 }

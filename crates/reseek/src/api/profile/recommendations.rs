@@ -4,8 +4,8 @@
 
 use api_types::profile::{Recommendation, Recommendations, SimilarUser};
 use axum::extract::{Path, State};
-use soulseek_client::ClientError;
 use soulseek_client::soulseek_proto;
+use soulseek_client::{Error as ClientError, ErrorKind};
 use tracing::debug;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -28,11 +28,11 @@ pub fn routes() -> OpenApiRouter<AppState> {
 /// The answer to asking the server for `what` that failed with `error`.
 fn unanswered(what: &str, error: ClientError) -> ApiError {
   debug!(what, error = %error, "server did not answer an interests query");
-  match error {
-    ClientError::InvalidOperation(detail) => ApiError::unavailable(Some(detail)),
-    other => ApiError::upstream(
+  match error.kind() {
+    ErrorKind::InvalidOperation => ApiError::unavailable(Some(error.to_string())),
+    _ => ApiError::upstream(
       format!("The server did not send {what}"),
-      Some(other.to_string()),
+      Some(error.to_string()),
     ),
   }
 }
@@ -97,7 +97,8 @@ async fn personal(
   let lists = app
     .network
     .client()
-    .get_personal_recommendations()
+    .interests()
+    .recommendations()
     .await
     .map_err(|e| unanswered("recommendations", e))?;
   Ok(Json(shown(lists)))
@@ -118,7 +119,8 @@ async fn popular(
   let lists = app
     .network
     .client()
-    .get_global_recommendations()
+    .interests()
+    .global_recommendations()
     .await
     .map_err(|e| unanswered("popular interests", e))?;
   Ok(Json(shown(lists)))
@@ -139,7 +141,8 @@ async fn similar_users(
   let mut users: Vec<SimilarUser> = app
     .network
     .client()
-    .get_similar_users()
+    .interests()
+    .similar_users()
     .await
     .map_err(|e| unanswered("similar users", e))?
     .into_iter()
@@ -171,7 +174,8 @@ async fn related(
   let reply = app
     .network
     .client()
-    .get_interest_recommendations(&interest)
+    .interests()
+    .recommendations_for(&interest)
     .await
     .map_err(|e| unanswered("recommendations for the interest", e))?;
   // one list for both kinds, which `shown` splits by score
@@ -200,7 +204,8 @@ async fn liked_by(
   let reply = app
     .network
     .client()
-    .get_interest_similar_users(&interest)
+    .interests()
+    .similar_users_for(&interest)
     .await
     .map_err(|e| unanswered("users who like the interest", e))?;
   Ok(Json(reply.usernames))

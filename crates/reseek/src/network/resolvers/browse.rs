@@ -15,7 +15,7 @@ use api_types::activity::ActivityKind;
 use api_types::users::blocking::BlockScope;
 use reseek_shares::LogLimiter;
 use reseek_shares::{lock, traverses};
-use soulseek_client::{BrowseReply, EncodedFrame};
+use soulseek_client::handler::{BrowseReply, EncodedFrame};
 use soulseek_proto::RemoteFilename;
 use soulseek_proto::peer::{BrowseResponse, Directory};
 use tracing::{debug, error, trace, warn};
@@ -171,10 +171,7 @@ async fn cached(file: &Path) -> std::io::Result<EncodedFrame> {
 /// The browse cache `opened` as a frame read from it while it is sent.
 async fn framed(opened: tokio::fs::File) -> std::io::Result<EncodedFrame> {
   let len = opened.metadata().await?.len();
-  Ok(EncodedFrame {
-    len,
-    reader: Box::pin(opened),
-  })
+  Ok(EncodedFrame::new(len, opened))
 }
 
 /// The empty listing sent when the browse cache at `file` could not be read for `error`.

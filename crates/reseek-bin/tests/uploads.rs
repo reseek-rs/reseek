@@ -16,22 +16,16 @@ use api_client::Client;
 use api_types::options::OptionsPatch;
 use api_types::transfers::{Transfer, TransferOutcome, TransferStates, UploadsQuery};
 use serde_json::json;
-use soulseek_client::{
-  ClientError, ClientOptions, DownloadOutput, DownloadRequest, Event, PeerRequestOptions,
-  SearchOptions, SearchRequest, SearchScope,
-};
+use soulseek_client::{Config, Error as ClientError, ErrorKind, Event, search, transfer};
 use support::soulfind::{self, Soulfind, User};
 use support::transfers::{content, file, scratch};
 use support::{PATIENCE, daemon, events, free_port, logged_in, signed_in, until};
-use tokio_util::sync::CancellationToken;
 
 /// A user of the test's, taking the daemon's transfer connections.
 async fn peer(server: &Arc<Soulfind>, prefix: &str) -> User {
-  let options = ClientOptions {
-    listen_port: free_port(),
-    ..ClientOptions::default()
-  };
-  server.login(prefix, options).await
+  server
+    .login(prefix, Config::builder().listen_port(free_port()))
+    .await
 }
 
 /// The daemon in `dir` sharing `dir/share` with `config`, logged in once it shares `files`.
@@ -60,18 +54,16 @@ fn download(
   filename: &str,
   size: usize,
 ) -> (
-  tokio::task::JoinHandle<Result<soulseek_client::Transfer, ClientError>>,
+  tokio::task::JoinHandle<Result<transfer::Transfer, ClientError>>,
   std::path::PathBuf,
 ) {
   let into = scratch().join("downloaded");
-  let request = DownloadRequest::new(
-    from,
-    filename,
-    size as u64,
-    DownloadOutput::File(into.clone()),
-  );
-  let client = peer.client.clone();
-  let task = tokio::spawn(async move { client.download(request, &CancellationToken::new()).await });
+  let request = peer
+    .client
+    .download(from, filename)
+    .size(size as u64)
+    .to_file(into.clone());
+  let task = tokio::spawn(request.into_future());
   (task, into)
 }
 
@@ -157,10 +149,10 @@ async fn a_second_request_waits_its_place_and_starts_once_the_first_ends() {
     t.state == TransferStates::QueuedLocally
   })
   .await;
-  let cancel = CancellationToken::new();
   let place = second
     .client
-    .get_download_place_in_queue(&name, small_name, PeerRequestOptions::default(), &cancel)
+    .transfers()
+    .place_in_queue(&name, small_name)
     .await
     .unwrap();
   assert_eq!(
@@ -187,11 +179,7 @@ async fn a_second_request_waits_its_place_and_starts_once_the_first_ends() {
 
   // a newcomer is told where a request of theirs would land; asking for the user info finds
   // their group, which the search response then reads
-  let info = third
-    .client
-    .get_user_info(&name, PeerRequestOptions::default(), &cancel)
-    .await
-    .unwrap();
+  let info = third.client.users().info(&name).await.unwrap();
   assert_eq!(
     (
       info.upload_slots,
@@ -201,18 +189,15 @@ async fn a_second_request_waits_its_place_and_starts_once_the_first_ends() {
     (1, 2, false),
     "two users in the group"
   );
-  let options = SearchOptions {
-    search_timeout: Duration::from_millis(1500),
-    ..SearchOptions::default()
-  };
   let (_, responses) = third
     .client
-    .search(
-      SearchRequest::new("small", SearchScope::Users(vec![name.clone()]), options).unwrap(),
-      &cancel,
-    )
+    .search("small")
+    .scope(search::Scope::Users(vec![name.clone()]))
+    .idle_timeout(Duration::from_millis(1500))
     .await
-    .unwrap();
+    .unwrap()
+    .all()
+    .await;
   assert_eq!(responses.len(), 1, "{responses:?}");
   assert!(!responses[0].has_free_upload_slot);
   assert_eq!(responses[0].queue_length, 2);
@@ -232,7 +217,11 @@ async fn a_second_request_waits_its_place_and_starts_once_the_first_ends() {
     .expect("the download ends")
     .unwrap();
   assert!(
-    matches!(&refused, Err(ClientError::TransferRejected(reason)) if reason == "Cancelled"),
+    matches!(
+      &refused,
+      Err(error) if error.kind() == ErrorKind::TransferRejected
+        && error.reason() == Some("Cancelled")
+    ),
     "{refused:?}"
   );
   let ended = upload_when(&api, &second.username, small_name, "removed", |t| t.removed).await;
@@ -342,7 +331,13 @@ async fn an_upload_that_failed_once_started_is_queued_anew_when_the_peer_asks_ag
     .unwrap();
   assert!(failed.is_err(), "{failed:?}");
   other
-    .event(|event| matches!(event, Event::DownloadFailed { .. }).then_some(()))
+    .event(|event| {
+      matches!(
+        event,
+        Event::Transfer(transfer::Event::DownloadFailed { .. })
+      )
+      .then_some(())
+    })
     .await;
   // the file is whole again, and the peer asks again as soon as it is told, as clients do
   file(&album, "slow.flac", size);
@@ -414,8 +409,9 @@ async fn a_stopping_daemon_cuts_its_uploads_without_refusing_them() {
     .unwrap()
     .unwrap_err();
   let mut denials = Vec::new();
-  while let Ok(event) = other.events.try_recv() {
-    if let Event::DownloadDenied { message, .. } = event {
+  // every event raised so far: a wait of no time takes only what is there
+  while let Ok(Some(event)) = tokio::time::timeout(Duration::ZERO, other.events.next()).await {
+    if let Ok(Event::Transfer(transfer::Event::DownloadDenied { message, .. })) = event {
       denials.push(message);
     }
   }

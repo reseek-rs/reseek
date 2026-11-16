@@ -18,15 +18,12 @@ use api_types::relay::{LoginFailure, RELAY_PROTOCOL, RelayEnvelope, RelayMessage
 use api_types::state::State;
 use api_types::transfers::{TransferDirection, TransferOutcome, TransferStates};
 use reseek_relay_proto::credential::{Key, Purpose};
-use soulseek_client::{
-  ClientError, ClientOptions, DownloadOutput, DownloadRequest, UploadInput, UploadRequest,
-};
+use soulseek_client::{Config, Error as ClientError, ErrorKind};
 use support::soulfind::{self, Soulfind};
 use support::transfers::{self, asked, content, file, scratch};
 use support::{
   ACCOUNT, AGENT, Daemon, PATIENCE, Process, daemon_on, enqueue, free_port, signed_in, until,
 };
-use tokio_util::sync::CancellationToken;
 
 const KEY: &str = "agents-key-0123456789";
 const SECRET: &str = "nas-secret-0123456789";
@@ -121,25 +118,18 @@ async fn an_agents_file_is_downloaded_through_its_controller() {
   exactly(&api, "RelayAgentSharesUpdated", 1).await;
   exactly(&api, "RelayAgentDisconnected", 0).await;
 
-  let options = ClientOptions {
-    listen_port: free_port(),
-    ..ClientOptions::default()
-  };
+  let options = Config::builder().listen_port(free_port());
   let other = server.login("other", options).await;
   let into = scratch().join("relayed");
-  let request = DownloadRequest::new(
-    &name,
-    "share\\album\\one.flac",
-    size as u64,
-    DownloadOutput::File(into.clone()),
-  );
-  let done = tokio::time::timeout(
-    PATIENCE,
-    other.client.download(request, &CancellationToken::new()),
-  )
-  .await
-  .expect("the download ends")
-  .unwrap();
+  let request = other
+    .client
+    .download(&name, "share\\album\\one.flac")
+    .size(size as u64)
+    .to_file(into.clone());
+  let done = tokio::time::timeout(PATIENCE, request.into_future())
+    .await
+    .expect("the download ends")
+    .unwrap();
   assert_eq!(done.bytes_transferred, size as u64);
   assert_eq!(std::fs::read(&into).unwrap(), content(size));
   let metrics = api.metrics().await.unwrap();
@@ -241,28 +231,30 @@ async fn an_away_agents_file_is_failed_until_the_agent_is_back_or_no_longer_conf
   away.child.wait().unwrap();
   until(&api, "the agent gone", |s| s.relay.agents.is_empty()).await;
 
-  let options = ClientOptions {
-    listen_port: free_port(),
-    ..ClientOptions::default()
-  };
+  let options = Config::builder().listen_port(free_port());
   let other = server.login("other", options).await;
   let into = scratch().join("away");
   let ask = |filename: &'static str| {
-    let request = DownloadRequest::new(&name, filename, 1_000, DownloadOutput::File(into.clone()));
-    let client = other.client.clone();
+    let request = other
+      .client
+      .download(&name, filename)
+      .size(1_000)
+      .to_file(into.clone());
     async move {
-      tokio::time::timeout(
-        PATIENCE,
-        client.download(request, &CancellationToken::new()),
-      )
-      .await
-      .expect("the download ends")
+      tokio::time::timeout(PATIENCE, request.into_future())
+        .await
+        .expect("the download ends")
     }
   };
   let theirs = "share\\album\\one.flac";
-  let failed =
-    |answer: &Result<_, ClientError>| matches!(answer, Err(ClientError::TransferReportedFailed(_)));
-  let not_shared = |answer: &Result<_, ClientError>| matches!(answer, Err(ClientError::TransferRejected(reason)) if reason == "File not shared.");
+  let failed = |answer: &Result<_, ClientError>| matches!(answer, Err(error) if error.kind() == ErrorKind::TransferFailed);
+  let not_shared = |answer: &Result<_, ClientError>| {
+    matches!(
+      answer,
+      Err(error) if error.kind() == ErrorKind::TransferRejected
+        && error.reason() == Some("File not shared.")
+    )
+  };
   let answer = ask(theirs).await;
   assert!(failed(&answer), "{answer:?}");
   let answer = ask("share\\album\\never.flac").await;
@@ -426,11 +418,8 @@ async fn a_finished_download_is_copied_to_an_agent_that_asks_for_them() {
   );
   until(&api, "serving the agent", |s| serving(s, 0)).await;
 
-  let mut options = ClientOptions {
-    listen_port: free_port(),
-    ..ClientOptions::default()
-  };
-  let mut requests = transfers::queueing(&mut options);
+  let (options, mut requests) =
+    transfers::queueing_with(Config::builder().listen_port(free_port()));
   let uploader = server.login("up", options).await;
   let size = 120_000;
   let source = scratch().join("song.flac");
@@ -438,11 +427,8 @@ async fn a_finished_download_is_copied_to_an_agent_that_asks_for_them() {
   let remote = "@@share\\album\\01 song.flac";
   let id = enqueue(&api, &uploader.username, remote, size as u64).await;
   let (username, filename) = asked(&mut requests).await;
-  let client = uploader.client.clone();
-  tokio::spawn(async move {
-    let request = UploadRequest::new(username, filename, UploadInput::File(source));
-    client.upload(request, &CancellationToken::new()).await
-  });
+  let upload = uploader.client.upload(username, filename).from_file(source);
+  tokio::spawn(upload.into_future());
   let started = Instant::now();
   let finished = loop {
     let transfer = api

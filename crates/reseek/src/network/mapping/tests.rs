@@ -57,7 +57,8 @@ struct Rig {
   reachability: Arc<Reachability>,
   requests: Arc<Mutex<Vec<String>>>,
   /// the count of peers reaching us, which the judgment follows while it is held
-  _inbound: watch::Sender<u64>,
+  /// the client whose inbound connections are counted, which nobody connects to
+  _client: soulseek_client::Client,
 }
 
 fn rig(routers: Vec<Fake>) -> Rig {
@@ -72,8 +73,11 @@ fn rig(routers: Vec<Fake>) -> Rig {
     })
     .collect();
   let state = testing::state();
-  let (inbound, counted) = watch::channel(0);
-  let reachability = Arc::new(Reachability::new(state.clone(), counted));
+  let client = soulseek_client::Client::new(soulseek_client::Config::default());
+  let reachability = Arc::new(Reachability::new(
+    state.clone(),
+    client.inbound_connections(),
+  ));
   let mapper = PortMapper::new(gateways, true, Ipv4Addr::UNSPECIFIED.into(), 50300);
   mapper.start(state.clone(), reachability.clone());
   Rig {
@@ -81,7 +85,7 @@ fn rig(routers: Vec<Fake>) -> Rig {
     state,
     reachability,
     requests,
-    _inbound: inbound,
+    _client: client,
   }
 }
 
@@ -256,7 +260,7 @@ async fn a_new_mapping_starts_the_reachability_judgment_over() {
     mapper,
     state,
     reachability,
-    _inbound,
+    _client,
     ..
   } = rig(vec![router("pcp", Ok(mapped(3600)))]);
   tokio::spawn(reachability.clone().follow(CancellationToken::new()));

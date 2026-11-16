@@ -4247,10 +4247,12 @@ dependencies = [
 
 [[package]]
 name = "soulseek-client"
-version = "0.1.1"
-source = "git+https://github.com/reseek-rs/soulseek-client?branch=main#94efc13752ba14be7bb0f19fb5891ceb9f6c3715"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c2dad21ed4e9542d542679e0fa5032515123f917085272be513129028186926"
 dependencies = [
  "bitflags 2.13.2",
+ "futures-core",
  "socket2",
  "soulseek-proto",
  "thiserror 2.0.21",
@@ -4262,9 +4264,9 @@ dependencies = [
 
 [[package]]
 name = "soulseek-proto"
-version = "0.3.0"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22ddd268cd67e3555733205c0e45f8390608a273ba28774014c894b05898adcd"
+checksum = "db8c3fcc22cc39d47ea8cf78301b42968d2e19cfad3524afc98d2d5b905729d5"
 dependencies = [
  "flate2",
  "md-5 0.11.0",

@@ -15,7 +15,7 @@ use api_types::messaging::rooms::{
 use api_types::users::UserPresence;
 use api_types::users::blocking::BlockScope;
 use chrono::Utc;
-use soulseek_client::{Event, RoomMembers};
+use soulseek_client::room;
 use soulseek_proto::server::UserData;
 use tracing::{debug, info, trace, warn};
 
@@ -24,110 +24,94 @@ use super::tracker::{country_of, room_user};
 use crate::messaging::{Messaging, mentions};
 use crate::users::Touch;
 
-/// The room a client event is about, when it is about one.
-pub fn room_of(event: &Event) -> Option<&str> {
+/// The room a client event about rooms is about, when it is about one.
+pub fn room_of(event: &room::Event) -> Option<&str> {
   match event {
-    Event::RoomJoined { room_name, .. }
-    | Event::RoomLeft { room_name, .. }
-    | Event::RoomMessageReceived { room_name, .. }
-    | Event::RoomTickerListReceived { room_name, .. }
-    | Event::RoomTickerAdded { room_name, .. }
-    | Event::RoomTickerRemoved { room_name, .. }
-    | Event::PrivateRoomUserAdded { room_name, .. }
-    | Event::PrivateRoomUserRemoved { room_name, .. }
-    | Event::PrivateRoomOperatorAdded { room_name, .. }
-    | Event::PrivateRoomOperatorRemoved { room_name, .. }
-    | Event::PrivateRoomUserListReceived(RoomMembers { room_name, .. })
-    | Event::PrivateRoomOperatorListReceived(RoomMembers { room_name, .. })
-    | Event::PrivateRoomMembershipAdded(room_name)
-    | Event::PrivateRoomMembershipRemoved(room_name)
-    | Event::PrivateRoomOperatorshipAdded(room_name)
-    | Event::PrivateRoomOperatorshipRemoved(room_name) => Some(room_name),
+    room::Event::Joined { room, .. }
+    | room::Event::Left { room, .. }
+    | room::Event::Message { room, .. }
+    | room::Event::Tickers { room, .. }
+    | room::Event::TickerAdded { room, .. }
+    | room::Event::TickerRemoved { room, .. }
+    | room::Event::MemberAdded { room, .. }
+    | room::Event::MemberRemoved { room, .. }
+    | room::Event::OperatorAdded { room, .. }
+    | room::Event::OperatorRemoved { room, .. }
+    | room::Event::Members(room::Members { room, .. })
+    | room::Event::Operators(room::Members { room, .. })
+    | room::Event::MembershipAdded(room)
+    | room::Event::MembershipRemoved(room)
+    | room::Event::OperatorshipAdded(room)
+    | room::Event::OperatorshipRemoved(room) => Some(room),
     _ => None,
   }
 }
 
 impl Messaging {
   /// Handles a client event about a room.
-  pub(in crate::messaging) async fn room_event(&self, event: Event) {
+  pub(in crate::messaging) async fn room_event(&self, event: room::Event) {
     match event {
-      Event::RoomJoined {
-        room_name,
+      room::Event::Joined {
+        room,
         username,
         user_data,
-      } => self.user_joined(room_name, username, &user_data).await,
-      Event::RoomLeft {
-        room_name,
-        username,
-      } => self.user_left(room_name, username),
-      Event::RoomMessageReceived {
-        room_name,
+      } => self.user_joined(room, username, &user_data).await,
+      room::Event::Left { room, username } => self.user_left(room, username),
+      room::Event::Message {
+        room,
         username,
         message,
-      } => self.room_message(room_name, username, message).await,
-      Event::RoomTickerListReceived { room_name, tickers } => {
-        self.change_tickers(&room_name, |all| {
+      } => self.room_message(room, username, message).await,
+      room::Event::Tickers { room, tickers } => {
+        self.change_tickers(&room, |all| {
           *all = tickers
             .into_iter()
             .map(|ticker| (ticker.username, ticker.message))
             .collect();
         });
       }
-      Event::RoomTickerAdded { room_name, ticker } => self.change_tickers(&room_name, |all| {
+      room::Event::TickerAdded { room, ticker } => self.change_tickers(&room, |all| {
         all.insert(ticker.username, ticker.message);
       }),
-      Event::RoomTickerRemoved {
-        room_name,
-        username,
-      } => self.change_tickers(&room_name, |all| {
+      room::Event::TickerRemoved { room, username } => self.change_tickers(&room, |all| {
         all.remove(&username);
       }),
-      Event::PrivateRoomUserListReceived(RoomMembers { room_name, users }) => {
-        self.change_private(&room_name, |room| {
+      room::Event::Members(members) => {
+        let users = members.users;
+        self.change_private(&members.room, |room| {
           room.members = users.into_iter().collect()
         });
       }
-      Event::PrivateRoomOperatorListReceived(RoomMembers { room_name, users }) => {
-        self.change_private(&room_name, |room| {
+      room::Event::Operators(operators) => {
+        let users = operators.users;
+        self.change_private(&operators.room, |room| {
           room.operators = users.into_iter().collect()
         });
       }
-      Event::PrivateRoomUserAdded {
-        room_name,
-        username,
-      } => self.change_private(&room_name, |room| {
+      room::Event::MemberAdded { room, username } => self.change_private(&room, |room| {
         room.members.insert(username);
       }),
-      Event::PrivateRoomUserRemoved {
-        room_name,
-        username,
-      } => self.change_private(&room_name, |room| {
+      room::Event::MemberRemoved { room, username } => self.change_private(&room, |room| {
         room.members.remove(&username);
         room.operators.remove(&username);
       }),
-      Event::PrivateRoomOperatorAdded {
-        room_name,
-        username,
-      } => self.change_private(&room_name, |room| {
+      room::Event::OperatorAdded { room, username } => self.change_private(&room, |room| {
         room.operators.insert(username);
       }),
-      Event::PrivateRoomOperatorRemoved {
-        room_name,
-        username,
-      } => self.change_private(&room_name, |room| {
+      room::Event::OperatorRemoved { room, username } => self.change_private(&room, |room| {
         room.operators.remove(&username);
       }),
-      Event::PrivateRoomMembershipAdded(room) => {
+      room::Event::MembershipAdded(room) => {
         info!(room, "Added to private room");
         self.rooms.tracker().change_private(&room, |_| {});
         self.forget_room_list().await;
         self.push_rooms().await;
       }
-      Event::PrivateRoomMembershipRemoved(room) => {
+      room::Event::MembershipRemoved(room) => {
         info!(room, "Removed from private room");
         self.dropped(&room).await;
       }
-      Event::PrivateRoomOperatorshipAdded(room) => {
+      room::Event::OperatorshipAdded(room) => {
         info!(room, "Promoted to moderator in private room");
         self.forget_room_list().await;
         if let Some(us) = self.logged_in_as() {
@@ -136,7 +120,7 @@ impl Messaging {
           });
         }
       }
-      Event::PrivateRoomOperatorshipRemoved(room) => {
+      room::Event::OperatorshipRemoved(room) => {
         info!(room, "Demoted from moderator in private room");
         self.forget_room_list().await;
         if let Some(us) = self.logged_in_as() {
@@ -145,6 +129,7 @@ impl Messaging {
           });
         }
       }
+      room::Event::Entered { room, asked: false } => self.entered_late(room.name.clone()),
       other => trace!(?other, "client event no room engine follows"),
     }
   }
@@ -340,8 +325,8 @@ impl Messaging {
 
 #[cfg(test)]
 mod tests {
-  use soulseek_client::Event;
   use soulseek_client::soulseek_proto;
+  use soulseek_client::{Event, room, session};
   use soulseek_proto::server::RoomData;
 
   use super::history;
@@ -356,10 +341,10 @@ mod tests {
     let messaging = &app.state.messaging;
     *lock(&messaging.session_user) = Some("old".into());
     messaging
-      .handle(Event::LoggedIn {
+      .handle(Event::Session(session::Event::LoggedIn {
         session: 1,
         username: "me".into(),
-      })
+      }))
       .await;
     let data = RoomData {
       name: "indie".into(),
@@ -368,8 +353,8 @@ mod tests {
     };
     messaging.rooms.tracker().joined(&data, "me");
     for (username, message) in [("me", "hello"), ("old", "hi me")] {
-      let said = Event::RoomMessageReceived {
-        room_name: "indie".into(),
+      let said = room::Event::Message {
+        room: "indie".into(),
         username: username.into(),
         message: message.into(),
       };
@@ -394,10 +379,10 @@ mod tests {
     let app = app("[chat]\nhighlight_words = [\"Floyd\"]\n", &[]).await;
     let messaging = &app.state.messaging;
     messaging
-      .handle(Event::LoggedIn {
+      .handle(Event::Session(session::Event::LoggedIn {
         session: 1,
         username: "me".into(),
-      })
+      }))
       .await;
     let data = RoomData {
       name: "indie".into(),
@@ -406,8 +391,8 @@ mod tests {
     };
     messaging.rooms.tracker().joined(&data, "me");
     for message in ["pink floyd tonight", "floydian slip"] {
-      let said = Event::RoomMessageReceived {
-        room_name: "indie".into(),
+      let said = room::Event::Message {
+        room: "indie".into(),
         username: "bob".into(),
         message: message.into(),
       };
@@ -436,8 +421,8 @@ mod tests {
       private: None,
     };
     messaging.rooms.tracker().joined(&data, "me");
-    let set = Event::RoomTickerAdded {
-      room_name: "indie".into(),
+    let set = room::Event::TickerAdded {
+      room: "indie".into(),
       ticker: soulseek_proto::server::RoomTicker {
         username: "mallory".into(),
         message: "listening".into(),
@@ -486,8 +471,8 @@ mod tests {
       private: None,
     };
     messaging.rooms.tracker().joined(&data, "me");
-    let set = Event::RoomTickerAdded {
-      room_name: "indie".into(),
+    let set = room::Event::TickerAdded {
+      room: "indie".into(),
       ticker: soulseek_proto::server::RoomTicker {
         username: "mallory".into(),
         message: "listening".into(),
@@ -529,7 +514,7 @@ mod tests {
       .await
       .unwrap();
     messaging
-      .handle(Event::PrivateRoomMembershipRemoved("club".into()))
+      .handle(Event::Room(room::Event::MembershipRemoved("club".into())))
       .await;
     let remembered = messaging
       .database()

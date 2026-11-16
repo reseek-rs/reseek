@@ -44,10 +44,10 @@ async fn send(client: &Client, changes: Vec<Change<'_>>) {
   let mut first = None;
   for change in changes {
     let sent = match change {
-      Change::Like(interest) => client.add_liked_interest(interest).await,
-      Change::Hate(interest) => client.add_hated_interest(interest).await,
-      Change::StopLiking(interest) => client.remove_liked_interest(interest).await,
-      Change::StopHating(interest) => client.remove_hated_interest(interest).await,
+      Change::Like(interest) => client.interests().like(interest).await,
+      Change::Hate(interest) => client.interests().hate(interest).await,
+      Change::StopLiking(interest) => client.interests().unlike(interest).await,
+      Change::StopHating(interest) => client.interests().unhate(interest).await,
     };
     if let Err(e) = sent {
       failed += 1;

@@ -7,10 +7,10 @@ use std::time::Duration;
 use api_types::transfers::TransferStates;
 use api_types::users::blocking::BlockScope;
 use reseek_shares::lock;
-use soulseek_client::{ClientError, PeerRequestOptions};
+use soulseek_client::soulseek_proto::queue_count;
+use soulseek_client::{Error as ClientError, ErrorKind};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -20,7 +20,6 @@ use crate::db::DbError;
 use crate::transfers::categories::{Condition, IN_PROGRESS, QUEUED, UNFINISHED};
 use crate::transfers::state::column;
 use crate::transfers::store;
-use soulseek_client::peer_count;
 
 /// How long a place a peer gave is answered again without asking it.
 const ASK_EVERY: Duration = Duration::from_secs(10);
@@ -61,30 +60,27 @@ impl Downloads {
       .connection
       .timeout
       .inactivity;
-    let cancel = CancellationToken::new();
     let client = self.network.client();
     // the client asks a peer about any file, so a download it does not run is found here
-    let running = |transfer: &soulseek_client::Transfer| {
+    let running = |transfer: &soulseek_client::transfer::Transfer| {
       transfer.username == username && transfer.filename.as_str() == record.filename
     };
-    if client.state().is_logged_in() && !client.downloads().iter().any(running) {
+    if client.state().is_logged_in() && !client.transfers().downloads().iter().any(running) {
       let detail = format!("no active download of {} from {username}", record.filename);
       return Err(ApiError::conflict(
         "Transfer is not queued remotely",
         Some(detail),
       ));
     }
-    let asked = client.get_download_place_in_queue(
-      username,
-      record.filename.clone(),
-      PeerRequestOptions::default(),
-      &cancel,
-    );
+    // a question given up is dropped, which stops it
+    let asked = client
+      .transfers()
+      .place_in_queue(username, record.filename.clone())
+      .into_future();
     let place = match tokio::time::timeout(timeout, asked).await {
-      Ok(Ok(place)) => peer_count(place),
+      Ok(Ok(place)) => queue_count(place),
       Ok(Err(e)) => return Err(asked_failed(username, e)),
       Err(_) => {
-        cancel.cancel();
         return Err(ApiError::gateway_timeout(format!(
           "{username} did not report a queue position in time"
         )));
@@ -106,7 +102,7 @@ impl Downloads {
     let sent = SentPlace {
       username,
       filename,
-      place: peer_count(place),
+      place: queue_count(place),
     };
     if self.places.send(sent).await.is_err() {
       debug!("place in queue not recorded; the download engine stopped");
@@ -229,15 +225,13 @@ impl Downloads {
 
 /// The answer to a peer that could not say a place in its queue.
 fn asked_failed(username: &str, error: ClientError) -> ApiError {
-  match error {
-    ClientError::Timeout(_) | ClientError::NoResponse(_) => {
-      ApiError::gateway_timeout(error.to_string())
-    }
-    ClientError::UserOffline(_) | ClientError::UserNotFound(_) => ApiError::offline(username),
-    ClientError::InvalidOperation(message) => ApiError::unavailable(Some(message)),
-    other => ApiError::upstream(
+  match error.kind() {
+    ErrorKind::Timeout | ErrorKind::NoResponse => ApiError::gateway_timeout(error.to_string()),
+    ErrorKind::UserOffline | ErrorKind::UserNotFound => ApiError::offline(username),
+    ErrorKind::InvalidOperation => ApiError::unavailable(Some(error.to_string())),
+    _ => ApiError::upstream(
       format!("Could not get the queue position from {username}"),
-      Some(other.to_string()),
+      Some(error.to_string()),
     ),
   }
 }
@@ -248,7 +242,10 @@ mod tests {
 
   #[test]
   fn a_peer_that_did_not_answer_in_time_is_a_gateway_timeout() {
-    let timed_out = ClientError::Timeout("the wait timed out after 15000 milliseconds".into());
+    let timed_out = ClientError::new(
+      ErrorKind::Timeout,
+      "the wait timed out after 15000 milliseconds",
+    );
     let said = timed_out.to_string();
     let answer = asked_failed("bob", timed_out);
     assert_eq!(answer.status(), axum::http::StatusCode::GATEWAY_TIMEOUT);

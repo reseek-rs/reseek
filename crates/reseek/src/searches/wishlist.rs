@@ -132,8 +132,7 @@ impl Searches {
     client
       .server_info()
       .wishlist_interval
-      .filter(|seconds| *seconds > 0)
-      .map(|seconds| Duration::from_secs(u64::from(seconds)))
+      .filter(|interval| !interval.is_zero())
   }
 
   /// Every wishlist item, oldest first.

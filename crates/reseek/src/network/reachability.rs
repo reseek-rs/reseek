@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use api_types::state::Reachable;
 use reseek_shares::lock;
-use tokio::sync::{Notify, watch};
+use soulseek_client::session::InboundConnections;
+use tokio::sync::Notify;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -38,7 +39,7 @@ struct Evidence {
 /// The judgment of whether other users can connect to us.
 pub struct Reachability {
   state: StateOwner,
-  inbound: watch::Receiver<u64>,
+  inbound: InboundConnections,
   evidence: Mutex<Evidence>,
   changed: Notify,
 }
@@ -58,8 +59,8 @@ pub fn judge(reached: u64, searches: usize, waited: bool) -> Reachable {
 impl Reachability {
   /// A judgment made from the connections `inbound` counts, written into `state`; it is
   /// "unknown" until we log in.
-  pub fn new(state: StateOwner, inbound: watch::Receiver<u64>) -> Self {
-    let base = *inbound.borrow();
+  pub fn new(state: StateOwner, inbound: InboundConnections) -> Self {
+    let base = inbound.count();
     Self {
       state,
       inbound,
@@ -93,7 +94,7 @@ impl Reachability {
   pub fn start_over(&self, why: &str) {
     let mut evidence = self.evidence();
     evidence.since = Instant::now();
-    evidence.base = *self.inbound.borrow();
+    evidence.base = self.inbound.count();
     evidence.answered.clear();
     drop(evidence);
     debug!(why, "reachability judged anew");
@@ -113,7 +114,7 @@ impl Reachability {
     if !evidence.logged_in {
       return (Reachable::Unknown, None);
     }
-    let reached = self.inbound.borrow().saturating_sub(evidence.base);
+    let reached = self.inbound.count().saturating_sub(evidence.base);
     let deadline = evidence.since + WAITED;
     let waited = Instant::now() >= deadline;
     let judged = judge(reached, evidence.answered.len(), waited);
@@ -129,7 +130,7 @@ impl Reachability {
       tokio::select! {
         () = shutdown.cancelled() => return,
         () = self.changed.notified() => {}
-        changed = inbound.changed() => if changed.is_err() { return },
+        changed = inbound.changed() => if changed.is_none() { return },
         () = tokio::time::sleep_until(deadline.unwrap_or_else(Instant::now)), if deadline.is_some() => {}
       }
     }
@@ -170,7 +171,9 @@ mod tests {
   #[tokio::test(start_paused = true)]
   async fn ten_minutes_with_nobody_reaching_us_say_no_until_we_log_out() {
     let state = crate::testing::state();
-    let (_inbound, counted) = watch::channel(0);
+    // a client of its own, which nobody connects to
+    let client = soulseek_client::Client::new(soulseek_client::Config::default());
+    let counted = client.inbound_connections();
     let reachability = std::sync::Arc::new(Reachability::new(state.clone(), counted));
     tokio::spawn(reachability.clone().follow(CancellationToken::new()));
     let reachable = || state.current().server.listen.reachable;

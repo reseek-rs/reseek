@@ -24,7 +24,8 @@ use api_types::messaging::rooms::{
 use api_types::users::blocking::BlockScope;
 use chrono::Utc;
 use reseek_shares::lock;
-use soulseek_client::{Client, ClientError, RoomErrorKind};
+use soulseek_client::error::RoomKind;
+use soulseek_client::{Client, Error as ClientError, ErrorKind};
 use soulseek_proto::RoomType;
 use soulseek_proto::server::{RoomData, RoomList};
 use tokio_util::sync::CancellationToken;
@@ -67,10 +68,37 @@ impl Rooms {
   }
 }
 
+/// Why a join did not end with us in the room.
+#[derive(Debug)]
+enum NotJoined {
+  /// the client's join failed
+  Client(ClientError),
+  /// the session is not logged in, as said
+  LoggedOut(String),
+  /// the room was left while it was being joined
+  Left,
+}
+
+impl From<ClientError> for NotJoined {
+  fn from(error: ClientError) -> Self {
+    Self::Client(error)
+  }
+}
+
+impl std::fmt::Display for NotJoined {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::Client(error) => error.fmt(f),
+      Self::LoggedOut(message) => f.write_str(message),
+      Self::Left => f.write_str("the room was left while it was being joined"),
+    }
+  }
+}
+
 /// The name the session is logged in as, which `verb` needs.
-fn own_username(client: &Client, verb: &str) -> Result<String, ClientError> {
+fn own_username(client: &Client, verb: &str) -> Result<String, NotJoined> {
   client.username().ok_or_else(|| {
-    ClientError::InvalidOperation(format!(
+    NotJoined::LoggedOut(format!(
       "the server connection must be connected and logged in to {verb} (currently: {})",
       client.state()
     ))
@@ -86,14 +114,20 @@ fn not_in(room: &str) -> ApiError {
 }
 
 /// The answer to a join the server refused.
-fn refused(error: ClientError) -> ApiError {
-  match error {
-    ClientError::Room {
-      kind: RoomErrorKind::JoinForbidden,
-      ..
-    } => ApiError::forbidden("A private room with this name already exists"),
-    ClientError::InvalidArgument(message) => ApiError::bad_request(message),
-    other => unsent(other),
+fn refused(error: NotJoined) -> ApiError {
+  let error = match error {
+    NotJoined::Client(error) => error,
+    NotJoined::LoggedOut(detail) => return ApiError::conflict("Not logged in", Some(detail)),
+    NotJoined::Left => {
+      return ApiError::upstream("Could not reach the server", Some(error.to_string()));
+    }
+  };
+  match error.kind() {
+    ErrorKind::Room(RoomKind::JoinForbidden) => {
+      ApiError::forbidden("A private room with this name already exists")
+    }
+    ErrorKind::InvalidArgument => ApiError::bad_request(error.to_string()),
+    _ => unsent(error),
   }
 }
 
@@ -148,7 +182,7 @@ impl Messaging {
     name: &str,
     private: bool,
     asked: bool,
-  ) -> Result<Option<Room>, ClientError> {
+  ) -> Result<Option<Room>, NotJoined> {
     self
       .join_room(name, private, asked)
       .instrument(info_span!("room", room = name))
@@ -160,7 +194,7 @@ impl Messaging {
     name: &str,
     private: bool,
     asked: bool,
-  ) -> Result<Option<Room>, ClientError> {
+  ) -> Result<Option<Room>, NotJoined> {
     let _turn = self.rooms.joins.take(name).await;
     self.join_in_turn(name, private, asked).await
   }
@@ -171,7 +205,7 @@ impl Messaging {
     name: &str,
     private: bool,
     asked: bool,
-  ) -> Result<Option<Room>, ClientError> {
+  ) -> Result<Option<Room>, NotJoined> {
     if self
       .rooms
       .tracker()
@@ -189,7 +223,7 @@ impl Messaging {
       Ok(data) => data,
       Err(e) => {
         self.rooms.tracker().not_joined(name);
-        return Err(e);
+        return Err(e.into());
       }
     };
     let room = {
@@ -209,10 +243,10 @@ impl Messaging {
         room = name,
         "the room was left while it was being joined; left again"
       );
-      if let Err(e) = client.leave_room(name).await {
+      if let Err(e) = client.rooms().leave(name).await {
         debug!(room = name, error = %e, "room joined after it was left not left again");
       }
-      return Err(ClientError::Canceled);
+      return Err(NotJoined::Left);
     };
     self.rooms_changed();
     // the server's list taken before we created a private room does not list it as ours
@@ -264,7 +298,7 @@ impl Messaging {
 
   /// Sends the join of `name` and waits for its answer. What the server says in the room from
   /// the moment the join is sent is held for it.
-  async fn ask_to_join(&self, name: &str, private: bool) -> Result<RoomData, ClientError> {
+  async fn ask_to_join(&self, name: &str, private: bool) -> Result<Arc<RoomData>, ClientError> {
     let room_type = if private {
       RoomType::Private
     } else {
@@ -272,21 +306,46 @@ impl Messaging {
     };
     let client = self.client();
     self.rooms.tracker().joining(name);
-    match client.join_room(name, room_type).await {
-      Err(ClientError::NoResponse(_)) => {
+    match client.rooms().join(name, room_type).await {
+      Err(e) if e.kind() == ErrorKind::NoResponse => {
         debug!(
           room = name,
           "the server has us in the room already; left and joined again"
         );
-        if let Err(e) = client.leave_room(name).await {
+        if let Err(e) = client.rooms().leave(name).await {
           debug!(room = name, error = %e, "room not left before joining it again");
         }
         // what the server said while it had us in the room belongs to no join of ours
         self.rooms.tracker().joining(name);
-        client.join_room(name, room_type).await
+        client.rooms().join(name, room_type).await
       }
       joined => joined,
     }
+  }
+
+  /// The server put us in `name` after the join that asked for it gave up, which was told it
+  /// failed: once no join of the room is under way, the room is left unless one joined it
+  /// meanwhile, so the server has us only in the rooms we show.
+  pub(in crate::messaging) fn entered_late(&self, name: String) {
+    let this = self.this();
+    self.tasks.spawn(
+      async move {
+        let _turn = this.rooms.joins.take(&name).await;
+        if this
+          .rooms
+          .tracker()
+          .get(&name)
+          .is_some_and(|room| room.joined)
+        {
+          return debug!(room = name, "room entered late, and joined since");
+        }
+        match this.client().rooms().leave(&name).await {
+          Ok(()) => debug!(room = name, "room entered after its join gave up; left"),
+          Err(e) => debug!(room = name, error = %e, "room entered after its join gave up not left"),
+        }
+      }
+      .in_current_span(),
+    );
   }
 
   /// Forgets the server's room list after a change to our rooms it predates, so the next look
@@ -363,11 +422,11 @@ impl Messaging {
   /// tries them.
   async fn try_again<F>(
     &self,
-    mut refused: Vec<(String, ClientError)>,
+    mut refused: Vec<(String, NotJoined)>,
     session: &CancellationToken,
     mut again: impl FnMut(Vec<String>) -> F,
   ) where
-    F: Future<Output = Vec<(String, ClientError)>>,
+    F: Future<Output = Vec<(String, NotJoined)>>,
   {
     for wait in REJOIN_AGAIN {
       if refused.is_empty() {
@@ -421,7 +480,7 @@ impl Messaging {
     &self,
     rooms: Vec<String>,
     session: &CancellationToken,
-  ) -> Vec<(String, ClientError)> {
+  ) -> Vec<(String, NotJoined)> {
     let mut refused = Vec::new();
     let mut kept = false;
     for room in rooms {
@@ -429,7 +488,7 @@ impl Messaging {
       match self.join_now(&room, false, false).await {
         Ok(Some(_)) => info!(room, "room joined"),
         Ok(None) => debug!(room, "room joined already"),
-        Err(ClientError::Canceled) => debug!(room, "room left while it was being joined"),
+        Err(NotJoined::Left) => debug!(room, "room left while it was being joined"),
         Err(e) if self.session_over(session) => {
           debug!(room, error = %e, "room not joined; the session ended");
           break;
@@ -493,9 +552,10 @@ impl Messaging {
     {
       return;
     }
-    match self.client().leave_room(name).await {
+    match self.client().rooms().leave(name).await {
       // the server answers nothing for a room it does not have us in, so we are out either way
-      Ok(()) | Err(ClientError::NoResponse(_)) => {}
+      Ok(()) => {}
+      Err(e) if e.kind() == ErrorKind::NoResponse => {}
       Err(e) => return debug!(room = name, error = %e, "room not left to join it again"),
     }
     // a leave meanwhile took the room off the tracker, and only a join, which waits for the turn
@@ -508,7 +568,7 @@ impl Messaging {
         room = name,
         "room joined again after client events were lost"
       ),
-      Err(ClientError::Canceled) => debug!(room = name, "room left while it was being joined"),
+      Err(NotJoined::Left) => debug!(room = name, "room left while it was being joined"),
       Err(e) if self.session_over(session) => {
         debug!(room = name, error = %e, "room not joined again; the session ended");
       }
@@ -549,7 +609,7 @@ impl Messaging {
         match this.join_now(&room, false, false).await {
           Ok(Some(_)) => info!(room, "room joined"),
           Ok(None) => debug!(room, "room joined already"),
-          Err(ClientError::Canceled) => debug!(room, "room left while it was being joined"),
+          Err(NotJoined::Left) => debug!(room, "room left while it was being joined"),
           Err(e) => warn!(room, error = %e, "room not joined"),
         }
       }
@@ -584,11 +644,11 @@ impl Messaging {
     };
     // a room the lost connection took us out of is only forgotten
     if joined {
-      match self.client().leave_room(room).await {
+      match self.client().rooms().leave(room).await {
         Ok(()) => {}
         // the server answers a leave of a room it does not have us in with nothing, so we are
         // out of the room either way
-        Err(ClientError::NoResponse(detail)) => {
+        Err(detail) if detail.kind() == ErrorKind::NoResponse => {
           debug!(room, %detail, "the leave went unanswered; the room is taken for left");
         }
         Err(e) => return Err(unsent(e)),
@@ -623,7 +683,8 @@ impl Messaging {
     self.speaks_in(room)?;
     self
       .client()
-      .send_room_message(room, &message)
+      .rooms()
+      .say(room, &message)
       .await
       .map_err(unsent)
   }
@@ -632,7 +693,8 @@ impl Messaging {
     self.speaks_in(room)?;
     self
       .client()
-      .set_room_ticker(room, &ticker)
+      .rooms()
+      .set_ticker(room, &ticker)
       .await
       .map_err(unsent)
   }
@@ -747,7 +809,7 @@ impl Messaging {
         Some((_, list)) => list.clone(),
         None => {
           // the answer is kept here at once, and once more as a list received
-          let list = self.client().get_room_list().await.map_err(unsent)?;
+          let list = self.client().rooms().list().await.map_err(unsent)?;
           *cached = Some((Instant::now(), list.clone()));
           list
         }
@@ -815,10 +877,9 @@ mod tests {
   use soulseek_proto::{ServerRequest, ServerResponse};
   use tokio::time::Instant;
 
-  use soulseek_client::ClientError;
   use tokio_util::sync::CancellationToken;
 
-  use super::{REJOIN_AGAIN, history};
+  use super::{NotJoined, REJOIN_AGAIN, history};
   use crate::testing::soulseek::{self, Server, US, member};
   use crate::testing::{TRUSTED, TestApp, app};
 
@@ -875,6 +936,24 @@ mod tests {
     server.login(&app).await;
     server.received(joins("lobby")).await;
     (app, server)
+  }
+
+  #[tokio::test]
+  async fn a_room_the_server_puts_us_in_after_its_join_gave_up_is_left() {
+    let app = soulseek::app(TRUSTED).await;
+    let mut server = Server::silent().await;
+    server.login(&app).await;
+    // the answer to a join that no longer waits for it
+    server.send(vec![ServerResponse::JoinRoom(RoomData {
+      name: "late".into(),
+      users: Vec::new(),
+      private: None,
+    })]);
+    let leaves = |request: &ServerRequest| {
+      matches!(request, ServerRequest::LeaveRoom(leave) if leave.room == "late").then_some(())
+    };
+    server.received(leaves).await;
+    assert!(app.state.messaging.rooms.tracker().get("late").is_none());
   }
 
   #[tokio::test]
@@ -938,8 +1017,8 @@ mod tests {
     }
     let started = Instant::now();
     let mut tries = Vec::new();
-    let refused = |rooms: Vec<String>| -> Vec<(String, ClientError)> {
-      let refusal = |room| (room, ClientError::NoResponse("refused".into()));
+    let refused = |rooms: Vec<String>| -> Vec<(String, NotJoined)> {
+      let refusal = |room| (room, NotJoined::LoggedOut("refused".into()));
       rooms.into_iter().map(refusal).collect()
     };
     let again = |rooms| {
