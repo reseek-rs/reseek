@@ -1602,7 +1602,7 @@ fn a_try_stopped_for_a_user_back_already_reads_queued_here_while_it_waits() {
     );
     let app = crate::testing::soulseek::app(&config).await;
     downloads.set(app.state.downloads.clone()).ok().unwrap();
-    let peers = Peers::start(&app, &["alice", "bob"]).await;
+    let mut peers = Peers::start(&app, &["alice", "bob"]).await;
     let (alices, bobs) = ("@@a\\1.flac", "@@b\\1.flac");
     let id = enqueued(&app, "bob", bobs).await;
     let mut bob = peers.connected("bob").await;
@@ -1620,6 +1620,15 @@ fn a_try_stopped_for_a_user_back_already_reads_queued_here_while_it_waits() {
       read(&app, id).await.state,
       State::QueuedRemotely { .. }
     ));
+    // the status bob's watch asks for is answered before the server says he is gone, so no
+    // answer that he is offline comes after the word that he is back
+    peers
+      .server
+      .received(|request| match request {
+        soulseek_proto::ServerRequest::GetStatus(asked) if asked.username == "bob" => Some(()),
+        _ => None,
+      })
+      .await;
 
     peers.presence("bob", false);
     let waiting = read_until(&app, id, |r| r.state == State::WAITING).await;
