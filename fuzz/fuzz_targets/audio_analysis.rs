@@ -2,8 +2,8 @@
 
 use std::time::{Duration, Instant};
 
-use audio_analysis::engine::{self, Settings};
-use audio_analysis::{MeasureThresholds, ReadingThresholds, reading};
+use earwitness::engine::{self, Settings};
+use earwitness::{MeasureThresholds, ReadingThresholds, reading};
 use libfuzzer_sys::fuzz_target;
 
 // a downloaded file is whatever a peer sent; the analyzer must read any bytes to a verdict

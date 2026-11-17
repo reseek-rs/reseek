@@ -2,7 +2,6 @@
 resolver = "3"
 members = [
   "crates/api-client",
-  "crates/audio-analysis",
   "crates/api-types",
   "crates/cascade",
   "crates/cascade-derive",
@@ -25,7 +24,6 @@ publish = false
 
 [workspace.dependencies]
 api-client = { path = "crates/api-client" }
-audio-analysis = { path = "crates/audio-analysis" }
 api-types = { path = "crates/api-types" }
 cascade = { path = "crates/cascade" }
 cascade-derive = { path = "crates/cascade-derive" }
@@ -41,6 +39,9 @@ bitflags = "2"
 bytesize = { version = "2", features = ["serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 directories = "6"
+# the audio analyzer, made in github.com/tetra-fox/earwitness and taken from its main; without
+# default features, which are its command-line program
+earwitness = { git = "https://github.com/tetra-fox/earwitness", branch = "main", default-features = false }
 flate2 = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 glob = "0.3"
@@ -83,11 +84,6 @@ uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
 webpki-roots = "1"
 
-# make the lossless and lossy audio the analyzer is tested on
-flacenc = { version = "0.5", default-features = false }
-# builds the LAME source it carries with autotools (`configure`, `make`, a C compiler), for
-# the test fixtures only; nothing of it is in a program
-mp3lame-encoder = "0.3"
 proptest = "1"
 tempfile = "3"
 trybuild = "1"
@@ -123,7 +119,7 @@ opt-level = 3
 [profile.dev.package.symphonia-format-isomp4]
 opt-level = 3
 
-# the encoders the analyzer's tests make audio with
+# the encoders the analyzer's test fixtures make audio with
 [profile.dev.package.flacenc]
 opt-level = 3
 

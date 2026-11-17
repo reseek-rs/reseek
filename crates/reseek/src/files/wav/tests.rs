@@ -1,7 +1,7 @@
 //! The WAV header and the range mapping, and ALAC files made hostile by editing a tone's boxes:
 //! the length and timing they state, and the packets they hold.
 
-use audio_analysis::fixtures::TONE;
+use earwitness::fixtures::TONE;
 
 use super::*;
 

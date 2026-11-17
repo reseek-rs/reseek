@@ -9,9 +9,9 @@ use std::io::{self, Cursor, Seek, SeekFrom};
 use std::ops::Range;
 use std::path::Path;
 
-use audio_analysis::decode::{Decoder, Hint, MediaSource};
 use axum::body::{Body, Bytes};
 use axum::response::Response;
+use earwitness::decode::{Decoder, Hint, MediaSource};
 use futures_util::{StreamExt, stream};
 use tracing::{debug, error, warn};
 

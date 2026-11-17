@@ -30,12 +30,12 @@ use api_types::analysis::{
 use api_types::auth::Principal;
 use api_types::files::FileRoot;
 use async_trait::async_trait;
-use audio_analysis::picture;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use cascade::Watcher;
 use chrono::Utc;
+use earwitness::picture;
 use reseek_shares::lock;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;

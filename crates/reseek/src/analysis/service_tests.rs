@@ -11,10 +11,10 @@ use std::time::Duration;
 
 use api_types::events::EventType;
 use api_types::transfers::TransferOutcome;
-use audio_analysis::fixtures::{flac, music, pink, write_flac};
 use axum::body::Body;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use earwitness::fixtures::{flac, music, pink, write_flac};
 use serde_json::{Value, json};
 
 use crate::testing::{TRUSTED, TestApp, app, request};

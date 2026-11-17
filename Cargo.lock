@@ -169,22 +169,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "audio-analysis"
-version = "0.1.0"
-dependencies = [
- "flacenc",
- "mp3lame-encoder",
- "proptest",
- "realfft",
- "serde",
- "serde_json",
- "symphonia",
- "symphonia-common",
- "tempfile",
- "tracing",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1084,6 +1068,20 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
+name = "earwitness"
+version = "0.1.0"
+source = "git+https://github.com/tetra-fox/earwitness?branch=main#dbe5d669e460845f7dfc23a6a360e01aba746732"
+dependencies = [
+ "flacenc",
+ "mp3lame-encoder",
+ "realfft",
+ "serde",
+ "symphonia",
+ "symphonia-common",
+ "tracing",
+]
 
 [[package]]
 name = "ecdsa"
@@ -3380,7 +3378,6 @@ dependencies = [
  "api-types",
  "argon2",
  "async-trait",
- "audio-analysis",
  "axum",
  "base64 0.23.1",
  "bytes",
@@ -3390,6 +3387,7 @@ dependencies = [
  "crab_nat",
  "crc32fast",
  "directories",
+ "earwitness",
  "flate2",
  "form_urlencoded",
  "futures-util",

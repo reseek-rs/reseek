@@ -8,8 +8,8 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use api_types::analysis::{SpectrogramTile, WaveformTile, WindowSpectra};
-use audio_analysis::measure::Window;
-use audio_analysis::picture::{BINS, CEILING_DB, COLUMNS_PER_SECOND, FLOOR_DB, PEAKS_PER_SECOND};
+use earwitness::measure::Window;
+use earwitness::picture::{BINS, CEILING_DB, COLUMNS_PER_SECOND, FLOOR_DB, PEAKS_PER_SECOND};
 use serde::Serialize;
 use tracing::{debug, info, warn};
 
@@ -363,7 +363,7 @@ pub(super) fn remove_older(dir: &Path) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use audio_analysis::picture::Shown;
+  use earwitness::picture::Shown;
 
   /// A window at `at` of `seconds`, its columns at `level` and its buckets at `peak`.
   fn window(at: u32, seconds: f64, level: u8, peak: i8) -> Window {

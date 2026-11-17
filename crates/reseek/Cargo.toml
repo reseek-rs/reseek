@@ -8,8 +8,8 @@ license = "AGPL-3.0-only"
 
 [dependencies]
 api-types.workspace = true
-audio-analysis.workspace = true
 cascade.workspace = true
+earwitness.workspace = true
 reseek-relay-proto.workspace = true
 reseek-shares.workspace = true
 reseek-tls.workspace = true
@@ -86,7 +86,7 @@ rustix = { version = "1", features = ["fs", "process"] }
 win32job = "2"
 
 [dev-dependencies]
-audio-analysis = { workspace = true, features = ["testing"] }
+earwitness = { workspace = true, features = ["testing"] }
 reseek-shares = { workspace = true, features = ["testing"] }
 proptest.workspace = true
 # turns a generated key into the PKCS#1 form the test identity provider signs with

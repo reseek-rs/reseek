@@ -4,8 +4,8 @@
 
 use std::io::{self, Read, Seek, SeekFrom};
 
-use audio_analysis::decode::{Decoder, Hint, MediaSource};
 use axum::body::Bytes;
+use earwitness::decode::{Decoder, Hint, MediaSource};
 
 use super::super::aiff::{self, Aiff};
 use super::{Format, Opened};

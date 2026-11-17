@@ -9,12 +9,12 @@ use api_types::analysis::{
   EncoderGuess, GuideKind, GuideLine, SpectrogramLayout, SpectrogramScale,
 };
 use api_types::files::FileRoot;
-use audio_analysis::engine::Measured;
-use audio_analysis::picture::{BINS, COLUMNS_PER_SECOND, PEAKS_PER_SECOND};
-use audio_analysis::{Flag, Measures, Reading, ReadingThresholds, Verdict};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, SecondsFormat, Utc};
+use earwitness::engine::Measured;
+use earwitness::picture::{BINS, COLUMNS_PER_SECOND, PEAKS_PER_SECOND};
+use earwitness::{Flag, Measures, Reading, ReadingThresholds, Verdict};
 use sha2::{Digest, Sha256};
 
 use super::tiles::{TILE_SECONDS, tile_count};

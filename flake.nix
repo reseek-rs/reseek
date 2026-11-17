@@ -173,6 +173,8 @@
               nightly
               pkgs.cargo-fuzz
               pkgs.just
+              # `just fuzz-seed` finds a dependency's files through `cargo metadata`
+              pkgs.jq
             ];
           };
         }
