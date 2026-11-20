@@ -216,12 +216,12 @@ soulfind:
 
 # the fuzz recipes need nightly cargo and cargo-fuzz: run them inside `nix develop .#fuzz`
 
-# the ALAC tone is earwitness's, from the checkout cargo keeps of it
+# the ALAC tone is choon's, from the copy of the crate cargo keeps
 [doc("copy the seed inputs into fuzz/corpus/<target>")]
 fuzz-seed:
     #!/usr/bin/env bash
     set -euo pipefail
-    manifest="$(cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == "earwitness") | .manifest_path')"
+    manifest="$(cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == "choon") | .manifest_path')"
     mkdir -p fuzz/corpus/wav_stream
     cp "$(dirname "$manifest")/src/fixtures/tone.m4a" fuzz/corpus/wav_stream/
 

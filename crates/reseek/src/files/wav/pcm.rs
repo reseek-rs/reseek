@@ -5,9 +5,11 @@
 use std::io::{self, Read, Seek, SeekFrom};
 
 use axum::body::Bytes;
-use earwitness::decode::{Decoder, Hint, MediaSource};
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::io::MediaSource;
 
 use super::super::aiff::{self, Aiff};
+use super::alac::Alac;
 use super::{Format, Opened};
 
 /// How much PCM one piece of the response read from an AIFF file holds, at least, and how
@@ -26,7 +28,7 @@ pub(super) enum Source {
   /// samples decoded from ALAC, each kept to its top `width` bytes and each packet's to its
   /// duration; `reopen` and `hint` open the file's container anew
   Alac {
-    decoder: Box<Decoder>,
+    decoder: Box<Alac>,
     hint: Hint,
     reopen: Reopen,
   },
@@ -57,8 +59,8 @@ impl Source {
         // with "no atom pending read"; the container is opened anew. TODO: seek to 0 in place
         // once the reader survives a failed seek
         let file = reopen().map_err(|e| format!("the file could not be opened again: {e}"))?;
-        let reopened = Decoder::from_source(file, hint)?;
-        if reopened.claimed != decoder.claimed {
+        let reopened = Alac::open(file, hint)?;
+        if reopened.stated != decoder.stated {
           return Err("the file changed while it was read".to_string());
         }
         **decoder = reopened;

@@ -716,14 +716,15 @@ const report = (
     verdict: "likely_transcode",
     confidence: 0.89,
     flags: [],
-    encoderGuess: { profile: "mp3 ~128 kbps", confidence: 0.95 },
+    grid: { codec: "MP3", encoder: "LAME" },
+    encoderGuess: { profile: "MP3 ~128 kbps", confidence: 0.95 },
     summary:
-      "100% of the time stops at 16.8 kHz with a sharp shelf, where an encoder at mp3 ~128 kbps cuts off.",
+      "100% of the time stops at 16.8 kHz with a sharp shelf, where an encoder at MP3 ~128 kbps cuts off.",
     measures: {
       cutoffHzHistogram: [[17000, 30]],
       cutoffMedianHz: 16774,
       shelfSharpnessDbP95: 61.8,
-      sfb21Holes: null,
+      topBandHoles: null,
       frameArtifactScore: 0.02,
       upsampleRatio: null,
       bitDepthEffective: 16,

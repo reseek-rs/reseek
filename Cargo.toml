@@ -37,11 +37,11 @@ reseek-ui-assets = { path = "crates/reseek-ui-assets" }
 base64 = "0.23"
 bitflags = "2"
 bytesize = { version = "2", features = ["serde"] }
+# the audio analyzer, made in github.com/tetra-fox/choon; without default features, which are its
+# command-line program
+choon = { version = "0.1", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 directories = "6"
-# the audio analyzer, made in github.com/tetra-fox/earwitness and taken from its main; without
-# default features, which are its command-line program
-earwitness = { git = "https://github.com/tetra-fox/earwitness", branch = "main", default-features = false }
 flate2 = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 glob = "0.3"
@@ -103,6 +103,9 @@ opt-level = 3
 opt-level = 3
 
 # the audio analyzer's transforms and decoders are slow unoptimized; tests analyze audio
+[profile.dev.package.choon]
+opt-level = 3
+
 [profile.dev.package.rustfft]
 opt-level = 3
 

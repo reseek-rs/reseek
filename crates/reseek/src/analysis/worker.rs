@@ -4,6 +4,7 @@
 //! the event stream and, unless its file was uploaded for it, raised as an event; one canceled
 //! leaves nothing behind, and one a stop cut off waits again in its job.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::time::Instant;
@@ -13,9 +14,8 @@ use api_types::events::{Event, FileAnalysisComplete};
 use api_types::files::FileRoot;
 use api_types::jobs::{JobKind, JobPartState, JobState};
 use api_types::live::LiveFrame;
+use choon::{Coverage, Error, MeasureThresholds, ReadingThresholds, Settings};
 use chrono::{DateTime, Utc};
-use earwitness::engine::{self, Settings};
-use earwitness::{MeasureThresholds, ReadingThresholds, reading};
 use reseek_shares::lock;
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
@@ -23,7 +23,7 @@ use tracing::{Instrument, debug, error, info, info_span, warn};
 use uuid::Uuid;
 
 use super::jobs::Running;
-use super::report::{assemble, kept_name, layout, modified_text};
+use super::report::{assemble, kept_name, layout, modified_text, unread};
 use super::{Analysis, kept, store, uploads};
 use crate::config::Options;
 use crate::jobs::{StoredPart, store as job_store};
@@ -195,12 +195,44 @@ impl Analysis {
 fn settings(options: &Options, progress: Arc<AtomicU32>, cancel: CancellationToken) -> Settings {
   let analysis = &options.analysis;
   Settings {
-    max_full_seconds: f64::from(analysis.max_full_minutes) * 60.0,
-    sampled_windows: analysis.sampled_windows as usize,
-    deadline: Instant::now() + analysis.timeout,
+    coverage: Coverage::Sampled {
+      over_seconds: f64::from(analysis.max_full_minutes) * 60.0,
+      // validation keeps the count above zero
+      windows: NonZeroUsize::new(analysis.sampled_windows as usize).unwrap_or(NonZeroUsize::MIN),
+    },
+    deadline: Some(Instant::now() + analysis.timeout),
     progress: Some(progress),
     canceled: Some(Arc::new(move || cancel.is_cancelled())),
     thresholds: MeasureThresholds::default(),
+  }
+}
+
+/// Runs `analysis` in a rayon pool of one thread. The analyzer runs its codec grid scan's jobs
+/// on the pool it is called from inside, so each worker keeps to one processor.
+fn on_one_thread<T: Send>(
+  analysis: impl FnOnce() -> T + Send,
+) -> Result<T, rayon::ThreadPoolBuildError> {
+  let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build()?;
+  Ok(pool.install(analysis))
+}
+
+/// What an analysis that measured nothing comes to: what limits the report of a file that
+/// could not be read as audio, or how the file's part ends without a report.
+fn unread_reason(error: Error) -> Result<String, Done> {
+  match error {
+    Error::Canceled => Err(Done::Canceled),
+    Error::Panicked => {
+      warn!("the analyzer panicked on the file");
+      Err(Done::Failed("The analyzer failed on this file".to_string()))
+    }
+    Error::Open(e) => Ok(format!("The file could not be opened: {e}")),
+    Error::OutOfTime => Ok("The analysis ran out of time while opening the file".to_string()),
+    // the analyzer's reason is a clause, and here it is a list item of its own
+    Error::NotAudio(why) | Error::Unsupported(why) => {
+      let mut chars = why.chars();
+      let first = chars.next().map(char::to_uppercase);
+      Ok(first.into_iter().flatten().chain(chars).collect())
+    }
   }
 }
 
@@ -235,37 +267,43 @@ async fn finish(analysis: &Analysis, job: &Running, started: Instant) -> Done {
   let kept_as = name.clone();
   let span = tracing::Span::current();
   let worked = tokio::task::spawn_blocking(move || {
+    let measured = on_one_thread(|| {
+      let _entered = span.enter();
+      choon::measure(&file.resolved, &settings)
+    })
+    .map_err(|e| Done::Failed(format!("The analysis could not start: {e}")))?;
     let _entered = span.enter();
-    let measured = engine::run(&file.resolved, &settings)?;
+    let measured = match measured {
+      Ok(measured) => measured,
+      Err(e) => {
+        debug!(error = %e, "nothing measured in the file");
+        return Ok((unread(&file, unread_reason(e)?, Utc::now()), None));
+      }
+    };
     // a job canceled since its last window leaves nothing behind
     if cancel.is_cancelled() {
-      return Err(engine::Canceled);
+      return Err(Done::Canceled);
     }
-    let thresholds = ReadingThresholds::default();
-    let read = reading::read(&measured, &thresholds);
-    let mut problem = None;
-    let drawn = measured.claimed.as_ref().and_then(|claimed| {
-      let max_hz = f64::from(claimed.sample_rate) / 2.0;
-      let contents = kept::contents(&measured.windows, measured.duration, max_hz);
-      match kept::write(&dir, &kept_as, &contents) {
-        Ok(bytes) => {
-          let layout = layout(
-            measured.duration,
-            max_hz,
-            measured.sampled,
-            read.cutoff_hz,
-            scale,
-            &thresholds,
-          );
-          Some((layout, bytes))
-        }
-        Err(e) => {
-          warn!(error = e, "spectrogram not kept");
-          problem = Some(format!("The spectrogram could not be stored: {e}"));
-          None
-        }
+    let read = measured.read(&ReadingThresholds::default());
+    let max_hz = f64::from(measured.claimed.sample_rate) / 2.0;
+    let contents = kept::contents(&measured.windows, measured.duration, max_hz);
+    let (drawn, problem) = match kept::write(&dir, &kept_as, &contents) {
+      Ok(bytes) => {
+        let layout = layout(
+          measured.duration,
+          max_hz,
+          measured.sampled,
+          read.cutoff_hz,
+          scale,
+        );
+        (Some((layout, bytes)), None)
       }
-    });
+      Err(e) => {
+        warn!(error = e, "spectrogram not kept");
+        let problem = format!("The spectrogram could not be stored: {e}");
+        (None, Some(problem))
+      }
+    };
     let (layout, bytes) = drawn.unzip();
     let mut report = assemble(&file, &measured, read, layout, Utc::now());
     report.limitations.extend(problem);
@@ -274,10 +312,11 @@ async fn finish(analysis: &Analysis, job: &Running, started: Instant) -> Done {
   .await;
   let (report, bytes) = match worked {
     Ok(Ok(done)) => done,
-    Ok(Err(engine::Canceled)) => {
+    Ok(Err(Done::Canceled)) => {
       debug!("analysis canceled");
       return Done::Canceled;
     }
+    Ok(Err(ended)) => return ended,
     Err(e) => {
       error!(error = %e, "analysis worker failed");
       return Done::Failed(format!("The analysis stopped: {e}"));

@@ -3581,7 +3581,7 @@ export interface components {
          * @description A finding reported alongside the verdict, independent of the cutoff.
          * @enum {string}
          */
-        AnalysisFlag: "upsampled" | "bit_padded";
+        AnalysisFlag: "upsampled" | "bit_padded" | "dual_mono";
         /** @description A file waiting for or under analysis, an entry of `GET /analysis/jobs`. */
         AnalysisJob: {
             /**
@@ -3689,11 +3689,6 @@ export interface components {
             peakDbfs?: number | null;
             /**
              * Format: double
-             * @description the ratio of near-zero to populated bins between 16 and 20 kHz
-             */
-            sfb21Holes?: number | null;
-            /**
-             * Format: double
              * @description the 95th percentile of the energy drop across 500 Hz above the cutoff, in dB
              */
             shelfSharpnessDbP95?: number | null;
@@ -3707,6 +3702,11 @@ export interface components {
              * @description the correlation between the channels, null for mono
              */
             stereoCorrelation?: number | null;
+            /**
+             * Format: double
+             * @description the ratio of near-zero to populated bins between 16 and 20 kHz
+             */
+            topBandHoles?: number | null;
             /**
              * Format: double
              * @description the fraction of energy above half the claimed band, null unless the file claims more
@@ -3788,7 +3788,7 @@ export interface components {
          * @description The analyzer's reading of whether the audio matches the format the file claims.
          * @enum {string}
          */
-        AnalysisVerdict: "consistent" | "likely_transcode" | "mixed_sources" | "inconclusive";
+        AnalysisVerdict: "consistent" | "likely_transcode" | "mixed_sources" | "possibly_lossy" | "inconclusive";
         /** @description The measures of one analyzed window. */
         AnalysisWindow: {
             /**
@@ -3840,6 +3840,11 @@ export interface components {
             encoderGuess?: components["schemas"]["EncoderGuess"] | null;
             /** @description findings independent of the verdict, empty when there are none */
             flags: components["schemas"]["AnalysisFlag"][];
+            /**
+             * @description the lossy codec's frame grid the samples show; null when none shows or none was looked
+             *     for, and in a report made before grids were looked for
+             */
+            grid?: components["schemas"]["CodecGrid"] | null;
             /** @description what made this analysis less reliable, such as few windows or a decoder error */
             limitations: string[];
             /** @description the aggregate measures over the non-silent windows */
@@ -4232,6 +4237,22 @@ export interface components {
              * @example 44100
              */
             sampleRate: number;
+        };
+        /**
+         * @description A lossy codec's frame grid found in a file's samples: an encoder cuts audio into frames, and
+         *     a decode keeps the marks of where they fell.
+         */
+        CodecGrid: {
+            /**
+             * @description the codec whose grid it is
+             * @example MP3
+             */
+            codec: string;
+            /**
+             * @description the encoder the grid's place is consistent with, null when it is no known encoder's
+             * @example LAME
+             */
+            encoder?: string | null;
         };
         /** @description Transfers that finished since the daemon started. */
         CompletedMetrics: {
@@ -4757,7 +4778,7 @@ export interface components {
             confidence: number;
             /**
              * @description the codec and approximate bitrate
-             * @example mp3 ~128 kbps
+             * @example MP3 ~128 kbps
              */
             profile: string;
         };

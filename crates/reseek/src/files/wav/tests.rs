@@ -1,7 +1,7 @@
 //! The WAV header and the range mapping, and ALAC files made hostile by editing a tone's boxes:
 //! the length and timing they state, and the packets they hold.
 
-use earwitness::fixtures::TONE;
+use choon::fixtures::TONE;
 
 use super::*;
 
@@ -252,7 +252,7 @@ fn two_tracks() -> Vec<u8> {
 fn no_seek_places_a_frame_past_where_another_track_ends() {
   let mut hint = Hint::new();
   hint.with_extension("m4a");
-  let mut decoder = Decoder::from_source(Box::new(Cursor::new(two_tracks())), &hint).unwrap();
+  let mut decoder = Alac::open(Box::new(Cursor::new(two_tracks())), &hint).unwrap();
   assert_eq!(decoder.seek_frame(12_000), Ok(false));
 }
 

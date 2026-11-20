@@ -2,6 +2,7 @@
 //! header followed by PCM. AIFF needs its samples swapped to little-endian, ALAC is decoded. The
 //! length is known from the start, and a range maps to a place in the PCM, so seeking works.
 
+mod alac;
 mod pcm;
 
 use std::fs::File;
@@ -11,8 +12,9 @@ use std::path::Path;
 
 use axum::body::{Body, Bytes};
 use axum::response::Response;
-use earwitness::decode::{Decoder, Hint, MediaSource};
 use futures_util::{StreamExt, stream};
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::io::MediaSource;
 use tracing::{debug, error, warn};
 
 use super::ServeSpeed;
@@ -20,6 +22,7 @@ use super::aiff::{self, Header};
 use super::serve::{self, Entity, Ranged, Served};
 use crate::api::error::ApiError;
 use crate::services::ContentRequest;
+use alac::Alac;
 use pcm::{Pcm, Reopen, Source};
 
 /// The bytes of the WAV header.
@@ -165,35 +168,32 @@ fn alac(
   if let Some(extension) = extension {
     hint.with_extension(extension);
   }
-  let mut decoder = Decoder::from_source(file, &hint).map_err(|reason| {
+  let mut decoder = Alac::open(file, &hint).map_err(|reason| {
     debug!(reason, "a file was not opened for WAV");
     plain()
   })?;
-  let claimed = &decoder.claimed;
-  if claimed.codec != "alac" {
-    return Err(plain());
-  }
+  let stated = decoder.stated;
   if !decoder.ticks_fit_frames() {
     return Err(Refused::Format(
       "the file does not time its packets in sample frames".to_string(),
     ));
   }
-  let frames = claimed
+  let frames = stated
     .frames
     .ok_or_else(|| Refused::Format("the file does not state its length".to_string()))?;
-  let bits = claimed
+  let bits = stated
     .bit_depth
     .ok_or_else(|| Refused::Format("the file does not state its bit depth".to_string()))?;
   let width = u16::try_from(bits.div_ceil(8))
     .ok()
     .filter(|width| (1..=4).contains(width))
     .ok_or_else(|| Refused::Format(format!("{bits}-bit samples cannot be served")))?;
-  let channels = u16::try_from(claimed.channels)
+  let channels = u16::try_from(stated.channels)
     .map_err(|_| Refused::Format("the file states too many channels".to_string()))?;
   let format = Format {
     tag: INTEGER,
     channels,
-    sample_rate: claimed.sample_rate,
+    sample_rate: stated.sample_rate,
     width,
     frames,
   };

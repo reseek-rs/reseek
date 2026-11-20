@@ -10,7 +10,7 @@ cargo-fuzz = true
 [dependencies]
 api-types = { path = "../crates/api-types" }
 cascade = { path = "../crates/cascade" }
-earwitness = { git = "https://github.com/tetra-fox/earwitness", branch = "main", default-features = false }
+choon = { version = "0.1", default-features = false }
 libfuzzer-sys = "0.4"
 reseek = { path = "../crates/reseek", default-features = false }
 serde = { version = "1", features = ["derive"] }

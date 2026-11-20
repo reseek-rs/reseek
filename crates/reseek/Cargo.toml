@@ -9,7 +9,7 @@ license = "AGPL-3.0-only"
 [dependencies]
 api-types.workspace = true
 cascade.workspace = true
-earwitness.workspace = true
+choon.workspace = true
 reseek-relay-proto.workspace = true
 reseek-shares.workspace = true
 reseek-tls.workspace = true
@@ -45,6 +45,8 @@ openidconnect = { version = "4", default-features = false }
 p12-keystore = "0.4"
 percent-encoding = "2"
 rand.workspace = true
+# the pool an analysis runs in, which keeps the analyzer's grid scan to one thread a worker
+rayon = "1"
 rcgen.workspace = true
 regex.workspace = true
 reqwest = { workspace = true, features = ["cookies", "json", "multipart", "stream"] }
@@ -58,6 +60,9 @@ serde_path_to_error.workspace = true
 serde_plain.workspace = true
 sha2.workspace = true
 subtle.workspace = true
+# reads and decodes the ALAC files served as WAV
+symphonia = { version = "0.6.1", default-features = false, features = ["alac", "isomp4"] }
+symphonia-common = "0.6.1"
 sysinfo = { version = "0.40", default-features = false, features = ["disk", "network", "system"] }
 thiserror.workspace = true
 time = "0.3"
@@ -86,7 +91,7 @@ rustix = { version = "1", features = ["fs", "process"] }
 win32job = "2"
 
 [dev-dependencies]
-earwitness = { workspace = true, features = ["testing"] }
+choon = { workspace = true, features = ["testing"] }
 reseek-shares = { workspace = true, features = ["testing"] }
 proptest.workspace = true
 # turns a generated key into the PKCS#1 form the test identity provider signs with

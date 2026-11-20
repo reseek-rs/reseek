@@ -6,15 +6,14 @@ use std::time::SystemTime;
 
 use api_types::analysis::{
   AnalysisFlag, AnalysisMeasures, AnalysisVerdict, AnalysisWindow, AudioAnalysis, ClaimedFormat,
-  EncoderGuess, GuideKind, GuideLine, SpectrogramLayout, SpectrogramScale,
+  CodecGrid, EncoderGuess, GuideKind, GuideLine, SpectrogramLayout, SpectrogramScale,
 };
 use api_types::files::FileRoot;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use choon::picture::{BINS, COLUMNS_PER_SECOND, PEAKS_PER_SECOND};
+use choon::{Flag, Measured, Measures, Reading, Verdict};
 use chrono::{DateTime, SecondsFormat, Utc};
-use earwitness::engine::Measured;
-use earwitness::picture::{BINS, COLUMNS_PER_SECOND, PEAKS_PER_SECOND};
-use earwitness::{Flag, Measures, Reading, ReadingThresholds, Verdict};
 use sha2::{Digest, Sha256};
 
 use super::tiles::{TILE_SECONDS, tile_count};
@@ -58,19 +57,30 @@ impl From<crate::config::enums::SpectrogramScale> for SpectrogramScale {
   }
 }
 
+/// The encoder cutoffs drawn across a spectrogram, in Hz, with their labels: the commonest of
+/// the cutoffs the analyzer's default profiles hold.
+const ENCODER_GUIDES: [(f64, &str); 4] = [
+  (16_000.0, "MP3 128k"),
+  (18_600.0, "MP3 192k"),
+  (19_530.0, "MP3 224-256k"),
+  (20_000.0, "MP3 320k / AAC"),
+];
+
+/// What a report says in place of a reading of a file that could not be read as audio.
+const UNREAD_SUMMARY: &str = "The file could not be read as audio.";
+
 /// How the spectrogram of audio `duration` seconds long whose band ends at `max_hz` is served,
-/// with a guide line at each common encoder cutoff below the top of the band, as `thresholds`
-/// label them, one at the top, and one at the analyzer's cutoff when it found one.
+/// with a guide line at each common encoder cutoff below the top of the band, one at the top,
+/// and one at the analyzer's cutoff when it found one.
 pub(super) fn layout(
   duration: f64,
   max_hz: f64,
   sampled: bool,
   cutoff_hz: Option<f64>,
   scale: SpectrogramScale,
-  thresholds: &ReadingThresholds,
 ) -> SpectrogramLayout {
-  let mut guides: Vec<GuideLine> = thresholds
-    .guides()
+  let mut guides: Vec<GuideLine> = ENCODER_GUIDES
+    .into_iter()
     .filter(|(hz, _)| *hz < max_hz)
     .map(|(hz, label)| GuideLine {
       hz,
@@ -114,27 +124,18 @@ pub(super) fn assemble(
   layout: Option<SpectrogramLayout>,
   analyzed_at: DateTime<Utc>,
 ) -> AudioAnalysis {
-  let claimed = match &measured.claimed {
-    Some(claimed) => ClaimedFormat {
-      codec: claimed.codec.clone(),
-      sample_rate: claimed.sample_rate,
-      bit_depth: claimed.bit_depth,
-      channels: claimed.channels,
-      bitrate_kbps: measured.bitrate_kbps,
-    },
-    None => ClaimedFormat {
-      codec: "unknown".to_string(),
-      sample_rate: 0,
-      bit_depth: None,
-      channels: 0,
-      bitrate_kbps: None,
-    },
+  let claimed = ClaimedFormat {
+    codec: measured.claimed.codec.clone(),
+    sample_rate: measured.claimed.sample_rate,
+    bit_depth: measured.claimed.bit_depth,
+    channels: measured.claimed.channels,
+    bitrate_kbps: measured.bitrate_kbps,
   };
   let windows = measured
     .windows
     .iter()
     .map(|w| AnalysisWindow {
-      t: w.t,
+      t: w.start,
       cutoff_hz: w.cutoff_hz.map(|hz| hz.round() as u32),
       shelf_db: w.shelf_db.map(|db| (db * 10.0).round() / 10.0),
       rms_dbfs: (w.rms_dbfs * 10.0).round() / 10.0,
@@ -152,8 +153,12 @@ pub(super) fn assemble(
     verdict: verdict(reading.verdict),
     confidence: (reading.confidence * 100.0).round() / 100.0,
     flags: reading.flags.into_iter().map(flag).collect(),
+    grid: reading.grid.map(|found| CodecGrid {
+      codec: found.codec.to_string(),
+      encoder: found.family.map(|family| family.to_string()),
+    }),
     encoder_guess: reading.encoder_guess.map(|guess| EncoderGuess {
-      profile: guess.profile,
+      profile: guess.profile.to_string(),
       confidence: guess.confidence,
     }),
     summary: reading.summary,
@@ -162,8 +167,73 @@ pub(super) fn assemble(
     spectrogram_url: spectrogram_url(file.root, &file.relative),
     spectrogram: layout,
     judgment: None,
-    limitations: reading.limitations,
+    limitations: reading
+      .limitations
+      .iter()
+      .map(ToString::to_string)
+      .collect(),
     stale: false,
+  }
+}
+
+/// The report of `file` when it could not be read as audio, with `reason` as what limits it.
+pub(super) fn unread(
+  file: &LocalFile,
+  reason: String,
+  analyzed_at: DateTime<Utc>,
+) -> AudioAnalysis {
+  AudioAnalysis {
+    path: file.path.to_string_lossy().into_owned(),
+    root: file.root,
+    relative_path: file.relative.clone(),
+    transfer_id: file.transfer_id,
+    size: file.size,
+    analyzed_at,
+    duration_seconds: 0.0,
+    claimed: unknown_format(),
+    verdict: AnalysisVerdict::Inconclusive,
+    confidence: 0.0,
+    flags: Vec::new(),
+    grid: None,
+    encoder_guess: None,
+    summary: UNREAD_SUMMARY.to_string(),
+    measures: no_measures(),
+    windows: Some(Vec::new()),
+    spectrogram_url: spectrogram_url(file.root, &file.relative),
+    spectrogram: None,
+    judgment: None,
+    limitations: vec![reason],
+    stale: false,
+  }
+}
+
+/// The format of a file that was not read as audio.
+pub(super) fn unknown_format() -> ClaimedFormat {
+  ClaimedFormat {
+    codec: "unknown".to_string(),
+    sample_rate: 0,
+    bit_depth: None,
+    channels: 0,
+    bitrate_kbps: None,
+  }
+}
+
+/// The measures of a file nothing was measured in.
+pub(super) fn no_measures() -> AnalysisMeasures {
+  AnalysisMeasures {
+    cutoff_hz_histogram: Vec::new(),
+    cutoff_median_hz: None,
+    shelf_sharpness_db_p95: None,
+    top_band_holes: None,
+    frame_artifact_score: None,
+    upsample_ratio: None,
+    bit_depth_effective: None,
+    noise_floor_dbfs: None,
+    stereo_correlation: None,
+    side_energy_db: None,
+    dc_offset: None,
+    clipped_samples_pct: None,
+    peak_dbfs: None,
   }
 }
 
@@ -172,6 +242,7 @@ fn verdict(verdict: Verdict) -> AnalysisVerdict {
     Verdict::Consistent => AnalysisVerdict::Consistent,
     Verdict::LikelyTranscode => AnalysisVerdict::LikelyTranscode,
     Verdict::MixedSources => AnalysisVerdict::MixedSources,
+    Verdict::PossiblyLossy => AnalysisVerdict::PossiblyLossy,
     Verdict::Inconclusive => AnalysisVerdict::Inconclusive,
   }
 }
@@ -180,15 +251,20 @@ fn flag(flag: Flag) -> AnalysisFlag {
   match flag {
     Flag::Upsampled => AnalysisFlag::Upsampled,
     Flag::BitPadded => AnalysisFlag::BitPadded,
+    Flag::DualMono => AnalysisFlag::DualMono,
   }
 }
 
 fn measures(measures: Measures) -> AnalysisMeasures {
   AnalysisMeasures {
-    cutoff_hz_histogram: measures.cutoff_hz_histogram,
+    cutoff_hz_histogram: measures
+      .cutoff_hz_histogram
+      .iter()
+      .map(|bucket| [bucket.hz, bucket.windows])
+      .collect(),
     cutoff_median_hz: measures.cutoff_median_hz,
     shelf_sharpness_db_p95: measures.shelf_sharpness_db_p95,
-    sfb21_holes: measures.sfb21_holes,
+    top_band_holes: measures.top_band_holes,
     frame_artifact_score: measures.frame_artifact_score,
     upsample_ratio: measures.upsample_ratio,
     bit_depth_effective: measures.bit_depth_effective,
@@ -206,29 +282,18 @@ mod tests {
   use super::*;
 
   #[test]
-  fn the_encoder_guides_sit_at_the_cutoffs_the_analyzer_names() {
-    let sent = layout(
-      60.0,
-      22_050.0,
-      false,
-      None,
-      SpectrogramScale::Linear,
-      &ReadingThresholds::default(),
-    );
+  fn the_encoder_guides_sit_at_cutoffs_the_analyzer_matches() {
+    let sent = layout(60.0, 22_050.0, false, None, SpectrogramScale::Linear);
     let encoders: Vec<(f64, &str)> = sent
       .guides
       .iter()
       .filter(|guide| guide.kind == GuideKind::Encoder)
       .map(|guide| (guide.hz, guide.label.as_str()))
       .collect();
-    assert_eq!(
-      encoders,
-      [
-        (16_000.0, "MP3 128k"),
-        (18_600.0, "MP3 192k"),
-        (19_530.0, "MP3 224-256k"),
-        (20_000.0, "MP3 320k / AAC"),
-      ]
-    );
+    assert_eq!(encoders, ENCODER_GUIDES);
+    let profiles = choon::ReadingThresholds::default().profiles;
+    for (hz, label) in ENCODER_GUIDES {
+      assert!(profiles.iter().any(|profile| profile.hz == hz), "{label}");
+    }
   }
 }

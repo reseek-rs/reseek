@@ -511,7 +511,7 @@ async fn alac_decodes_to_pcm_whose_ranges_match_the_whole_across_packets() {
   let app = with_files(CONFIG).await;
   std::fs::write(
     app.state.paths.downloads.join("tone.m4a"),
-    earwitness::fixtures::TONE,
+    choon::fixtures::TONE,
   )
   .unwrap();
   let uri = wav_uri("tone.m4a");

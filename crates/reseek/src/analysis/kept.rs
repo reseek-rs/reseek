@@ -8,8 +8,8 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use api_types::analysis::{SpectrogramTile, WaveformTile, WindowSpectra};
-use earwitness::measure::Window;
-use earwitness::picture::{BINS, CEILING_DB, COLUMNS_PER_SECOND, FLOOR_DB, PEAKS_PER_SECOND};
+use choon::Window;
+use choon::picture::{BINS, CEILING_DB, COLUMNS_PER_SECOND, FLOOR_DB, PEAKS_PER_SECOND};
 use serde::Serialize;
 use tracing::{debug, info, warn};
 
@@ -80,12 +80,21 @@ fn waveform_answer(cut: &Cut) -> Vec<u8> {
 /// The file's contents for `windows` of audio `duration` seconds long whose band ends at
 /// `max_hz`.
 pub(super) fn contents(windows: &[Window], duration: f64, max_hz: f64) -> Vec<u8> {
+  // each bucket's lowest and highest sample, as the bytes a tile holds
+  let peaks: Vec<Vec<u8>> = windows
+    .iter()
+    .map(|w| {
+      let buckets = w.shown.peaks.iter().flatten();
+      buckets.map(|sample| sample.cast_unsigned()).collect()
+    })
+    .collect();
   let seconds: Vec<Second<'_>> = windows
     .iter()
-    .map(|w| Second {
-      at: w.t as u32,
+    .zip(&peaks)
+    .map(|(w, peaks)| Second {
+      at: w.start as u32,
       columns: &w.shown.columns,
-      peaks: &w.shown.peaks,
+      peaks,
     })
     .collect();
   let spectrogram = spectrogram_answer(
@@ -363,14 +372,14 @@ pub(super) fn remove_older(dir: &Path) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use earwitness::picture::Shown;
+  use choon::picture::Shown;
 
   /// A window at `at` of `seconds`, its columns at `level` and its buckets at `peak`.
   fn window(at: u32, seconds: f64, level: u8, peak: i8) -> Window {
     let columns = (seconds * COLUMNS_PER_SECOND as f64).ceil() as usize;
     let peaks = (seconds * PEAKS_PER_SECOND as f64).ceil() as usize;
     Window {
-      t: f64::from(at),
+      start: f64::from(at),
       seconds,
       rms_dbfs: -20.0,
       cutoff_hz: None,
@@ -378,11 +387,12 @@ mod tests {
       holes: None,
       inner_shelf: None,
       frame_score: None,
-      energy: (0.0, 0.0),
+      upper_power: 0.0,
+      power: 0.0,
       shown: Shown {
         spectrum: vec![level; BINS],
         columns: vec![level; columns * BINS],
-        peaks: [(-peak) as u8, peak as u8].repeat(peaks),
+        peaks: vec![[-peak, peak]; peaks],
       },
     }
   }

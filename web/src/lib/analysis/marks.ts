@@ -3,7 +3,7 @@ import { type Judgment, JUDGMENTS, type Report, VERDICTS } from "./analysis";
 /** What a list shows of a file's analysis: the user's judgment, or else the analyzer's reading */
 export type Mark = {
   verdict: Report["verdict"];
-  /** the encoder profile the analyzer matched, such as `mp3 ~128 kbps` */
+  /** the encoder profile the analyzer matched, such as `MP3 ~128 kbps` */
   profile: string | null;
   judgment: Judgment | null;
   note: string | null;

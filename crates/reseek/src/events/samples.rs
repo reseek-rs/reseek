@@ -7,8 +7,8 @@
 //! made by the same rule.
 
 use api_types::analysis::{
-  AnalysisMeasures, AnalysisOverride, AnalysisVerdict, AudioAnalysis, ClaimedFormat, EncoderGuess,
-  Judgment, SpectrogramLayout, SpectrogramScale,
+  AnalysisMeasures, AnalysisOverride, AnalysisVerdict, AudioAnalysis, ClaimedFormat, CodecGrid,
+  EncoderGuess, Judgment, SpectrogramLayout, SpectrogramScale,
 };
 use api_types::auth::{Role, Via};
 use api_types::events::{
@@ -245,6 +245,10 @@ fn blank_analysis(d: &str, now: DateTime<Utc>) -> AudioAnalysis {
     verdict: AnalysisVerdict::Consistent,
     confidence: 0.0,
     flags: Vec::new(),
+    grid: Some(CodecGrid {
+      codec: text("codec"),
+      encoder: Some(text("encoder")),
+    }),
     encoder_guess: Some(EncoderGuess {
       profile: text("profile"),
       confidence: 0.0,
@@ -254,7 +258,7 @@ fn blank_analysis(d: &str, now: DateTime<Utc>) -> AudioAnalysis {
       cutoff_hz_histogram: Vec::new(),
       cutoff_median_hz: Some(0),
       shelf_sharpness_db_p95: Some(0.0),
-      sfb21_holes: Some(0.0),
+      top_band_holes: Some(0.0),
       frame_artifact_score: Some(0.0),
       upsample_ratio: Some(0.0),
       bit_depth_effective: Some(0),

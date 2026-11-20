@@ -17,12 +17,17 @@ use crate::files::FileRoot;
 pub enum AnalysisVerdict {
   /// nearly every window reaches the top of the claimed band without an encoder's shelf
   Consistent,
-  /// nearly every window stops at the same known encoder cutoff with a sharp shelf or frame
-  /// artifacts
+  /// the samples show a lossy codec's frame grid; in a file no grid is looked for in, one that
+  /// claims a lossy codec or is DSD, nearly every window stops at the same known encoder cutoff
+  /// with a sharp shelf
   LikelyTranscode,
   /// part of the time or part of the frequency range is band-limited while the rest is full
-  /// band, as when one low-bitrate stem is mixed into a lossless track
+  /// band, as when one low-bitrate stem is mixed into a lossless track; a file a grid is looked
+  /// for in reads as possibly lossy instead
   MixedSources,
+  /// the cutoff reads as lossy and no codec's frame grid shows: a recording filtered where an
+  /// encoder cuts and a decode resampled afterwards both look like this
+  PossiblyLossy,
   /// too little audio, or measures that fit no pattern
   Inconclusive,
 }
@@ -36,6 +41,8 @@ pub enum AnalysisFlag {
   Upsampled,
   /// a file claiming 24 bits carries no more than 16
   BitPadded,
+  /// the two channels hold the same audio
+  DualMono,
 }
 
 /// The user's own judgment of a file.
@@ -74,6 +81,10 @@ pub struct AudioAnalysis {
   pub confidence: f64,
   /// findings independent of the verdict, empty when there are none
   pub flags: Vec<AnalysisFlag>,
+  /// the lossy codec's frame grid the samples show; null when none shows or none was looked
+  /// for, and in a report made before grids were looked for
+  #[serde(default)]
+  pub grid: Option<CodecGrid>,
   /// the encoder profile the cutoff matches, null when it matches none
   pub encoder_guess: Option<EncoderGuess>,
   /// one sentence saying what the analyzer found and where
@@ -125,10 +136,23 @@ pub struct ClaimedFormat {
 #[serde(rename_all = "camelCase")]
 pub struct EncoderGuess {
   /// the codec and approximate bitrate
-  #[schema(example = "mp3 ~128 kbps")]
+  #[schema(example = "MP3 ~128 kbps")]
   pub profile: String,
   /// how sure the analyzer is of the match, from 0 to 1
   pub confidence: f64,
+}
+
+/// A lossy codec's frame grid found in a file's samples: an encoder cuts audio into frames, and
+/// a decode keeps the marks of where they fell.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CodecGrid {
+  /// the codec whose grid it is
+  #[schema(example = "MP3")]
+  pub codec: String,
+  /// the encoder the grid's place is consistent with, null when it is no known encoder's
+  #[schema(example = "LAME")]
+  pub encoder: Option<String>,
 }
 
 /// The aggregate measures of a file. Each is null when the file had too little non-silent
@@ -144,7 +168,8 @@ pub struct AnalysisMeasures {
   /// the 95th percentile of the energy drop across 500 Hz above the cutoff, in dB
   pub shelf_sharpness_db_p95: Option<f64>,
   /// the ratio of near-zero to populated bins between 16 and 20 kHz
-  pub sfb21_holes: Option<f64>,
+  #[serde(alias = "sfb21Holes")]
+  pub top_band_holes: Option<f64>,
   /// how strongly the noise floor repeats at lossy codec frame lengths, from 0 to 1
   pub frame_artifact_score: Option<f64>,
   /// the fraction of energy above half the claimed band, null unless the file claims more

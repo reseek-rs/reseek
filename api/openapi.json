@@ -16661,7 +16661,8 @@
         "description": "A finding reported alongside the verdict, independent of the cutoff.",
         "enum": [
           "upsampled",
-          "bit_padded"
+          "bit_padded",
+          "dual_mono"
         ]
       },
       "AnalysisJob": {
@@ -16837,14 +16838,6 @@
             "format": "double",
             "description": "the loudest sample of the analyzed audio in dBFS, on either channel; for a sampled read,\nthe loudest in the windows read. Null for silence and in a report made before it was\nmeasured"
           },
-          "sfb21Holes": {
-            "type": [
-              "number",
-              "null"
-            ],
-            "format": "double",
-            "description": "the ratio of near-zero to populated bins between 16 and 20 kHz"
-          },
           "shelfSharpnessDbP95": {
             "type": [
               "number",
@@ -16868,6 +16861,14 @@
             ],
             "format": "double",
             "description": "the correlation between the channels, null for mono"
+          },
+          "topBandHoles": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "the ratio of near-zero to populated bins between 16 and 20 kHz"
           },
           "upsampleRatio": {
             "type": [
@@ -17025,6 +17026,7 @@
           "consistent",
           "likely_transcode",
           "mixed_sources",
+          "possibly_lossy",
           "inconclusive"
         ]
       },
@@ -17131,6 +17133,17 @@
               "$ref": "#/components/schemas/AnalysisFlag"
             },
             "description": "findings independent of the verdict, empty when there are none"
+          },
+          "grid": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CodecGrid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "the lossy codec's frame grid the samples show; null when none shows or none was looked\nfor, and in a report made before grids were looked for"
           },
           "limitations": {
             "type": "array",
@@ -17898,6 +17911,28 @@
             "description": "samples per second",
             "example": 44100,
             "minimum": 0
+          }
+        }
+      },
+      "CodecGrid": {
+        "type": "object",
+        "description": "A lossy codec's frame grid found in a file's samples: an encoder cuts audio into frames, and\na decode keeps the marks of where they fell.",
+        "required": [
+          "codec"
+        ],
+        "properties": {
+          "codec": {
+            "type": "string",
+            "description": "the codec whose grid it is",
+            "example": "MP3"
+          },
+          "encoder": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "the encoder the grid's place is consistent with, null when it is no known encoder's",
+            "example": "LAME"
           }
         }
       },
@@ -18888,7 +18923,7 @@
           "profile": {
             "type": "string",
             "description": "the codec and approximate bitrate",
-            "example": "mp3 ~128 kbps"
+            "example": "MP3 ~128 kbps"
           }
         }
       },

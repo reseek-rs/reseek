@@ -128,13 +128,15 @@ export const VERDICTS: Record<Report["verdict"], string> = {
   consistent: "Consistent with its format",
   likely_transcode: "Likely a transcode",
   mixed_sources: "Mixed sources",
+  possibly_lossy: "Possibly lossy",
   inconclusive: "Inconclusive"
 };
 
 /** What each finding beside the verdict means */
 export const FLAGS: Record<Report["flags"][number], string> = {
   upsampled: "Upsampled: made at a lower sample rate and converted up",
-  bit_padded: "Padded: the samples use fewer bits than the format holds"
+  bit_padded: "Padded: the samples use fewer bits than the format holds",
+  dual_mono: "Dual mono: both channels hold the same audio"
 };
 
 /** The judgment in words */

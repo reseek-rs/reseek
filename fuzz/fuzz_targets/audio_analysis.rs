@@ -2,22 +2,28 @@
 
 use std::time::{Duration, Instant};
 
-use earwitness::engine::{self, Settings};
-use earwitness::{MeasureThresholds, ReadingThresholds, reading};
+use std::num::NonZeroUsize;
+
+use choon::{Coverage, Error, ReadingThresholds, Settings};
 use libfuzzer_sys::fuzz_target;
 
-// a downloaded file is whatever a peer sent; the analyzer must read any bytes to a verdict
+// a downloaded file is whatever a peer sent; the analyzer must read any bytes to a verdict or
+// refuse them, and never panic
 fuzz_target!(|data: &[u8]| {
   let settings = Settings {
-    max_full_seconds: 900.0,
-    sampled_windows: 240,
-    deadline: Instant::now() + Duration::from_secs(10),
-    progress: None,
-    canceled: None,
-    thresholds: MeasureThresholds::default(),
+    coverage: Coverage::Sampled {
+      over_seconds: 900.0,
+      windows: NonZeroUsize::new(240).expect("240 is not zero"),
+    },
+    deadline: Some(Instant::now() + Duration::from_secs(10)),
+    ..Settings::default()
   };
-  let Ok(measured) = engine::read_bytes(data.to_vec(), &settings) else {
-    unreachable!("nothing cancels the analysis")
-  };
-  reading::read(&measured, &ReadingThresholds::default());
+  match choon::measure_bytes(data.to_vec(), &settings) {
+    Ok(measured) => {
+      measured.read(&ReadingThresholds::default());
+    }
+    Err(Error::Panicked) => panic!("the analyzer panicked"),
+    Err(Error::Canceled) => unreachable!("nothing cancels the analysis"),
+    Err(Error::Open(_) | Error::OutOfTime | Error::NotAudio(_) | Error::Unsupported(_)) => {}
+  }
 });

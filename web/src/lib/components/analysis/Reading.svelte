@@ -29,7 +29,7 @@
         ],
         [
           "Gaps in the top band",
-          share(m.sfb21Holes),
+          share(m.topBandHoles),
           "Empty bins per filled bin from 16 to 20 kHz. Tonal content raises it too, so it is not used in the verdict."
         ],
         [
@@ -70,6 +70,11 @@
   const cutoffs = $derived(cutoffRows(m.cutoffHzHistogram));
   const tallest = $derived(Math.max(1, ...cutoffs.map((row) => row.count)));
   /** what the container claims, leaving out what a file that could not be read has none of */
+  /** the codec frame grid found in the samples, with the encoder it fits when one is known */
+  const grid = $derived(
+    report.grid &&
+      `${report.grid.codec} frame grid${report.grid.encoder ? `, ${report.grid.encoder}` : ""}`
+  );
   const format = $derived(
     [
       report.claimed.codec !== "unknown" && report.claimed.codec.toUpperCase(),
@@ -101,9 +106,9 @@
       <p>
         <span class="font-medium">{VERDICTS[report.verdict]}</span>
         <span class="text-fg-muted">
-          · {Math.round(report.confidence * 100)}% confidence{report.encoderGuess
-            ? ` · ${report.encoderGuess.profile}`
-            : ""}</span>
+          · {Math.round(report.confidence * 100)}% confidence{grid
+            ? ` · ${grid}`
+            : ""}{report.encoderGuess ? ` · ${report.encoderGuess.profile}` : ""}</span>
       </p>
       <p>{report.summary}</p>
       {#if report.flags.length}

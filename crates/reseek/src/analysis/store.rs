@@ -2,15 +2,14 @@
 //! spectrogram and waveform files kept on disk with when each was last viewed.
 
 use api_types::analysis::{
-  AnalysisListQuery, AnalysisMeasures, AnalysisOverride, AnalysisVerdict, AudioAnalysis,
-  ClaimedFormat, Judgment,
+  AnalysisListQuery, AnalysisOverride, AnalysisVerdict, AudioAnalysis, Judgment,
 };
 use api_types::files::FileRoot;
 use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension, params};
 use uuid::Uuid;
 
-use super::report::spectrogram_url;
+use super::report::{no_measures, spectrogram_url, unknown_format};
 use crate::db::{self, Database, DbError, Schema};
 
 /// The analysis database's migrations.
@@ -126,35 +125,16 @@ fn stale(row: &rusqlite::Row<'_>) -> rusqlite::Result<AudioAnalysis> {
     size: u64::try_from(row.get::<_, i64>(1)?).unwrap_or_default(),
     analyzed_at: db::read_timestamp(&row.get::<_, String>(12)?)?,
     duration_seconds: 0.0,
-    claimed: ClaimedFormat {
-      codec: "unknown".to_string(),
-      sample_rate: 0,
-      bit_depth: None,
-      channels: 0,
-      bitrate_kbps: None,
-    },
+    claimed: unknown_format(),
     // a reading an older version gave that this one no longer has is no reading to show
     verdict: serde_plain::from_str(&row.get::<_, String>(13)?)
       .unwrap_or(AnalysisVerdict::Inconclusive),
     confidence: 0.0,
     flags: Vec::new(),
+    grid: None,
     encoder_guess: None,
     summary: STALE_SUMMARY.to_string(),
-    measures: AnalysisMeasures {
-      cutoff_hz_histogram: Vec::new(),
-      cutoff_median_hz: None,
-      shelf_sharpness_db_p95: None,
-      sfb21_holes: None,
-      frame_artifact_score: None,
-      upsample_ratio: None,
-      bit_depth_effective: None,
-      noise_floor_dbfs: None,
-      stereo_correlation: None,
-      side_energy_db: None,
-      dc_offset: None,
-      clipped_samples_pct: None,
-      peak_dbfs: None,
-    },
+    measures: no_measures(),
     windows: None,
     spectrogram: None,
     judgment: None,

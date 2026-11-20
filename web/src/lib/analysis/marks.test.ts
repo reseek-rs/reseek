@@ -6,7 +6,7 @@ import { marks } from "./marks.svelte";
 
 const reading: Mark = {
   verdict: "likely_transcode",
-  profile: "mp3 ~128 kbps",
+  profile: "MP3 ~128 kbps",
   judgment: null,
   note: null,
   stale: false
@@ -42,7 +42,7 @@ describe("filtering files by their analysis", () => {
 describe("a chip's hint", () => {
   it("names the judgment with its note, or else the analyzer's reading", () => {
     expect(markHint(fake)).toBe("Marked fake: an old rip");
-    expect(markHint(reading)).toBe("Analyzer reading: likely a transcode, mp3 ~128 kbps");
+    expect(markHint(reading)).toBe("Analyzer reading: likely a transcode, MP3 ~128 kbps");
 
     expect(markHint({ ...reading, stale: true })).toBe("Analyzed by an older version of reseek");
   });
