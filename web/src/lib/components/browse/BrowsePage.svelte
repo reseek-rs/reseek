@@ -230,7 +230,7 @@
   // under it, or a filter that shows more of it, takes the mark, so ticking its files again does
   // not bring it back
   $effect(() => {
-    for (const path of [...browser.linesTicked]) {
+    for (const path of browser.linesTicked) {
       if (!lineTicked(browser.tree.byPath, tickOf, path)) browser.linesTicked.delete(path);
     }
   });
