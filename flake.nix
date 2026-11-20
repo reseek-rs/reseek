@@ -148,6 +148,8 @@
                 # the completions test reads each script in its shell
                 fish
                 zsh
+                # the analyzer's test fixtures build libopus's source with it
+                cmake
 
                 nodejs_26
                 pnpm
