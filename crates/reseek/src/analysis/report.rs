@@ -290,7 +290,15 @@ mod tests {
       .filter(|guide| guide.kind == GuideKind::Encoder)
       .map(|guide| (guide.hz, guide.label.as_str()))
       .collect();
-    assert_eq!(encoders, ENCODER_GUIDES);
+    assert_eq!(
+      encoders,
+      [
+        (16_000.0, "MP3 128k"),
+        (18_600.0, "MP3 192k"),
+        (19_530.0, "MP3 224-256k"),
+        (20_000.0, "MP3 320k / AAC"),
+      ]
+    );
     let profiles = choon::ReadingThresholds::default().profiles;
     for (hz, label) in ENCODER_GUIDES {
       assert!(profiles.iter().any(|profile| profile.hz == hz), "{label}");

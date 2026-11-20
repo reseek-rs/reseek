@@ -176,7 +176,10 @@ mod tests {
     let path = dir.path().join("config.toml");
 
     let first = editor.write(&path, None, "[server]\nport = 1\n").unwrap();
-    assert_eq!(first, files::revision_of(b"[server]\nport = 1\n"));
+    assert_eq!(
+      first,
+      "sha256:b5f2178232ea5ad3ebaf2f2dbe9d90cb5fa1e2b664fa7d8ea98e2f24a2660a4d"
+    );
     assert!(
       !dir.path().join("config.toml.bak").exists(),
       "nothing to back up"

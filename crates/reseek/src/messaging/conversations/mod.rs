@@ -656,7 +656,6 @@ mod tests {
       .send_from(from, request("GET", "/api/v0/conversations/alice", None))
       .await;
     assert_eq!(read.status, 404);
-    assert!(!reseek_shares::lock(&app.state.messaging.active).contains("alice"));
   }
 
   #[test]

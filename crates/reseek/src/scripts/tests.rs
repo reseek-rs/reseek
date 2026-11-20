@@ -230,13 +230,14 @@ fn a_full_queue_drops_the_oldest_run() {
   for n in 0..=WAITING as u32 {
     assert!(queue.push(job(n)).is_ok());
   }
-  let waiting = lock(&queue.waiting);
-  assert_eq!(waiting.jobs.len(), WAITING);
-  assert_eq!(
-    waiting.jobs.front().unwrap().record.id,
-    uuid::Uuid::from_u128(1)
-  );
-  assert_eq!(queue.dropped.load(Ordering::Relaxed), 1);
+  // the run numbered 0 is gone, and every later one is run in its turn
+  for n in 1..=WAITING as u32 {
+    assert!(
+      matches!(queue.next(), Next::Run(job) if job.record.id == uuid::Uuid::from_u128(n.into())),
+      "run {n}"
+    );
+  }
+  assert!(matches!(queue.next(), Next::Wait));
 }
 
 #[test]

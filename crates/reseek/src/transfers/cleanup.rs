@@ -261,7 +261,7 @@ mod tests {
       } else {
         assert_eq!(
           (state, exception.as_deref()),
-          (STOPPED, Some(SHUT_DOWN)),
+          (STOPPED, Some("Application shut down")),
           "{id}"
         );
       }

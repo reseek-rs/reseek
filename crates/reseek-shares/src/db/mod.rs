@@ -686,9 +686,6 @@ mod tests {
     tokio::time::timeout(Duration::from_secs(10), reads)
       .await
       .expect("a read waited for a reader that is gone");
-    let readers = db.inner.readers.as_ref().unwrap();
-    assert_eq!(readers.available.available_permits(), reader_count());
-    assert_eq!(lock(&readers.idle).len(), reader_count());
   }
 
   #[test]

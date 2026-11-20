@@ -51,7 +51,10 @@ test("a room reads like a chat: names, actions, links, the wall and the activity
     "href",
     /#\/users\/bob\/shares\?path=Music/
   );
-  await expect(log.locator('[data-message="6"]')).toHaveClass(/border-warning/);
+  await expect(log.locator('[data-message="6"]')).not.toHaveCSS(
+    "background-color",
+    "rgba(0, 0, 0, 0)"
+  );
 
   // the member list scrolls inside its panel
   const box = await listed.boundingBox();

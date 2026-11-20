@@ -791,9 +791,9 @@ pub(super) mod tests {
       !started(&mut c),
       "the two running still hold the default group's slots"
     );
-    let state = queue.lock();
-    assert_eq!(state.group(DEFAULT_GROUP).unwrap().used.len(), 2);
-    assert_eq!(state.group(PRIVILEGED_GROUP).unwrap().slots, 3);
+    let standing = queue.overview("c");
+    assert_eq!((standing.group_slots_used, standing.group_slots), (2, 2));
+    assert_eq!(queue.forecast(PRIVILEGED_GROUP).total_slots, 3);
   }
 
   #[test]
@@ -801,7 +801,7 @@ pub(super) mod tests {
     let (queue, _) = queue("[transfers.upload]\nslots = 1\n");
     let (running, mut held) = ready(&queue, "erin");
     assert!(started(&mut held));
-    let (_, mut alice) = ready(&queue, "alice");
+    let (alice_id, mut alice) = ready(&queue, "alice");
     let (carol, mut carol_start) = ready(&queue, "carol");
     assert_eq!(queue.bump(carol), Bumped::Waiting);
     queue.complete(running);
@@ -818,24 +818,12 @@ pub(super) mod tests {
     queue.complete(carol);
     assert!(started(&mut alice), "dave was not ready for this slot");
     let mut dave_start = queue.await_start(dave).unwrap();
-    queue.complete(queue_running(&queue, "alice"));
+    queue.complete(alice_id);
     assert!(
       started(&mut bob),
       "bob was ready longer, and dave's bump is spent"
     );
     assert!(!started(&mut dave_start));
-  }
-
-  /// The id of the upload of `username` holding a slot.
-  fn queue_running(queue: &UploadQueue, username: &str) -> Uuid {
-    let state = queue.lock();
-    let user = state.users.iter().find(|u| u.username == username).unwrap();
-    user
-      .entries
-      .iter()
-      .find(|e| e.started.is_some())
-      .unwrap()
-      .id
   }
 
   #[test]
@@ -844,7 +832,6 @@ pub(super) mod tests {
     groups.set("alice", "gone");
     let (id, mut alice) = ready(&queue, "alice");
     assert!(started(&mut alice));
-    let state = queue.lock();
-    assert!(state.group(DEFAULT_GROUP).unwrap().used.contains(&id));
+    assert_eq!(queue.standing(id).unwrap().group, DEFAULT_GROUP);
   }
 }

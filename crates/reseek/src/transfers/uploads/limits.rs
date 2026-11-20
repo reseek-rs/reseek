@@ -273,14 +273,14 @@ mod tests {
     };
     assert_eq!(
       refused(queued_files, 1),
-      Some(TOO_MANY_FILES),
+      Some("Too many files"),
       "files first"
     );
     let queued_bytes = Statistics {
       queued_bytes: 2_500_000,
       ..none
     };
-    assert_eq!(refused(queued_bytes, 500_001), Some(TOO_MANY_MEGABYTES));
+    assert_eq!(refused(queued_bytes, 500_001), Some("Too many megabytes"));
     assert_eq!(refused(queued_bytes, 500_000), None, "at the limit passes");
     let cases = [
       (
@@ -350,12 +350,12 @@ mod tests {
     );
     assert_eq!(
       refusal(&options, &own(&options, "friends"), &one_queued, 1_000_001),
-      Some(TOO_MANY_MEGABYTES),
+      Some("Too many megabytes"),
       "the global megabytes"
     );
     assert_eq!(
       refusal(&options, &own(&options, "gone"), &one_queued, 1),
-      Some(TOO_MANY_FILES),
+      Some("Too many files"),
       "a group the configuration lacks takes the default group's"
     );
     let failed = Statistics {
@@ -415,7 +415,7 @@ mod tests {
     );
     assert_eq!(
       refusal(&grouped, &own(&grouped, "others"), &thousand_queued, 1),
-      Some(TOO_MANY_FILES),
+      Some("Too many files"),
       "a group that leaves it unset inherits the global limit"
     );
     let unlimited = options("[transfers.upload.limits.queued]\nfiles = 0\n");

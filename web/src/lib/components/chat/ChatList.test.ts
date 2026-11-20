@@ -10,8 +10,6 @@ import { conversation, joinedRoom } from "#lib/testing/fixtures.js";
 import { flush } from "#lib/testing/flush.js";
 import { active, press, ticked } from "#lib/testing/keys.js";
 import { fakeNetwork } from "#lib/testing/network.js";
-import { CHAT } from "#lib/ui/bindings.js";
-import { keysAria } from "#lib/ui/keys.js";
 import { users } from "#lib/users/users.svelte.js";
 
 import ChatList from "./ChatList.svelte";
@@ -373,7 +371,7 @@ describe("the chat list's pinned chats, to assistive technology", () => {
     );
     expect(
       document.querySelector('[data-line="room:jazz"]')!.getAttribute("aria-keyshortcuts")
-    ).toBe(keysAria(CHAT.movePin));
+    ).toBe("Alt+Shift+ArrowUp Alt+Shift+ArrowDown");
     unmount(component);
   });
 });

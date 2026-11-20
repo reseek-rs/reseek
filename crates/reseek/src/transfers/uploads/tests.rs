@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::intake::{QUEUED_PER_ADDRESS, QUEUED_USERS};
-use super::{InFlight, NotQueued, OVERWHELMED, QUEUE_FULL};
+use super::{InFlight, NotQueued};
 use crate::network::resolvers::tests::{edges, exposed, from};
 use crate::network::resolvers::{enqueue_download, place_in_queue, user_info};
 use crate::testing::soulseek::Server;
@@ -159,7 +159,7 @@ async fn every_refusal_a_peer_can_be_told_and_what_triggers_it() {
   intake.latency.store(90_001f64.to_bits(), Ordering::Release);
   assert_eq!(
     asked(&app, "erin", SHARED).await.as_deref(),
-    Some(OVERWHELMED)
+    Some("Overwhelmed with requests; try again later.")
   );
   intake.waiting.store(0, Ordering::Release);
 
@@ -181,7 +181,7 @@ async fn a_new_user_finding_the_queue_holding_its_users_is_refused_for_good() {
   }
   assert_eq!(
     asked(&app, "newcomer", SHARED).await.as_deref(),
-    Some(QUEUE_FULL)
+    Some("Queue full")
   );
   let cached = app.state.users.cached_users();
   assert!(
@@ -208,7 +208,7 @@ async fn one_address_holds_no_more_than_its_share_of_the_queue() {
   }
   assert_eq!(
     asked(&app, "another", SHARED).await.as_deref(),
-    Some(QUEUE_FULL)
+    Some("Queue full")
   );
   assert_eq!(
     asked(&app, "made-up3", SHARED).await,
@@ -294,7 +294,7 @@ async fn one_address_queues_its_share_of_users_and_more_once_they_leave() {
   for n in 0..QUEUED_PER_ADDRESS {
     assert_eq!(ask(format!("made-up{n}")).await, None, "made-up{n}");
   }
-  assert_eq!(ask("one-more".into()).await.as_deref(), Some(QUEUE_FULL));
+  assert_eq!(ask("one-more".into()).await.as_deref(), Some("Queue full"));
 
   // they all leave the queue
   let (status, listed) = app.call("GET", "/api/v0/transfers/uploads", None).await;
@@ -628,7 +628,7 @@ async fn blocking_a_user_cancels_their_queued_uploads() {
   assert!(!kept.is_cancelled());
   assert_eq!(
     lock(&uploads.in_flight).get(&queued).unwrap().reason,
-    Some(super::BLOCKED)
+    Some("Blocked")
   );
 }
 

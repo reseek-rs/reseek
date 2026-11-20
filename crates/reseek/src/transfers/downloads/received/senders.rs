@@ -178,7 +178,8 @@ mod tests {
       "0 is no limit"
     );
     drop((second, third, from_here));
-    assert!(lock(&senders).sending.is_empty(), "nothing counted is left");
+    let again = [alice(), alice()].map(|sender| Senders::reserve(&senders, sender, 2));
+    assert!(again.iter().all(Option::is_some), "nothing counted is left");
   }
 
   #[test]

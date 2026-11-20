@@ -161,7 +161,7 @@ mod tests {
   fn capacity_is_a_tenth_of_the_limit_per_second_and_zero_is_unlimited() {
     assert_eq!(capacity(1), 102);
     assert_eq!(capacity(100), 10_240);
-    assert_eq!(capacity(0), u64::from(u32::MAX) * 1024 / 10);
+    assert_eq!(capacity(0), 439_804_651_008, "the largest limit there is");
   }
 
   #[tokio::test(start_paused = true)]

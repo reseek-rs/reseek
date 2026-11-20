@@ -198,7 +198,8 @@ test("Enter opens the results, walked by key, and Back and Escape return from a 
   const log = page.getByRole("log");
   const found = log.locator('[data-message="150"]');
   await expect(found).toBeVisible();
-  await expect(found).toHaveClass(/ring-accent/);
+  // the ring drawn around it
+  await expect(found).not.toHaveCSS("box-shadow", "none");
   await expect(log.locator('[data-message="151"]')).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
   await found.hover();

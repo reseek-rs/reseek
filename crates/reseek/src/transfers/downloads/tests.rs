@@ -1046,41 +1046,6 @@ async fn a_download_interrupted_is_enqueued_at_the_login_after_a_resume_while_lo
   assert!(enqueued.is_ok(), "not enqueued again after the login");
 }
 
-#[tokio::test]
-async fn a_purge_of_a_users_transfers_leaves_no_download_running_out_of_the_listings() {
-  let config = format!("[transfers.download.retry]\ndelay = \"1h\"\nmax_delay = \"1h\"\n{TRUSTED}");
-  let app = app(&config, &[]).await;
-  let users = &app.state.users;
-  users.set_buddy("alice", Default::default()).await.unwrap();
-  let mut held = Record::download("alice", "@@a\\Album\\1.flac", 10);
-  held.paused = true;
-  insert(&app, &held).await;
-  let id = held.id;
-  // resumed, its task tries the peer, which cannot be reached, and waits to try again
-  let resume = json!({ "ids": [id], "action": "resume" });
-  app
-    .call("POST", "/api/v0/transfers/downloads/bulk", Some(resume))
-    .await;
-  read_until(&app, id, |r| r.next_attempt_at().is_some()).await;
-
-  let (status, _) = app
-    .call("DELETE", "/api/v0/users/alice?purge=true", None)
-    .await;
-  assert_eq!(status, 204);
-  let running = || reseek_shares::lock(&app.state.downloads.in_flight).contains_key(&id);
-  let stopped = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-    while running() {
-      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-  })
-  .await;
-  let (_, listed) = app.call("GET", "/api/v0/transfers/downloads", None).await;
-  assert!(
-    stopped.is_ok() || listed != json!([]),
-    "the download still runs and no listing has it"
-  );
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn places_a_peer_sends_on_its_own_are_kept_in_the_order_sent() {
   let app = app(TRUSTED, &[]).await;

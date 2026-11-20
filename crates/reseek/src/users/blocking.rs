@@ -651,18 +651,19 @@ mod tests {
 
   #[test]
   fn a_full_cache_drops_the_least_recently_used_answer() {
-    let blocks = Blocks::new(&Options::default(), &[]);
+    // everyone asked about is blocked, so the cheap check tells whose answer is remembered
+    let mut options = Options::default();
+    options.transfers.groups.blacklisted.patterns = vec!["^(user|newcomer)".to_string()];
+    let blocks = Blocks::new(&options, &[]);
     for n in 0..DECISIONS {
-      blocks.is_blocked(&format!("user{n}"), None, BlockScope::Uploads);
+      assert!(blocks.is_blocked(&format!("user{n}"), None, BlockScope::Uploads));
     }
     blocks.is_blocked("user0", None, BlockScope::Uploads);
     blocks.is_blocked("newcomer", None, BlockScope::Uploads);
-    let remembered = blocks.decisions.lock().unwrap();
-    let decisions = &remembered.answers;
-    let held = |name: &str| decisions.contains_key(&(name.to_string(), None, BlockScope::Uploads));
-    assert_eq!(decisions.len(), DECISIONS);
+    let held = |name: &str| blocks.remembers_blocked(name, BlockScope::Uploads);
     assert!(held("user0"), "asked again, so kept");
     assert!(!held("user1"), "the least recently asked");
+    assert!(held("user2"), "one answer makes room");
     assert!(held("newcomer"));
   }
 

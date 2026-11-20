@@ -508,7 +508,7 @@ mod tests {
   #[test]
   fn a_file_gone_aborts_its_upload_and_a_failure_here_errs() {
     assert_eq!(outcome(&Failed::Gone), TransferOutcome::Aborted);
-    assert_eq!(reason(&Failed::Gone), FILE_GONE);
+    assert_eq!(reason(&Failed::Gone), "File could not be found");
     let here = Failed::Here("the client has been shut down".into());
     assert_eq!(outcome(&here), TransferOutcome::Errored);
     assert_eq!(reason(&here), "the client has been shut down");

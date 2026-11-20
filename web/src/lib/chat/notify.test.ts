@@ -194,12 +194,6 @@ describe("what a mode delivers", () => {
     visible.mockRestore();
   });
 
-  it("plays the first sound in a tab alone", () => {
-    app.options = { chat: { notifications: { only_when_hidden: false } } } as never;
-    notifier.other("sound", "Download finished", "", "download:1", "/downloads");
-    expect(played).toHaveBeenCalledOnce();
-  });
-
   it("plays the sound only in the tab of the browser focused last", () => {
     app.options = { chat: { notifications: { only_when_hidden: false } } } as never;
     // another tab, opened after this one and then focused

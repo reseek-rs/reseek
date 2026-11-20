@@ -500,7 +500,7 @@ mod tests {
     .await
     .unwrap();
     let history = db.read(move |conn| history(conn, id)).await.unwrap();
-    assert_eq!(history.len(), HISTORY_KEPT as usize);
+    assert_eq!(history.len(), 64);
     // the insert's state and the first six entered are gone
     assert_eq!(history[0].state, TransferStates::InProgress);
     assert_eq!(

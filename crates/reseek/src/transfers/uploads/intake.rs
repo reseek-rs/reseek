@@ -633,13 +633,21 @@ mod tests {
       }
     });
     tokio::task::yield_now().await;
-    assert_eq!(intake.waiting.load(Ordering::Acquire), 1);
-    assert_eq!(intake.deciding.available_permits(), DECIDING - 1);
-    let (_bob, _) = intake.turn("bob").await;
-    assert_eq!(intake.deciding.available_permits(), DECIDING - 2);
+    // so the other nine are free, and each who takes one finds alice's second still waiting
+    let mut others = Vec::new();
+    for n in 1..DECIDING {
+      let name = format!("user{n}");
+      let turn = tokio::time::timeout(std::time::Duration::from_secs(5), intake.turn(&name))
+        .await
+        .expect("a request waiting for its user holds one of the ten");
+      assert_eq!(turn.1, 1, "{name}");
+      others.push(turn);
+    }
     drop(first);
     second.await.unwrap();
-    assert_eq!(intake.waiting.load(Ordering::Acquire), 0);
+    drop(others);
+    let (_bob, left) = intake.turn("bob").await;
+    assert_eq!(left, 0);
   }
 
   #[tokio::test]

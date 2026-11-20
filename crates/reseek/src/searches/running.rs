@@ -483,15 +483,10 @@ mod tests {
     let running = Arc::new(Running::new(record, accepted));
     running.state_changed(ClientState::InProgress);
     acceptance.await.unwrap().unwrap();
-    lock(&running.progress).moved = false;
 
     let ended = ClientState::Completed(ClientOutcome::Ended);
     running.state_changed(ended);
-    {
-      let progress = lock(&running.progress);
-      assert_eq!(progress.record.state, SearchState::InProgress);
-      assert!(!progress.moved, "nothing is staged to be written");
-    }
+    assert_eq!(running.record().state, SearchState::InProgress);
     assert!(!*running.done.borrow());
     let stored = searches.get(id, false).await.unwrap();
     assert!(!stored.state.is_complete(), "the end is not written yet");
@@ -722,10 +717,9 @@ mod tests {
     refuse_writes(&searches, true).await;
     running.response_taken(taken("bob"), live, users);
     searches.write_progress(&running).await;
-    assert_eq!(lock(&running.progress).saved, 1, "bob is not saved");
+    assert_eq!(batches(&searches).await, 1, "bob is not saved");
     refuse_writes(&searches, false).await;
     searches.write_progress(&running).await;
-    assert_eq!(lock(&running.progress).saved, 2);
     assert_eq!(batches(&searches).await, 2);
 
     // the end cannot be written, and the stop ends the tries
@@ -784,8 +778,8 @@ mod tests {
       };
       running.response_taken(taken, &app.state.live, users);
     }
-    let countries: Vec<_> = lock(&running.progress)
-      .responses
+    let countries: Vec<_> = running
+      .responses()
       .iter()
       .map(|response| response.country.clone())
       .collect();

@@ -232,19 +232,23 @@ mod tests {
     assert_eq!(tokio::time::Instant::now(), before);
   }
 
-  #[test]
-  fn a_group_without_a_bucket_takes_the_default_ones_and_privileged_the_global_speed() {
-    let governor = grouped(
+  #[tokio::test(start_paused = true)]
+  async fn a_group_without_a_bucket_takes_the_default_ones_and_privileged_the_global_speed() {
+    let governor = Arc::new(grouped(
       "[transfers.upload]\nspeed_limit = 7\n[transfers.groups.default.upload]\nspeed_limit = 3\n",
+    ));
+    let pace = |group: &'static str| governor.pace(Arc::new(move || group.to_string()));
+    let never = CancellationToken::new();
+    let before = tokio::time::Instant::now();
+    assert_eq!(pace("blacklisted").chunk(50_000, &never).await, 307);
+    assert_eq!(pace(PRIVILEGED_GROUP).chunk(50_000, &never).await, 716);
+    assert_eq!(tokio::time::Instant::now(), before);
+    // the default group's bucket is the one the blacklisted user emptied
+    assert_eq!(pace(DEFAULT_GROUP).chunk(50_000, &never).await, 307);
+    assert_eq!(
+      tokio::time::Instant::now() - before,
+      Duration::from_millis(100)
     );
-    assert!(Arc::ptr_eq(
-      &governor.bucket("blacklisted"),
-      &governor.bucket(DEFAULT_GROUP)
-    ));
-    assert!(!Arc::ptr_eq(
-      &governor.bucket(PRIVILEGED_GROUP),
-      &governor.bucket(DEFAULT_GROUP)
-    ));
   }
 
   #[tokio::test(start_paused = true)]

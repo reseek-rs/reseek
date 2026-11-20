@@ -93,7 +93,8 @@ test("pins hold their place through a drag, the keys and a reload", async ({ pag
   await page.mouse.down();
   await page.mouse.move(from.x, from.y - 10, { steps: 3 });
   await page.mouse.move(to.x, to.y - 4, { steps: 8 });
-  await expect(line(page, "room:ambient")).toHaveClass(/shadow-raised/);
+  // the row in hand is lifted off the list
+  await expect(line(page, "room:ambient")).not.toHaveCSS("box-shadow", "none");
   await expect
     .poll(() => line(page, "room:jazz").evaluate((row) => getComputedStyle(row).translate))
     .toMatch(/^0px [1-9]/);

@@ -125,9 +125,9 @@ mod tests {
     drop(first);
     let second = waiting.await.unwrap();
     assert!(second.alone());
-    assert_eq!(lock(&turns.map).len(), 2);
+    assert!(turns.held("alice") && turns.held("bob"));
     drop((second, other));
-    assert!(lock(&turns.map).is_empty());
+    assert!(!turns.held("alice") && !turns.held("bob"));
   }
 
   #[tokio::test]
@@ -140,7 +140,7 @@ mod tests {
     assert!(held.alone());
     drop(held);
     drop(turns.wait("bob"));
-    assert!(lock(&turns.map).is_empty());
+    assert!(!turns.held("alice") && !turns.held("bob"));
   }
 
   #[tokio::test]
