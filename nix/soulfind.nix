@@ -8,13 +8,13 @@
 }:
 buildDubPackage {
   pname = "soulfind";
-  version = "0-unstable-2026-10-15";
+  version = "0-unstable-2026-11-19";
 
   src = fetchFromGitHub {
     owner = "soulfind-dev";
     repo = "soulfind";
-    rev = "5a256f5c9845d362c2bfbdcb26a8355ad1f395fc";
-    hash = "sha256-3L4a3o0XmYtfXEmOl33Z1Dd6ucPFxF2FHjwdUur280k=";
+    rev = "e5e99617ab9ff4dc0dd26a3f3fb314103ff35777";
+    hash = "sha256-yL/9UX2NFQAUwKQi2x72S95fXYsvP6PBtVVM7AUmGa8=";
   };
 
   dubLock.dependencies = { };
