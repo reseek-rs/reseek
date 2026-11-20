@@ -220,7 +220,6 @@ async fn the_rooms_we_were_in_are_joined_again_after_a_restart_until_left() {
   })
   .await;
   // the room refused stays listed, not joined, while it is tried again
-  // its refused mark after the last try: a_room_refused_after_a_reconnect_is_tried_twice_more_then_left_to_join
   let started = Instant::now();
   while listed(&api, &taken).await.is_none() {
     assert!(

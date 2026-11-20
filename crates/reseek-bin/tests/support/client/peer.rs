@@ -1,11 +1,11 @@
-//! A scripted peer: the far end of a peer, transfer or distributed connection, for what two
-//! clients on soulfind cannot show. It reads and writes whole frames with the protocol codecs.
+//! A scripted peer: the far end of a peer or transfer connection, for what two clients on
+//! soulfind cannot show. It reads and writes whole frames with the protocol codecs.
 
 use soulseek_client::soulseek_proto;
 use std::net::{Ipv4Addr, SocketAddr};
 
 use soulseek_proto::frame::{self, FrameKind};
-use soulseek_proto::{DistributedMessage, InitMessage, Limits, PeerMessage};
+use soulseek_proto::{InitMessage, Limits, PeerMessage};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -20,17 +20,6 @@ impl FakePeer {
   pub async fn start() -> Self {
     Self {
       listener: TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap(),
-    }
-  }
-
-  /// a peer whose sockets take in only about `bytes` while it is not reading, so what the
-  /// client writes to it piles up in the client's own send buffer
-  pub async fn with_receive_buffer(bytes: u32) -> Self {
-    let socket = tokio::net::TcpSocket::new_v4().unwrap();
-    socket.set_recv_buffer_size(bytes).unwrap();
-    socket.bind((Ipv4Addr::LOCALHOST, 0).into()).unwrap();
-    Self {
-      listener: socket.listen(16).unwrap(),
     }
   }
 
@@ -69,13 +58,6 @@ impl PeerSide {
   /// connects to a client's listener
   pub async fn connect(address: SocketAddr) -> Self {
     Self::new(TcpStream::connect(address).await.unwrap())
-  }
-
-  /// connects to a client's listener from the loopback address `from`, such as 127.0.0.2
-  pub async fn connect_from(from: Ipv4Addr, address: SocketAddr) -> Self {
-    let socket = tokio::net::TcpSocket::new_v4().unwrap();
-    socket.bind(SocketAddr::from((from, 0))).unwrap();
-    Self::new(socket.connect(address).await.unwrap())
   }
 
   /// reads what has arrived into the buffer; false once the client closed the connection
@@ -123,10 +105,6 @@ impl PeerSide {
 
   pub async fn read_peer(&mut self) -> PeerMessage {
     PeerMessage::decode(&self.frame(FrameKind::Peer).await).unwrap()
-  }
-
-  pub async fn read_distributed(&mut self) -> DistributedMessage {
-    DistributedMessage::decode(&self.frame(FrameKind::Distributed).await).unwrap()
   }
 
   pub async fn send(&mut self, bytes: &[u8]) {

@@ -5,7 +5,6 @@
 //! the last of them to let go stops it and removes the directory. A test that stops and starts
 //! its server takes one of its own.
 
-use soulseek_client::soulseek_proto;
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -15,7 +14,6 @@ use std::time::{Duration, Instant};
 
 use soulseek_client::config::ConfigBuilder;
 use soulseek_client::{Client, Event, Events};
-use soulseek_proto::ServerRequest;
 
 /// how long a fresh server may take to accept connections; it starts within milliseconds and
 /// says nothing once bound, so this only ends the wait on one that hangs
@@ -32,19 +30,6 @@ pub struct Soulfind {
   child: Child,
   data: PathBuf,
   binary: PathBuf,
-}
-
-/// a configuration for a client that listens on a free port, so peers can dial it
-pub fn listening() -> ConfigBuilder {
-  soulseek_client::Config::builder()
-    .listen_port(super::free_port())
-    .handler(super::Answering)
-}
-
-/// a configuration for a client that advertises a port nothing listens on, so dialing it fails
-/// at once
-pub fn unreachable() -> ConfigBuilder {
-  super::options().advertised_port(super::free_port())
 }
 
 /// The server the tests running now share, or `None` when there is no soulfind to run
@@ -239,11 +224,6 @@ impl User {
   /// the next event that `pick` accepts, skipping the others
   pub async fn event<T>(&mut self, pick: impl FnMut(Event) -> Option<T>) -> T {
     super::next_event(&mut self.events, pick).await
-  }
-
-  /// writes `request` to the server
-  pub async fn send(&self, request: ServerRequest) {
-    self.client.write_server_message(&request).await.unwrap();
   }
 
   /// Asks the server about this user and waits for the answer. The server handles a user's

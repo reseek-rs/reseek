@@ -1,5 +1,5 @@
-//! A fake Soulseek server over loopback, a client logged in to it, and helpers to watch what
-//! the client raises and logs.
+//! A fake Soulseek server over loopback, handlers for the clients tests log in, and a helper to
+//! wait for what a client raises.
 
 #![allow(dead_code)] // each test binary uses its own subset of these helpers
 
@@ -12,9 +12,7 @@ pub mod transfers;
 pub use ports::free_port;
 
 use soulseek_client::soulseek_proto;
-use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use soulseek_client::config::ConfigBuilder;
@@ -26,7 +24,7 @@ use soulseek_proto::peer::{BrowseResponse, UserInfo};
 use soulseek_proto::server::{LoginRequest, LoginResponse};
 use soulseek_proto::{Limits, Secret, ServerRequest, ServerResponse};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpSocket, TcpStream};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
 pub const USERNAME: &str = "alice";
@@ -97,17 +95,6 @@ impl FakeServer {
   pub async fn start() -> Self {
     Self {
       listener: TcpListener::bind("127.0.0.1:0").await.unwrap(),
-    }
-  }
-
-  /// a server whose sockets take in only about `bytes` while it is not reading, so what a client
-  /// writes piles up in its own send buffer
-  pub async fn with_receive_buffer(bytes: u32) -> Self {
-    let socket = TcpSocket::new_v4().unwrap();
-    socket.set_recv_buffer_size(bytes).unwrap();
-    socket.bind((Ipv4Addr::LOCALHOST, 0).into()).unwrap();
-    Self {
-      listener: socket.listen(16).unwrap(),
     }
   }
 
@@ -197,52 +184,6 @@ impl ServerSide {
     self.read_login().await;
     self.send(&login_success()).await;
   }
-
-  /// reads the messages a client that takes distributed children sends right after logging in:
-  /// the distributed status and the request for its own statistics
-  pub async fn read_configuration(&mut self) -> Vec<ServerRequest> {
-    let mut messages = Vec::new();
-    for _ in 0..5 {
-      messages.push(self.request().await);
-    }
-    messages
-  }
-
-  /// reads and throws away everything the client sends, for as long as it is polled
-  pub async fn discard(&mut self) {
-    let mut chunk = vec![0; 64 << 10];
-    loop {
-      let read = self.stream.read(&mut chunk).await.unwrap();
-      assert!(read > 0, "the client closed the connection");
-    }
-  }
-
-  /// waits for the client to close the connection, failing if it sends anything but pings
-  pub async fn closed(&mut self) {
-    loop {
-      while let Some((_, consumed)) =
-        frame::split(FrameKind::Server, &self.buffer, &Limits::DEFAULT).unwrap()
-      {
-        let frame: Vec<u8> = self.buffer.drain(..consumed).collect();
-        let request = ServerRequest::decode(&frame).unwrap();
-        assert_eq!(
-          request,
-          ServerRequest::Ping,
-          "the client sent more before closing"
-        );
-      }
-      let mut chunk = [0; 4096];
-      let read = tokio::time::timeout(PATIENCE, self.stream.read(&mut chunk))
-        .await
-        .expect("the client closes the connection")
-        .unwrap_or(0);
-      if read == 0 {
-        assert!(self.buffer.is_empty(), "the client closed inside a frame");
-        return;
-      }
-      self.buffer.extend_from_slice(&chunk[..read]);
-    }
-  }
 }
 
 pub fn login_success() -> ServerResponse {
@@ -270,71 +211,4 @@ pub async fn next_event<T>(events: &mut Events, mut pick: impl FnMut(Event) -> O
   })
   .await
   .expect("the event is raised")
-}
-
-/// Log lines written while the guard lives, for the thread the test runs on. Tests that use it
-/// run on the current-thread runtime, so the client's tasks log on that thread too.
-pub struct Logs {
-  lines: Arc<Mutex<Vec<u8>>>,
-  _guard: tracing::subscriber::DefaultGuard,
-}
-
-impl Logs {
-  pub fn capture() -> Self {
-    let lines = Arc::new(Mutex::new(Vec::new()));
-    let writer = Capture(lines.clone());
-    let subscriber = tracing_subscriber::fmt()
-      .with_max_level(tracing::Level::TRACE)
-      .with_ansi(false)
-      .with_writer(move || writer.clone())
-      .finish();
-    Self {
-      lines,
-      _guard: tracing::subscriber::set_default(subscriber),
-    }
-  }
-
-  pub fn text(&self) -> String {
-    String::from_utf8_lossy(&self.lines.lock().unwrap_or_else(PoisonError::into_inner)).into_owned()
-  }
-
-  /// Waits until a line with every one of `parts` is written; for what another task logs as it
-  /// happens
-  pub async fn wait_for(&self, parts: &[&str]) {
-    let found = tokio::time::timeout(PATIENCE, async {
-      while self.lines_with(parts).is_empty() {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-      }
-    })
-    .await;
-    assert!(found.is_ok(), "no line with {parts:?} in\n{}", self.text());
-  }
-
-  /// the captured lines that contain every one of `parts`
-  pub fn lines_with(&self, parts: &[&str]) -> Vec<String> {
-    self
-      .text()
-      .lines()
-      .filter(|line| parts.iter().all(|part| line.contains(part)))
-      .map(str::to_owned)
-      .collect()
-  }
-}
-
-#[derive(Clone)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
-
-impl Write for Capture {
-  fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-    self
-      .0
-      .lock()
-      .unwrap_or_else(PoisonError::into_inner)
-      .extend_from_slice(bytes);
-    Ok(bytes.len())
-  }
-
-  fn flush(&mut self) -> std::io::Result<()> {
-    Ok(())
-  }
 }
