@@ -43,8 +43,7 @@ export const defaults = (direction: Direction): ViewSettings => ({
 /**
  * What was saved as far as it fits: every column of the direction once, in the saved order with
  * new columns after, and anything unknown dropped. A column keeps only a width the user dragged,
- * so one never dragged follows its default as that changes. A grouping saved as "flat" reads as
- * the list layout. The text filter is never saved
+ * so one never dragged follows its default as that changes. The text filter is never saved
  */
 const read = (direction: Direction, saved: unknown): ViewSettings => {
   const base = defaults(direction);
@@ -67,7 +66,7 @@ const read = (direction: Direction, saved: unknown): ViewSettings => {
   const sort = fields(s.sort);
   const { states, analysis } = fields(s.filters);
   return {
-    layout: readLayout(s.layout, s.groupBy === "flat" ? "list" : base.layout),
+    layout: readLayout(s.layout, base.layout),
     groupBy: GROUPINGS.includes(s.groupBy as GroupBy) ? (s.groupBy as GroupBy) : base.groupBy,
     columns,
     sort: {

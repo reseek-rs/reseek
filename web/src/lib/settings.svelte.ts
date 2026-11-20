@@ -25,16 +25,13 @@ export const HIDE_DEFAULTS = {
   hideLongQueues: false
 };
 
-/**
- * The search results' layout, sort and toggles, kept between searches; the filter text is not. A
- * layout saved as `view`, "cards" or "dense", reads as the tree or the list
- */
+/** The search results' layout, sort and toggles, kept between searches; the filter text is not */
 export const searchOptions = stored("reseek.search.options", (saved) => {
   const s = fields(saved);
   const flag = (value: unknown, otherwise: boolean) =>
     typeof value === "boolean" ? value : otherwise;
   return {
-    layout: readLayout(s.layout, s.view === "dense" ? "list" : "tree"),
+    layout: readLayout(s.layout, "tree"),
     sort: (s.sort === "queueLength" ? "queueLength" : "uploadSpeed") as ResultSort,
     hideLocked: flag(s.hideLocked, HIDE_DEFAULTS.hideLocked),
     hideNoFreeSlots: flag(s.hideNoFreeSlots, HIDE_DEFAULTS.hideNoFreeSlots),

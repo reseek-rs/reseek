@@ -10,7 +10,7 @@ import { visit } from "./support/login";
 const rows = async (page: Page, below: number) => {
   await manyDownloads(page, 300);
   await page.addInitScript(() =>
-    localStorage.setItem("transfers.view.download", JSON.stringify({ groupBy: "flat" }))
+    localStorage.setItem("transfers.view.download", JSON.stringify({ layout: "list" }))
   );
   await visit(page, "/downloads");
   const more = page.getByRole("button", { name: /^More for / });

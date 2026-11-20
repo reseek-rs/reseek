@@ -41,7 +41,7 @@ test("1000 downloads draw a window, and focus and a range of rows go past its ed
 }) => {
   await manyDownloads(page, 1000);
   await page.addInitScript(() =>
-    localStorage.setItem("transfers.view.download", JSON.stringify({ groupBy: "flat" }))
+    localStorage.setItem("transfers.view.download", JSON.stringify({ layout: "list" }))
   );
   await visit(page, "/downloads");
   const grid = page.getByRole("treegrid", { name: "Downloads" });

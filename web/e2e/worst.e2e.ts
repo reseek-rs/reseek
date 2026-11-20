@@ -134,18 +134,18 @@ for (const [width, height] of [
     });
 
     for (const path of ["/downloads", "/uploads"]) {
-      for (const groupBy of ["user", "flat"]) {
-        test(`the worst ${path.slice(1)}, ${groupBy}, hold their screen and show the ends of names`, async ({
+      for (const layout of ["tree", "list"]) {
+        test(`the worst ${path.slice(1)}, ${layout}, hold their screen and show the ends of names`, async ({
           page
         }) => {
           await worstTransferLists(page);
           const direction = path === "/downloads" ? "download" : "upload";
           await page.addInitScript(
-            ([key, groupBy]) => localStorage.setItem(key, JSON.stringify({ groupBy })),
-            [`transfers.view.${direction}`, groupBy] as const
+            ([key, layout]) => localStorage.setItem(key, JSON.stringify({ layout })),
+            [`transfers.view.${direction}`, layout] as const
           );
           await fits(page, path, shows("_part2.flac"));
-          await endsShow(page, `${path}, ${groupBy}`);
+          await endsShow(page, `${path}, ${layout}`);
           // a name cell narrower than the name's kept end still shows its extension
           expect(await extensionInNarrowName(page, "_part2", ".flac")).toBe(true);
         });
