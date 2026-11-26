@@ -148,6 +148,8 @@
   <Card title="Transfer outcomes">
     {#if summary}
       <Outcomes {summary} />
+    {:else if summaryError}
+      <p class="text-sm text-danger">Could not load outcomes: {summaryError}</p>
     {:else}
       <Skeleton class="h-28" />
     {/if}
