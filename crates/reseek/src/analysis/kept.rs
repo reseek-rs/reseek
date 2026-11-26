@@ -345,7 +345,14 @@ pub(super) fn remove_older(dir: &Path) {
     }
   };
   let mut removed = 0;
-  for entry in entries.flatten() {
+  for entry in entries {
+    let entry = match entry {
+      Ok(entry) => entry,
+      Err(e) => {
+        warn!(dir = %dir.display(), error = %e, "an entry of the analysis directory not read");
+        continue;
+      }
+    };
     let path = entry.path();
     let older = path
       .extension()
