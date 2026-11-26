@@ -450,7 +450,7 @@ fn refused_page(sign_out: Option<&str>) -> Response {
     StatusCode::FORBIDDEN,
     Html(format!(
       "<!doctype html><html><head><meta charset=\"utf-8\"><title>Not authorized</title></head>\
-       <body><p>Your account is not authorized for this application.</p>{link}</body></html>"
+       <body><p>This account is not authorized for this application</p>{link}</body></html>"
     )),
   )
     .into_response()
@@ -1008,7 +1008,7 @@ mod tests {
     let denied = back(&app, &started, "c1").await;
     assert_eq!(denied.status, 403);
     let page = String::from_utf8_lossy(&denied.body).into_owned();
-    assert!(page.contains("Your account is not authorized for this application"));
+    assert!(page.contains("This account is not authorized for this application"));
     assert!(page.contains("Sign out of SSO"));
 
     issuer.set_userinfo(json!({ "sub": "u3", "groups": ["admins"] }));

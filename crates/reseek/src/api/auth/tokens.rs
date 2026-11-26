@@ -156,7 +156,7 @@ async fn create(
     .map_err(ApiError::internal)?
   else {
     return Err(ApiError::forbidden(
-      "Your role cannot be read again on later requests, so a token of yours would not work",
+      "The caller's role cannot be read again on later requests, so its token would not work",
     ));
   };
   let (token, secret) = tokens::create(
