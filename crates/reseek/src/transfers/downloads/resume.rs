@@ -1,12 +1,12 @@
 //! Resuming the downloads a stop interrupted, once a login can reach their users: each is
 //! enqueued again in its job, with its destination and search, as a new download that
 //! supersedes the old record. What says a download still waits for this is its resumable mark
-//! in the database, cleared once its file was tried; a file refused for want of the server
-//! keeps it, so the next login tries it, and its job stays running meanwhile. A cancel of the
-//! job clears the marks, so no login enqueues its files.
+//! in the database, cleared once its file was tried; a file refused for want of the server, or
+//! one the daemon failed to enqueue, keeps it, so the next login tries it, and its job stays
+//! running meanwhile. A cancel of the job clears the marks, so no login enqueues its files.
 
 use api_types::jobs::JobEnding;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use super::{Downloads, Group};
@@ -58,6 +58,18 @@ impl Downloads {
               %job,
               error = refused.message(),
               "interrupted downloads wait for the next login"
+            );
+            continue;
+          }
+          // the daemon's own failure, such as a database write, leaves the marks for the next
+          // login
+          Err(ref e) if let Some(reason) = e.reason() => {
+            error!(
+              username,
+              %job,
+              downloads = files.len(),
+              reason,
+              "interrupted downloads not resumed"
             );
             continue;
           }
