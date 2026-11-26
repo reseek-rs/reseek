@@ -21,7 +21,7 @@ pub fn completions(shell: Shell, schema: &Schema) -> String {
 
 /// Whether the flag's value names a file or directory.
 fn takes_path(flag: &FlagDoc) -> bool {
-  flag.value.as_deref() == Some("path")
+  matches!(flag.value.as_deref(), Some("path" | "path[]"))
 }
 
 /// Each spelling of the flag: its short form, if any, then its long form.
@@ -182,7 +182,13 @@ mod tests {
       (Shell::Fish, "fish", "--no-execute"),
     ] {
       let script = completions(shell, &schema);
-      for flag in ["--http-port", "--app-dir", "--config-file", "--debug"] {
+      for flag in [
+        "--http-port",
+        "--app-dir",
+        "--config-file",
+        "--debug",
+        "--downloads",
+      ] {
         let long = if shell == Shell::Fish {
           flag.trim_start_matches("--")
         } else {
@@ -193,6 +199,16 @@ mod tests {
       for word in WORDS {
         assert!(script.contains(word), "{program} lacks {word}");
       }
+      let downloads = script
+        .lines()
+        .find(|l| l.contains("--downloads") || l.contains("-l downloads"))
+        .unwrap();
+      let completes_files = match shell {
+        Shell::Bash => downloads.contains("compgen -f"),
+        Shell::Zsh => downloads.contains("_files"),
+        Shell::Fish => downloads.contains("-F"),
+      };
+      assert!(completes_files, "{program}: {downloads}");
       // a shell that is not installed has nothing to say about the script
       let Ok(mut child) = Command::new(program)
         .arg(check)

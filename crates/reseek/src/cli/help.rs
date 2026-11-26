@@ -60,7 +60,7 @@ pub(super) fn flags(schema: &Schema) -> Vec<FlagDoc> {
     flags.push(FlagDoc {
       short: field.short,
       long: long.clone(),
-      value: (field.kind != Kind::Bool).then(|| kind_name(&field.kind)),
+      value: (field.kind != Kind::Bool).then(|| value_name(field)),
       doc: if field.negated {
         format!("{} This flag disables it.", described(field))
       } else {
@@ -78,7 +78,7 @@ pub(super) fn variables(schema: &Schema) -> Vec<(String, String, String)> {
     .iter()
     .filter_map(|field| {
       let env = field.env.as_ref()?;
-      Some((env.clone(), kind_name(&field.kind), described(field)))
+      Some((env.clone(), value_name(field), described(field)))
     })
     .collect()
 }
@@ -138,6 +138,15 @@ fn described(field: &Field) -> String {
   format!("{doc} (default: {default})")
 }
 
+/// What an option's value is, `path` for a file or directory.
+fn value_name(field: &Field) -> String {
+  match &field.kind {
+    Kind::List(_) if field.path => "path[]".to_string(),
+    _ if field.path => "path".to_string(),
+    kind => kind_name(kind),
+  }
+}
+
 fn kind_name(kind: &Kind) -> String {
   match kind {
     Kind::Bool => "bool".to_string(),
@@ -174,7 +183,7 @@ mod tests {
     let debug = text.lines().find(|l| l.contains("--debug")).unwrap();
     assert!(!debug.contains("default"), "{debug}");
     let socket = text.lines().find(|l| l.contains("--http-socket")).unwrap();
-    assert!(socket.starts_with("    --http-socket <string>"), "{socket}");
+    assert!(socket.starts_with("    --http-socket <path>"), "{socket}");
     assert!(socket.ends_with("(default: <null>)"), "{socket}");
     assert!(text.find("--version").unwrap() < text.find("--debug").unwrap());
   }
