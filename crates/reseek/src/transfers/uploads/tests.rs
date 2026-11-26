@@ -757,6 +757,7 @@ async fn blocking_a_user_cancels_their_queued_uploads() {
         reason: None,
         ended: false,
         asked: true,
+        gone: false,
       },
     );
   }
