@@ -544,6 +544,74 @@ async fn an_expired_block_is_swept_with_its_event() {
 }
 
 #[tokio::test]
+async fn a_block_made_while_the_sweep_ends_the_old_one_stands() {
+  let app = app(CONFIG, &[]).await;
+  let directory = &app.state.users;
+  let now = Utc::now();
+  // bob's block ended first, so the sweep comes to him before alice
+  for (username, ended) in [("bob", 2), ("alice", 1)] {
+    let block = Block {
+      username: username.into(),
+      reason: String::new(),
+      scopes: vec![BlockScope::Uploads],
+      addresses: Vec::new(),
+      created_at: Some(now),
+      expires_at: Some(now - chrono::Duration::seconds(ended)),
+      created_by: Some("admin".into()),
+      source: BlockSource::Api,
+    };
+    let stored = block.clone();
+    directory
+      .db
+      .write(move |conn| blocking::store(conn, &stored, Utc::now(), &Default::default()))
+      .await
+      .unwrap();
+    directory.blocks.set(&block);
+  }
+  let within = std::time::Duration::from_secs(5);
+  // the sweep's pushes wait while the summaries are being built
+  let turns = (
+    directory.summary_turns.take("bob").await,
+    directory.summary_turns.take("alice").await,
+  );
+  let blocking_again = async {
+    tokio::time::timeout(within, async {
+      loop {
+        let left = directory
+          .db
+          .read(|conn| blocking::stored_of(conn, "alice"))
+          .await
+          .unwrap();
+        if left.is_none() {
+          break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+      }
+    })
+    .await
+    .expect("the sweep never removed the expired block");
+    let block = json!({ "scopes": ["uploads"] });
+    app
+      .call("PUT", "/api/v0/users/alice/block", Some(block))
+      .await
+  };
+  let releasing = async {
+    tokio::time::timeout(within, async {
+      while !directory.is_blocked("alice", None, BlockScope::Uploads) {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+      }
+    })
+    .await
+    .expect("the new block was never taken");
+    drop(turns);
+  };
+  let ((), (status, _), ()) = tokio::join!(directory.expire_blocks(), blocking_again, releasing);
+  assert_eq!(status, 200);
+  assert!(directory.is_blocked("alice", None, BlockScope::Uploads));
+  assert!(!directory.is_blocked("bob", None, BlockScope::Uploads));
+}
+
+#[tokio::test]
 async fn an_import_counts_what_it_added_and_skipped() {
   let app = app(CONFIG, &[]).await;
   app

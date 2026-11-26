@@ -330,6 +330,9 @@ pub struct Blocks {
   rules: RwLock<Arc<Rules>>,
   blocklist: RwLock<Option<LoadedBlocklist>>,
   decisions: Mutex<Remembered>,
+  /// held from a write of the blocks table to the change of `active` that follows it, so of
+  /// two changes of one user's block made at once both keep the same one
+  changing: tokio::sync::Mutex<()>,
 }
 
 impl Blocks {
@@ -363,6 +366,12 @@ impl Blocks {
       list: Arc::new(list),
     });
     lock(&self.decisions).forget(|_| true);
+  }
+
+  /// Waits until no other change to the blocks runs, and holds off the next one until it is
+  /// dropped.
+  pub async fn changing(&self) -> tokio::sync::MutexGuard<'_, ()> {
+    self.changing.lock().await
   }
 
   /// Takes our block of a user, new or replaced.

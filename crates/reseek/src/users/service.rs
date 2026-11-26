@@ -126,12 +126,15 @@ impl Directory {
   async fn put_block(&self, block: Block, by: &Principal) -> Result<(), ApiError> {
     let stored = block.clone();
     let reported = self.groups.reported();
-    self
-      .db
-      .write(move |conn| blocking::store(conn, &stored, Utc::now(), &reported))
-      .await
-      .map_err(internal)?;
-    self.blocks.set(&block);
+    {
+      let _changing = self.blocks.changing().await;
+      self
+        .db
+        .write(move |conn| blocking::store(conn, &stored, Utc::now(), &reported))
+        .await
+        .map_err(internal)?;
+      self.blocks.set(&block);
+    }
     self.events.raise(Event::UserBlocked(UserBlocked {
       version: 0,
       username: block.username.clone(),
@@ -339,6 +342,7 @@ impl Directory {
     // a buddy change made meanwhile would leave the map holding a buddy without a row
     let _changing = self.buddies.changing().await;
     let _regrouping = self.groups.regrouping().await;
+    let changing_blocks = self.blocks.changing().await;
     let watched = self.forget_watched(username);
     // through the touch writer, which drops the touches queued before when there was a row
     let deleted = self.toucher.forget(username).await;
@@ -351,6 +355,7 @@ impl Directory {
       )));
     }
     self.blocks.unset(username);
+    drop(changing_blocks);
     self.regroup([username], || {
       self.buddies.set(username, None);
       self.memberships_changed(username, Vec::new());
@@ -450,6 +455,7 @@ impl BlockingService for Directory {
 
   async fn unblock(&self, by: &Principal, username: &str) -> Result<(), ApiError> {
     let name = username.to_string();
+    let changing = self.blocks.changing().await;
     let deleted = self
       .db
       .write(move |conn| blocking::delete(conn, &name, Utc::now()))
@@ -465,6 +471,7 @@ impl BlockingService for Directory {
       return Err(ApiError::not_found(format!("{username} is not blocked")));
     }
     self.blocks.unset(username);
+    drop(changing);
     self.events.raise(Event::UserUnblocked(UserUnblocked {
       version: 0,
       username: username.to_string(),

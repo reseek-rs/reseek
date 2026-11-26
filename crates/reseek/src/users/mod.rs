@@ -598,16 +598,22 @@ impl Directory {
   pub async fn expire_blocks(&self) {
     self.blocks.forget_stale();
     let now = Utc::now();
-    let expired = match self.db.write(move |conn| blocking::expire(conn, now)).await {
-      Ok(expired) => expired,
-      Err(e) => {
-        warn!(error = %e, "expired blocks not removed");
-        return;
+    let expired = {
+      let _changing = self.blocks.changing().await;
+      let expired = match self.db.write(move |conn| blocking::expire(conn, now)).await {
+        Ok(expired) => expired,
+        Err(e) => {
+          warn!(error = %e, "expired blocks not removed");
+          return;
+        }
+      };
+      for username in &expired {
+        self.blocks.unset(username);
       }
+      expired
     };
     for username in expired {
       info!(username, "block expired");
-      self.blocks.unset(&username);
       self.events.raise(Event::UserUnblocked(UserUnblocked {
         version: 0,
         username: username.clone(),
