@@ -84,7 +84,7 @@ pub struct CurrentSession {
 }
 
 /// A local account's username and password, the body of `POST /session`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginRequest {
   /// the account's username
@@ -93,6 +93,14 @@ pub struct LoginRequest {
   /// the account's password
   #[schema(format = Password)]
   pub password: String,
+}
+
+impl std::fmt::Debug for LoginRequest {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("LoginRequest")
+      .field("username", &self.username)
+      .finish_non_exhaustive()
+  }
 }
 
 /// What a logout did, as `POST /session/logout` returns it.

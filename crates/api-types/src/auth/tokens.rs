@@ -85,7 +85,7 @@ pub struct CreateToken {
 }
 
 /// A token just created, with the secret that is shown this once and never again.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatedToken {
   /// the token
@@ -93,6 +93,14 @@ pub struct CreatedToken {
   /// the secret to send as `Authorization: Bearer <secret>`
   #[schema(example = "slsk_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0")]
   pub secret: String,
+}
+
+impl std::fmt::Debug for CreatedToken {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("CreatedToken")
+      .field("token", &self.token)
+      .finish_non_exhaustive()
+  }
 }
 
 /// The body of `PUT /tokens/{id}`. A field left null keeps its value.
