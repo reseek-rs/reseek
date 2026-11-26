@@ -55,9 +55,12 @@
   const dirty = $derived(!!file && text !== (file.text ?? ""));
 
   const load = async () => {
+    const at = name;
     const outcome = await call(() =>
-      api.GET("/api/v0/options/file", { params: { query: { file: name } } })
+      api.GET("/api/v0/options/file", { params: { query: { file: at } } })
     );
+    // another file was opened meanwhile, and its own read fills the editor
+    if (at !== name) return;
     if (!outcome.ok) return void (loadError = outcome.error);
     loadError = "";
     file = outcome.data;

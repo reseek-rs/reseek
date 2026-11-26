@@ -89,4 +89,50 @@ describe("the raw configuration file", () => {
     });
     expect(button("Discard")!.disabled).toBe(false);
   });
+
+  it("shows the file picked last, writable or not, whichever read answers first", async () => {
+    const view = structuredClone(fixture) as typeof fixture;
+    (view.values as Record<string, unknown>).remote_configuration = true;
+    view.files.push({ ...view.files[0], name: "extra.toml", writable: false });
+    const held: Record<string, () => void> = {};
+    fakeNetwork((url, method) => {
+      if (!url.pathname.endsWith("/options/file") || method !== "GET") return undefined;
+      const name = url.searchParams.get("file")!;
+      const file = { name, path: `/etc/reseek/${name}`, text: `# ${name}\n`, revision: name };
+      // the first read of extra.toml answers only when the test says
+      if (name === "extra.toml" && !held.extra) {
+        return new Promise((resolve) => (held.extra = () => resolve(file)));
+      }
+      return file;
+    });
+    component = mount(RawFile, { target: document.body, props: { view: view as never } });
+    await flush();
+    const editor = () =>
+      EditorView.findFromDOM(document.querySelector<HTMLElement>(".cm-editor")!)!;
+    const pick = async (name: string) => {
+      const trigger = document.querySelector<HTMLElement>('[aria-label="File"]')!;
+      trigger.focus();
+      trigger.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+      await flush();
+      const option = [...document.querySelectorAll<HTMLElement>("[role=option]")].find(
+        (o) => o.textContent?.trim() === name
+      )!;
+      option.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0 }));
+      option.click();
+      await flush();
+    };
+    expect(editor().state.readOnly).toBe(false);
+    await pick("extra.toml");
+    await pick("config.toml");
+    held.extra();
+    await flush();
+    expect(editor().state.doc.toString()).toBe("# config.toml\n");
+    expect(editor().state.readOnly).toBe(false);
+    // the read-only file once its read lands: the editor refuses typing and says which file it is
+    await pick("extra.toml");
+    expect(editor().state.doc.toString()).toBe("# extra.toml\n");
+    expect(editor().state.readOnly).toBe(true);
+    expect(editor().contentDOM.getAttribute("aria-label")).toBe("Contents of extra.toml");
+    expect(button("Save")).toBeUndefined();
+  });
 });
