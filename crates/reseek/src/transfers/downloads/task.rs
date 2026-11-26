@@ -48,7 +48,7 @@ enum Waited {
 
 /// How long a download may hold its turn among the files of its request before its peer has
 /// it queued.
-const HARD_LIMIT: Duration = Duration::from_secs(180);
+pub(super) const HARD_LIMIT: Duration = Duration::from_secs(180);
 
 /// What a try that asks its peer holds: the free slot it asks in, until the peer offers the
 /// file or is known to have it queued, and for the first try its turn among the files of its

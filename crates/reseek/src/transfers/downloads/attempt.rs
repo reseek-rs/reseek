@@ -21,7 +21,7 @@ use tracing::{debug, info, trace, warn};
 use super::away::Heard;
 use super::destination::incomplete_path;
 use super::starts::{Ask, Slot};
-use super::task::Gate;
+use super::task::{Gate, HARD_LIMIT};
 use super::{Downloads, FileRequest};
 use crate::config::enums::RetryPartial;
 use crate::files::mode::to_unix_file_mode;
@@ -33,9 +33,6 @@ use crate::transfers::{PROGRESS_EVERY, Record, store};
 
 /// The smallest size an old 32-bit client reports as 0, one byte short of 2 GiB.
 const OVERFLOWED_SIZE: u64 = i32::MAX as u64;
-
-/// Why a download that held its turn too long failed.
-const HARD_LIMITED: &str = "Download failed to enqueue remotely after hard time limit of 180 secs";
 
 /// How long a file the peer took into its queue holds the slot it asked in when the peer
 /// neither offers it nor says its place, from the question to the end of the wait. A peer with
@@ -515,7 +512,10 @@ impl Downloads {
         let failed = if hard_limited {
           Failure {
             outcome: TransferOutcome::TimedOut,
-            message: HARD_LIMITED.to_string(),
+            message: format!(
+              "Download failed to enqueue remotely after hard time limit of {} secs",
+              HARD_LIMIT.as_secs()
+            ),
             retryable: true,
           }
         } else {
