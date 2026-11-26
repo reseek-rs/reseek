@@ -6,7 +6,7 @@
 </script>
 
 <!-- a label takes at most 40% of the line and wraps past that; a value too long for the rest, an
-     address or a version, wraps rather than widening the card -->
+     address or a version, wraps inside the card's width -->
 <dl class="info">{@render children()}</dl>
 
 <style>

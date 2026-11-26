@@ -521,7 +521,7 @@ test("analyzes a file and queues a folder from the Files screen", async ({ page 
   ).toBeVisible();
   expect(queued.map((q) => q.path)).toEqual(["Album/01.flac", "Album/CD2/02.wav"]);
 
-  // a file the folder queued shows its place in the queue, not an offer to analyze it
+  // a file the folder queued shows its place in the queue
   await page.getByRole("button", { name: "More for Album" }).click();
   await page.getByRole("menuitem", { name: "Open" }).click();
   await page.getByRole("button", { name: "More for 01.flac" }).click();

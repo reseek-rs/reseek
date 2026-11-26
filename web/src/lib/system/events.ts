@@ -122,7 +122,7 @@ export const eventSummary = (e: Schemas["Event"]): EventSummary => {
 
 /**
  * An event's data as indented JSON, except that a string of several lines, such as a script's
- * output, is written out on its lines rather than as one line of `\n`s
+ * output, is written out on its lines
  */
 export const payloadText = (value: unknown, pad = ""): string => {
   const inner = `${pad}  `;

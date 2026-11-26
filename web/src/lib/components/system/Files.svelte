@@ -515,7 +515,7 @@
     {/each}
   </div>
 {:else}
-  <!-- an empty folder says so in a line, rather than under a tree box of nothing -->
+  <!-- an empty folder says so in a line, with no tree box -->
   {#if empty}
     <div class="rounded-card border bg-surface">
       <EmptyRow

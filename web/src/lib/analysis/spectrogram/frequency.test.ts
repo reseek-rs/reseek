@@ -58,7 +58,7 @@ describe("the daemon's bins on each scale", () => {
   });
 
   it("places each row's bins near where its own frequency falls", () => {
-    // between two bin middles a row is placed by height, not by hertz, so on a log axis it
+    // between two bin middles a row is placed by its height on the axis, so on a log axis it
     // sits up to a fraction of a bin off where its frequency would put it
     for (const scale of ["linear", "log", "mel"] as const) {
       const rows = rowBins(pure(scale), 22_050, 512, 700);

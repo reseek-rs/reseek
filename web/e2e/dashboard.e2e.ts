@@ -106,7 +106,7 @@ test("a screen that fails says what went wrong", async ({ page }) => {
     .getByRole("alert")
     .filter({ hasText: "This screen could not be displayed" });
   await expect(failed.getByRole("button", { name: "Reload" })).toBeVisible();
-  // under the caption, the error's own words rather than a stand-in for them
+  // under the caption, the error's own words
   const detail = failed.locator("p").nth(1);
   await expect(detail).not.toBeEmpty();
   await expect(detail).not.toHaveText(/^(Internal Error|\[object Object\])$/);

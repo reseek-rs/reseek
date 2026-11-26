@@ -32,7 +32,7 @@ describe("moving between scales", () => {
     const there = curveAt(first, 100);
     const second = moveTo(first, "mel", 100, 250);
     expect(curveAt(second, 100)).toEqual(there);
-    // a moment later the axis has moved on from there, not jumped
+    // a moment later the axis has moved on a little from there
     const next = curveAt(second, 101);
     for (const scale of ["linear", "log", "mel"] as const) {
       expect(Math.abs(next[scale] - there[scale])).toBeLessThan(0.05);

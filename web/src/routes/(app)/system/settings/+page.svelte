@@ -150,7 +150,7 @@
     if (!view.data || raw) return;
     void tick().then(spy);
   });
-  // the shell's content area scrolls, not the window
+  // the shell's content area is what scrolls
   $effect(() => {
     const box = content.scroller;
     if (!box) return;

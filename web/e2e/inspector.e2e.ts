@@ -94,11 +94,11 @@ test.describe("on a wide screen", () => {
     await expect(details).toHaveAttribute("aria-expanded", "true");
     await expect(technical).toHaveAttribute("aria-expanded", "false");
 
-    // an empty field is left out rather than shown as a dash
+    // an empty field is left out, with no dash in its place
     await expect(pane(page).getByText("Folder", { exact: true })).toBeVisible();
     await expect(pane(page).getByText("Attempts", { exact: true })).toHaveCount(0);
     await expect(pane(page).getByText("—", { exact: true })).toHaveCount(0);
-    // the daemon behind these fakes has no such transfer, which History says rather than waiting
+    // the daemon behind these fakes has no such transfer, which History says at once
     await expect(pane(page).getByText(/^Could not read the history/)).toBeVisible();
 
     // the raw values are folded away, each with its copy button

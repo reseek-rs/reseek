@@ -8,7 +8,7 @@
 
   // a section's lines, those without a value left out; `copy` is for raw values, each on its own
   // line in monospace with a button that copies it. A raw value, mostly a path or an id, fills
-  // its lines and breaks at any character rather than at its spaces
+  // its lines and breaks at any character
   type Props = { fields: Field[]; copy?: boolean };
 
   let { fields, copy = false }: Props = $props();

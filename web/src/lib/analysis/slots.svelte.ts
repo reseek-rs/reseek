@@ -114,7 +114,7 @@ class Slots {
       return void toast(`${file.name} is not a type the analyzer reads`, "error");
     }
     // the daemon refuses a larger file as well, but only once it is being sent, which a browser
-    // can report as a lost connection rather than as the answer
+    // can report as a lost connection
     const limit = app.state?.process.uploadMaxBytes;
     if (limit !== undefined && file.size > limit) {
       const largest = formatBytes(limit);

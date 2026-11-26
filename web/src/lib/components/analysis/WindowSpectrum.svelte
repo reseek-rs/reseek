@@ -42,7 +42,7 @@
   /**
    * The window's levels as the line draws them: bins that fall within the same few pixels on
    * the current axis are averaged by power into one point, so the crowded top of a log or mel
-   * axis reads as a curve rather than a comb of single-bin spikes
+   * axis reads as a curve
    */
   const points = $derived.by(() => {
     if (!spectra || index < 0 || index >= spectra.windows) return [];

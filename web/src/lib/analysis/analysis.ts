@@ -151,7 +151,7 @@ const RARE = 0.01;
 /**
  * The cutoff histogram, ascending by cutoff, as the reading lists it: a run of cutoffs that
  * each hold under 1% of the windows becomes one line spanning them, so a wandering cutoff reads
- * as a few lines rather than one per 500 Hz
+ * as a few lines
  */
 export const cutoffRows = (histogram: Report["measures"]["cutoffHzHistogram"]): CutoffRow[] => {
   const total = histogram.reduce((n, [, count]) => n + count, 0);

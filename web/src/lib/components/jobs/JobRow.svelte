@@ -56,7 +56,7 @@
   const write = $derived(session.can("ReadWrite"));
   const busy = new Busy();
   const ended = $derived(job.state === "ended");
-  // a running scan says how far it is in the state, not in its job
+  // a running scan's progress is in the state; its job carries none
   const done = $derived(
     job.kind === "scan" && !ended ? (app.state?.shares.scanProgress ?? null) : fraction(job)
   );

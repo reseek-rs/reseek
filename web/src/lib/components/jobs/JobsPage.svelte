@@ -70,7 +70,7 @@
     );
   };
   // a link to a job opens it once its row is there, which a cold load waits for. The link points
-  // once: it leaves the address, so Jobs comes back where it was left rather than to the job
+  // once: it leaves the address, so Jobs comes back where it was left
   $effect(() => {
     if (!shown || !jobs.rows.get(shown)) return;
     const id = shown;

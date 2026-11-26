@@ -31,7 +31,7 @@
   // the home page: a search, what moves now, and the history of the chosen range
   type Tab = "users" | "content" | "errors";
 
-  /** the window ends when it was chosen or last reloaded, not at every render */
+  /** when the window ends: set when the range is chosen and at each reload */
   let now = $state(Date.now());
   const span = $derived(windowOf(dashboardPrefs.range, now));
   // a name's card open in the statistics holds the reload that would reorder them

@@ -125,7 +125,7 @@
   {#if paretoError}<p class="text-sm text-danger">
       Could not load errors by type: {paretoError}
     </p>{/if}
-  <!-- a phone scrolls the table sideways rather than squeeze the messages into slivers -->
+  <!-- a phone scrolls the table sideways, so the messages keep their width -->
   <div class="overflow-x-auto">
     <table class="data-table dense w-full min-w-[36rem] text-sm">
       <thead>

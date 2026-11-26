@@ -199,7 +199,7 @@
           Part of the view is shown at lower detail: {scope.pictures.lost.tile}
         </p>
       {/if}
-      <!-- read out as the user moves the cursor, not as playback moves it every frame -->
+      <!-- read out as the user moves the cursor; quiet while playback moves it every frame -->
       <p class="text-xs font-medium tabular-nums" aria-live={playing ? "off" : "polite"}>
         {readout}
       </p>

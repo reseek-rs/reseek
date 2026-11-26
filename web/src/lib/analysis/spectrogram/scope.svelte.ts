@@ -111,8 +111,8 @@ export class Scope {
   zoom(factor: number, across: number, eased = true) {
     const base = eased ? (this.#zooming?.to ?? this.view) : this.view;
     const to = zoomAround(base, factor, across, this.duration);
-    // zooming onto a stretch the playhead isn't in is the user looking elsewhere, so stop
-    // following rather than page the view away from what they zoomed to
+    // zooming onto a stretch the playhead isn't in is the user looking elsewhere, so following
+    // stops and the view stays on what they zoomed to
     if (this.following && (this.cursor < to.start || this.cursor > to.start + to.span)) {
       this.following = false;
     }
