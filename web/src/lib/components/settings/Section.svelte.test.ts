@@ -618,4 +618,43 @@ describe("a settings section", () => {
       expect(details.open).toBe(true);
     }
   });
+
+  it("offers Save and Apply only for the changes each writes", async () => {
+    const fetcher = vi.fn<(request: Request) => Promise<Response>>(async () =>
+      Response.json(written())
+    );
+    vi.stubGlobal("fetch", fetcher);
+    // the profile text lives in a file that can't be written, so it is applied at runtime
+    const v = structuredClone(view);
+    v.files.push({ ...v.files[0], name: "ro.toml", writable: false, readOnlyReason: "mounted" });
+    v.fields["soulseek.description"].file = "ro.toml";
+    const target = render(
+      sections.find((s) => s.id === "soulseek")!,
+      v
+    );
+    const button = (text: string) =>
+      [...target.querySelectorAll("button")].find((b) => b.textContent?.includes(text))!;
+    const type = (key: string, text: string) => {
+      const input = target.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[id="${key}"]`)!;
+      input.value = text;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      flushSync();
+    };
+    type("soulseek.description", "Hello");
+    expect(button("Save").disabled).toBe(true);
+    expect(button("Apply at runtime").disabled).toBe(false);
+    type("soulseek.description", "A reseek user.");
+    type("soulseek.username", "someone");
+    expect(button("Save").disabled).toBe(false);
+    expect(button("Apply at runtime").disabled).toBe(true);
+    // the page's Save all with nothing of this section's to save sends nothing and says nothing
+    type("soulseek.username", "");
+    type("soulseek.description", "Hello");
+    toasts.splice(0);
+    const component = mounted[mounted.length - 1] as unknown as { save: () => Promise<unknown> };
+    await component.save();
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(toasts).toHaveLength(0);
+    vi.unstubAllGlobals();
+  });
 });

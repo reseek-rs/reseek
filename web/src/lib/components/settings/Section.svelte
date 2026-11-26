@@ -106,6 +106,9 @@
   });
 
   const changed = $derived(fields.filter((f) => !same(draft[f.key], running[f.key])));
+  /** the changed options a save writes to their files, and those an apply sets at runtime */
+  const toSave = $derived(changed.filter((f) => edits[f.key].mode === "save"));
+  const toApply = $derived(changed.filter((f) => edits[f.key].mode === "runtime"));
   /** a notification mode in view, saved or not, needs the browser's permission */
   const wantsDesktop = $derived(
     found.some((f) => controls[f.key] === "notify-mode" && showsDesktop(draft[f.key] as NotifyMode))
@@ -151,7 +154,7 @@
   const collect = (mode: "save" | "runtime") => {
     const found: Record<string, string> = {};
     const out: Write[] = [];
-    for (const field of changed.filter((f) => edits[f.key].mode === mode)) {
+    for (const field of mode === "save" ? toSave : toApply) {
       const sent = draft[field.key];
       // the default put back: the key comes out, so the default applies and stays the default
       if (defaulted.has(field.key) && same(sent, defaultDraft(field.key))) {
@@ -235,7 +238,7 @@
   export const save = () =>
     write(async () => {
       const writes = collect("save");
-      if (!writes) return { ok: true as const, data: null };
+      if (!writes?.length) return { ok: true as const, data: null };
       const byFile = new Map<string, Write[]>();
       for (const write of writes) {
         const file = fileOf(view, write.field.key);
@@ -299,7 +302,7 @@
   const apply = (expiry: (typeof EXPIRIES)[number]) =>
     write(async () => {
       const writes = collect("runtime");
-      if (!writes) return { ok: true as const, data: null };
+      if (!writes?.length) return { ok: true as const, data: null };
       const outcome = await patchOverrides(
         view.revision,
         Object.fromEntries(writes.filter((w) => !w.unset).map((w) => [w.field.key, w.set])),
@@ -338,7 +341,7 @@
   };
 
   /** Whether every change can be saved to a file, which the page's Save all needs */
-  export const allSaveable = () => changed.every((f) => edits[f.key].mode === "save");
+  export const allSaveable = () => toSave.length === changed.length;
 
   /** whether the section holds a secret, which Copy as Nix leaves out */
   const holdsSecret = $derived(
@@ -473,7 +476,7 @@
         {/if}
         {#if runtimeable}
           <Menu.Root>
-            <Menu.Trigger disabled={!changed.length || writing > 0}>
+            <Menu.Trigger disabled={!toApply.length || writing > 0}>
               {#snippet child({ props })}
                 <Button {...props} variant="outline">
                   Apply at runtime <ChevronDownIcon />
@@ -488,7 +491,7 @@
           </Menu.Root>
         {/if}
         {#if saveable}
-          <Button disabled={!changed.length || writing > 0} onclick={save}>Save</Button>
+          <Button disabled={!toSave.length || writing > 0} onclick={save}>Save</Button>
         {/if}
       </div>
     </div>
