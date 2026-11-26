@@ -104,12 +104,23 @@ impl Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// How the client says who it is, besides the session cookie [`Client::login`] keeps.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum Credential {
   /// an API token or an API key, sent as `Authorization: Bearer`
   Bearer(String),
   /// an API key, sent as `X-API-Key`
   ApiKey(String),
+}
+
+/// Names the kind of credential and never the secret.
+impl std::fmt::Debug for Credential {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let kind = match self {
+      Credential::Bearer(_) => "Bearer",
+      Credential::ApiKey(_) => "ApiKey",
+    };
+    f.debug_tuple(kind).field(&"<redacted>").finish()
+  }
 }
 
 /// A client of one daemon. Cloning gives another handle to the same connections and cookies.
