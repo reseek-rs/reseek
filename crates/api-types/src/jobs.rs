@@ -177,7 +177,7 @@ pub struct Job {
   pub progress: Option<f64>,
   /// the download job an analysis job analyzes the files of, null otherwise
   pub follows: Option<Uuid>,
-  /// whether it can be paused: a running download or analysis job
+  /// whether it can be paused or resumed: a download or analysis job that has not ended
   pub pausable: bool,
   /// when it was made
   pub created_at: DateTime<Utc>,
