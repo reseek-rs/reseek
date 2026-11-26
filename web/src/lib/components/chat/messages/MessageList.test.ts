@@ -240,6 +240,36 @@ describe("the message list", () => {
     expect(document.activeElement).toBe(box);
   });
 
+  it("counts the stored messages from others that come while scrolled up", async () => {
+    history(3);
+    const { pane, box } = await open();
+    // jsdom lays nothing out: the log is taller than its view, which is at its top
+    Object.defineProperty(box, "scrollHeight", { value: 10_000 });
+    box.dispatchEvent(new Event("scroll"));
+    await flush();
+    const pill = () =>
+      [...document.querySelectorAll("button")]
+        .map((b) => b.textContent?.trim())
+        .find((t) => t === "Jump to latest" || t?.endsWith(" new"));
+    expect(pill()).toBe("Jump to latest");
+    // a message of ours not sent stays last, and counts for nothing
+    pane.messages.upsert({
+      ...fromPrivate(stored(3), "me"),
+      localId: -1,
+      self: true,
+      text: "lost",
+      sending: "failed"
+    });
+    await flush();
+    expect(pill()).toBe("Jump to latest");
+    // two from alice and one of ours, stored in one go
+    pane.messages.upsert(fromPrivate(stored(4), "me"));
+    pane.messages.upsert(fromPrivate(stored(5), "me"));
+    pane.messages.upsert({ ...fromPrivate(stored(6), "me"), self: true });
+    await flush();
+    expect(pill()).toBe("2 new");
+  });
+
   it("follows a new message unless text in the messages is selected", async () => {
     history(3);
     const { pane } = await open();

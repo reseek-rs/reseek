@@ -70,8 +70,8 @@
   /** the scrollbar is held down: a press on the list beside its content */
   let gripped = $state(false);
   let placed = false;
-  /** the newest message when the list was placed or last followed a new one */
-  let seenNewest: number | null = null;
+  /** the newest stored message when the list was placed or last followed a new one */
+  let seenNewest = 0;
 
   const lines = $derived<(Line | Start)[]>([
     ...(!pane.hasMore && pane.loaded && pane.ordered.length
@@ -79,7 +79,8 @@
       : []),
     ...layout(pane.ordered, pane.gaps, pane.unreadFrom)
   ]);
-  const newest = $derived(pane.ordered.at(-1)?.localId ?? null);
+  /** the newest stored message; one still being sent is not followed until it is stored */
+  const newest = $derived(pane.ordered.findLast((m) => m.localId > 0)?.localId ?? null);
 
   /**
    * A line's height before it is drawn, in rem. A line drawn at another height than its guess
@@ -310,7 +311,7 @@
   $effect(() => {
     if (!pane.loaded || placed) return;
     placed = true;
-    seenNewest = untrack(() => newest);
+    seenNewest = untrack(() => newest) ?? 0;
     untrack(async () => {
       await tick();
       const at = pane.at;
@@ -343,13 +344,14 @@
     });
   });
 
-  // a new message is followed at the bottom when the view was there and nothing holds the list,
-  // and the oldest messages past what a pane keeps go; otherwise the pill counts it
+  // new messages are followed at the bottom when the view was there and nothing holds the list,
+  // and the oldest messages past what a pane keeps go; otherwise the pill counts those from others
   $effect(() => {
     if (newest === null) return;
     untrack(async () => {
       // the first page is placed on its own; this follows the messages after it
       if (!placed || newest === seenNewest) return;
+      const since = seenNewest;
       seenNewest = newest;
       // a page read on the way down is history, not news
       if (loadingNewer) return;
@@ -357,7 +359,7 @@
         pane.trim();
         await tick();
         readIfSeen();
-      } else fresh += 1;
+      } else fresh += pane.ordered.filter((m) => m.localId > since && !m.self).length;
     });
   });
 
