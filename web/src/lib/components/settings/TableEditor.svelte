@@ -85,6 +85,8 @@
 
   /** rows added since the control started, which open by themselves */
   const added = new SvelteSet<number>();
+  /** the rows of a wide table shown open, as their sections' toggles leave them */
+  const opened = new SvelteSet<number>();
   /** what each secret cell held before it was typed in, to go back to when it is emptied */
   const before = new Map<string, unknown>();
   let root = $state<HTMLElement | null>(null);
@@ -128,6 +130,7 @@
   const add = () => {
     const id = next++;
     added.add(id);
+    opened.add(id);
     commit([...rows, { id, name: "", value: {} }]);
     void focusRow(id);
   };
@@ -332,7 +335,11 @@
     <ul class="-mx-5 flex flex-col divide-y border-y bg-field">
       {#each rows as row, i (row.id)}
         <li data-row={row.id}>
-          <details class="group" open={added.has(row.id) || !!trouble(row)}>
+          <!-- a row opens when added or when it gains a problem, and then stays as its toggle leaves it -->
+          <details
+            class="group"
+            open={opened.has(row.id) || !!trouble(row)}
+            ontoggle={(e) => (e.currentTarget.open ? opened.add(row.id) : opened.delete(row.id))}>
             <summary
               class="flex cursor-pointer list-none items-center gap-1.5 px-5 py-2 text-sm font-medium hover:bg-hover [&::-webkit-details-marker]:hidden">
               <ChevronRightIcon
