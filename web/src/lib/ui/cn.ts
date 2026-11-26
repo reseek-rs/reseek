@@ -6,12 +6,21 @@ import { extendTailwindMerge } from "tailwind-merge";
 const twMerge = extendTailwindMerge({
   extend: {
     theme: {
-      spacing: ["control", "control-sm", "section", "group", "inline", "gutter"],
+      spacing: ["control", "control-sm", "section", "group", "inline", "gutter", "header"],
       radius: ["control", "card", "badge"],
-      shadow: ["card", "raised"],
+      shadow: ["raised"],
       container: ["page"],
-      animate: ["popover-in", "popover-out", "fade-in", "fade-out", "sheet-in", "sheet-out"],
-      ease: ["out-soft"]
+      animate: [
+        "popover-in",
+        "popover-out",
+        "line-in",
+        "done-flash",
+        "fade-in",
+        "fade-out",
+        "sheet-in",
+        "sheet-out"
+      ],
+      ease: ["out-soft", "drawer"]
     }
   }
 });
