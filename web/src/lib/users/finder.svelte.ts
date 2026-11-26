@@ -82,21 +82,31 @@ export class UserFinder {
 
   #read = () => {
     const text = this.#text();
-    if (this.#reading?.text !== text) this.#reading = { text, done: this.#ask(text) };
-    return this.#reading.done;
+    if (this.#reading?.text === text) return this.#reading.done;
+    // an answer dropped because the text moved on is asked for again when the text comes back
+    const reading: { text: string; done: Promise<void> } = {
+      text,
+      done: this.#ask(text).then((taken) => {
+        if (!taken && this.#reading === reading) this.#reading = null;
+      })
+    };
+    this.#reading = reading;
+    return reading.done;
   };
 
+  /** Asks the directory for `text`; gives back whether its answer was taken */
   async #ask(text: string) {
     const outcome = text
       ? await call(() =>
           api.GET("/api/v0/users", { params: { query: { q: text, limit: CANDIDATES } } })
         )
       : null;
-    if (this.#text() !== text) return;
+    if (this.#text() !== text) return false;
     this.#answered = text;
     // a directory that can't be read leaves the users already listed
     if (!outcome) this.found = [];
     else if (outcome.ok) this.found = outcome.data.users;
+    return true;
   }
 
   /** Resolves once the directory has answered for the text as it is now */
