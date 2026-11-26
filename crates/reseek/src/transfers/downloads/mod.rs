@@ -428,9 +428,10 @@ impl Downloads {
   /// Cancels the download `id` of `username`: a running one stops wherever it is and ends
   /// canceled; one whose task is gone without ending it is ended canceled here. With
   /// `remove` it leaves the listings once it has ended, and one whose row cannot be read leaves
-  /// them at once. False, doing nothing else but the removal, when the download has completed,
-  /// its task included completing it meanwhile, or its file arrived and is being moved. 404
-  /// when there is no such download.
+  /// them at once. False when the download has completed, its task included completing it
+  /// meanwhile, or its file arrived and is being moved, and `remove` is not set; with `remove`
+  /// such a download is only taken out of the listings, and the answer is true. 404 when there
+  /// is no such download.
   pub async fn cancel(&self, username: &str, id: Uuid, remove: bool) -> Result<bool, ApiError> {
     self.end_canceled(username, id, remove, None).await
   }
