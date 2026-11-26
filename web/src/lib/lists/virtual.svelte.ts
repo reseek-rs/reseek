@@ -288,9 +288,4 @@ export class ListWindow<L> {
   scrollToEnd() {
     this.#virtualizer.scrollToEnd();
   }
-
-  /** Whether the view is within `threshold` pixels of the end */
-  atEnd(threshold?: number) {
-    return this.#virtualizer.isAtEnd(threshold);
-  }
 }
