@@ -44,6 +44,21 @@ describe("a chat search", () => {
     expect(search.hits).toEqual([hit]);
   });
 
+  it("reads the next page once when it is asked for twice at once", async () => {
+    fakeNetwork((url) => {
+      const offset = Number(url.searchParams.get("offset"));
+      return answers(url) ?? { hits: [{ ...hit, localId: offset + 1 }], total: 3 };
+    });
+    const search = new ChatSearch(
+      () => "floyd",
+      () => "all",
+      1
+    );
+    await search.read();
+    await Promise.all([search.more(), search.more()]);
+    expect(search.hits.map((h) => h.localId)).toEqual([1, 2]);
+  });
+
   it("reads a query the daemon refuses again as plain words, with no error", async () => {
     const net = fakeNetwork((url) => {
       const known = answers(url);

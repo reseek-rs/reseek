@@ -155,8 +155,23 @@ export class ChatSearch {
     this.#read = "";
   };
 
+  /** the read of the next page under way and the read it follows, so a page is read once */
+  #more: { asked: number; done: Promise<void> } | null = null;
+
   /** Reads the next page of messages */
-  more = async () => {
+  more = (): Promise<void> => {
+    if (this.#more?.asked === this.#asked) return this.#more.done;
+    const more = {
+      asked: this.#asked,
+      done: this.#readMore().finally(() => {
+        if (this.#more === more) this.#more = null;
+      })
+    };
+    this.#more = more;
+    return more.done;
+  };
+
+  async #readMore() {
     const asked = this.#asked;
     const found = await readHits(this.#text(), this.#kind(), this.hits.length, this.#limit);
     if (asked !== this.#asked) return;
@@ -164,7 +179,7 @@ export class ChatSearch {
     this.error = "";
     this.hits = [...this.hits, ...found.data.hits];
     this.total = found.data.total;
-  };
+  }
 
   /**
    * Reads the rooms the daemon knows by name; the server's list needs a connection to it, so a
