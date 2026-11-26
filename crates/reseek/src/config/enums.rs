@@ -43,8 +43,8 @@ option_enum! {
 }
 
 /// Which side of a relay the daemon is: the controller, the one side it plays. The relay agent
-/// is the separate `reseek-agent` program, so `agent` and `debug`, the daemon's roles before
-/// it, are refused with a pointer to it rather than read as something else.
+/// is the separate `reseek-agent` program, and its roles, `agent` and `debug`, are refused with
+/// a pointer to that program.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RelayMode {
   /// takes connections from agents
@@ -56,8 +56,8 @@ impl RelayMode {
   /// Every name, in declaration order.
   pub const NAMES: &[&str] = &["controller"];
 
-  /// The roles the daemon no longer plays, which the relay agent program took over.
-  const MOVED: &[&str] = &["agent", "debug"];
+  /// The roles of the `reseek-agent` program.
+  const AGENT_ROLES: &[&str] = &["agent", "debug"];
 }
 
 impl serde::Serialize for RelayMode {
@@ -72,10 +72,13 @@ impl<'de> serde::Deserialize<'de> for RelayMode {
     if text.eq_ignore_ascii_case(Self::NAMES[0]) {
       return Ok(Self::Controller);
     }
-    let message = if Self::MOVED.iter().any(|m| text.eq_ignore_ascii_case(m)) {
+    let message = if Self::AGENT_ROLES
+      .iter()
+      .any(|m| text.eq_ignore_ascii_case(m))
+    {
       format!(
-        "`{text}` is no longer a relay mode of the daemon: run the relay agent as the \
-         reseek-agent program, and leave relay.mode unset or `controller`"
+        "`{text}` is a role of the reseek-agent program: run that program for an agent, and \
+         leave relay.mode unset or `controller`"
       )
     } else {
       format!("`{text}` is not one of: {}", Self::NAMES.join(", "))
