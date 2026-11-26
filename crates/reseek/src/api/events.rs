@@ -15,10 +15,6 @@ use super::validate;
 use crate::app::AppState;
 use crate::auth::{Administrator, AnyRole, Authorized};
 
-/// The catalog's pseudo-types, which name no event; which real types have no sample is the
-/// event log's to say.
-const NOT_RAISABLE: &[&str] = &["None", "Any"];
-
 /// The events routes.
 pub fn routes() -> OpenApiRouter<AppState> {
   OpenApiRouter::new()
@@ -80,17 +76,9 @@ async fn raise(
   Ok((StatusCode::CREATED, Json(record)).into_response())
 }
 
-/// The event type `name` names in any case, refused when it is unknown or no sample is made of
-/// it.
+/// The event type `name` names in any case, refused when it is unknown. The event log refuses
+/// a type it makes no sample of.
 fn raisable(name: &str) -> Result<EventType, ApiError> {
-  if NOT_RAISABLE
-    .iter()
-    .any(|kind| kind.eq_ignore_ascii_case(name))
-  {
-    return Err(ApiError::bad_request(format!(
-      "Event type '{name}' cannot be raised"
-    )));
-  }
   name.parse().map_err(ApiError::bad_request)
 }
 
