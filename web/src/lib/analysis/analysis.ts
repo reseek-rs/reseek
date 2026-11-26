@@ -11,7 +11,7 @@ export type Scale = Layout["scale"];
 
 /** The caution that goes with every reading, in the Analysis page's guide */
 export const DISCLAIMER =
-  "The analysis is a guide, not proof. Genuine audio can end below the top of the graph, as speech, old masters and vinyl rips often do, and a careful transcode can reach the top. Listen before deciding.";
+  "The analysis is a guide. Genuine audio can end below the top of the graph, as speech, old masters and vinyl rips often do, and a careful transcode can reach the top. Listen before deciding.";
 
 /** What a file with no report says */
 export const NOT_ANALYZED = "Not analyzed yet";

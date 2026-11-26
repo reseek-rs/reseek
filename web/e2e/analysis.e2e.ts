@@ -77,7 +77,7 @@ test("analyzes a finished download from its row and keeps a judgment", async ({ 
   const inspector = await details(page);
   // the inspector gives the verdict in a line, with the spectrogram small
   await expect(inspector.getByText("Likely a transcode").first()).toBeVisible();
-  await expect(inspector.getByText("A guide, not proof")).toBeVisible();
+  await expect(inspector.getByText("A guide to check by ear")).toBeVisible();
   await inspector.getByRole("button", { name: "Open in Analysis" }).click();
 
   const viewer = page.getByRole("region", { name: "Slot A" });
@@ -85,7 +85,7 @@ test("analyzes a finished download from its row and keeps a judgment", async ({ 
   await expect(plot).toBeVisible();
   // the guide opens from the toolbar with the disclaimer
   await page.getByRole("button", { name: "Guide" }).click();
-  await expect(page.getByText(/The analysis is a guide, not proof/)).toBeVisible();
+  await expect(page.getByText(/The analysis is a guide\./)).toBeVisible();
   await page.keyboard.press("Escape");
   // each guide line shows and hides from its legend, drawn on the plot at its frequency
   const legend = viewer.getByRole("button", { name: "MP3 128k" });

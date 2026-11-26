@@ -81,7 +81,7 @@
     const [file] = e.dataTransfer?.files ?? [];
     if (!file) return;
     if (e.dataTransfer?.items[0]?.webkitGetAsEntry()?.isDirectory) {
-      return void toast("Drop a single file, not a folder", "error");
+      return void toast("Drop a single file", "error");
     }
     if (!write) return void toast("Uploading needs write access", "error");
     slots.upload(id, file);

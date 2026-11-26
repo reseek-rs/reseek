@@ -38,7 +38,7 @@
       <span class="text-fg-muted">· {Math.round(report.confidence * 100)}% confidence</span>
     </p>
     {#if scope}<Thumbnail {scope} onopen={() => slots.open(target, name)} />{/if}
-    <p class="text-xs text-fg-muted">A guide, not proof</p>
+    <p class="text-xs text-fg-muted">A guide to check by ear</p>
   {/if}
 
   {#if report}

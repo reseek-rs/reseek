@@ -36,7 +36,7 @@ const analysisHolds = async (page: Page) => {
   await slot.getByRole("radio", { name: "Mel" }).click();
   await expect(slot.getByRole("radio", { name: "Mel" })).toHaveAttribute("aria-checked", "true");
   await page.getByRole("button", { name: "Guide" }).click();
-  await expect(page.getByText(/The analysis is a guide, not proof/)).toBeVisible();
+  await expect(page.getByText(/The analysis is a guide\./)).toBeVisible();
   await page.keyboard.press("Escape");
   await layerHolds(slot, "Analysis page");
   await page.goBack();
