@@ -23,10 +23,14 @@
   let reports = $state.raw<Report[] | null>(null);
   let error = $state("");
 
+  /** counts the reads begun, so only the last one's answer is taken */
+  let asked = 0;
   const read = async () => {
+    const at = ++asked;
     const outcome = await call(() =>
       api.GET("/api/v0/analysis", { params: { query: { limit: SHOWN } } })
     );
+    if (at !== asked) return;
     if (outcome.ok) reports = outcome.data;
     error = outcome.ok ? "" : outcome.error;
   };
