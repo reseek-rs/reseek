@@ -29,7 +29,7 @@ export const pageCount = (total: number, size: number) => Math.max(1, Math.ceil(
 
 /**
  * The page numbers a pager shows: the first, the last, and the pages next to `page`, with a gap
- * for each run left out. A gap would stand for one page only shows that page instead
+ * for each run left out. A run of one page left out is shown as that page
  */
 export const pagerItems = (page: number, pages: number): (number | "gap")[] => {
   const shown = new Set([1, pages, page - 1, page, page + 1]);
