@@ -426,10 +426,17 @@ impl BlockingService for Directory {
       return Err(ApiError::bad_request("A block must end in the future"));
     }
     let addresses = blocking::addresses_of(request.addresses).map_err(ApiError::bad_request)?;
+    let scopes = request.scopes.unwrap_or_else(|| self.default_scopes());
+    if scopes.is_empty() {
+      return Err(ApiError::conflict(
+        "No scopes to block from",
+        Some("blocking.default_scopes is empty; name the scopes in the request".to_string()),
+      ));
+    }
     let block = Block {
       username: username.to_string(),
       reason: request.reason,
-      scopes: request.scopes.unwrap_or_else(|| self.default_scopes()),
+      scopes,
       addresses,
       created_at: Some(now),
       expires_at,
@@ -516,6 +523,10 @@ impl BlockingService for Directory {
     let mut result = BlockImportResult::default();
     for wanted in wanted {
       let username = &wanted.username;
+      if wanted.scopes.is_empty() {
+        debug!(username, "imported block skipped; it names no scope");
+        continue;
+      }
       if username.is_empty() || self.is_us(username) || self.blocked_by_us(username).await? {
         continue;
       }

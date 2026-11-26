@@ -30,7 +30,8 @@ pub trait BlockingService: Send + Sync {
   }
 
   /// Blocks a user, or replaces their block, as `by`. `request` has passed the API's checks,
-  /// and its `expiresIn` is read as `expires_in`. Blocking ourselves is a conflict.
+  /// and its `expiresIn` is read as `expires_in`. Blocking ourselves, or with no scopes given
+  /// and none configured, is a conflict.
   async fn block(
     &self,
     by: &Principal,
@@ -47,8 +48,8 @@ pub trait BlockingService: Send + Sync {
     Err(not_yet(DOMAIN))
   }
 
-  /// Blocks every user of `import` not blocked yet, as `by`; an expired block or one whose
-  /// reason is too long is skipped.
+  /// Blocks every user of `import` not blocked yet, as `by`; an expired block, one naming no
+  /// scope and one whose reason is too long are skipped.
   async fn import(
     &self,
     by: &Principal,

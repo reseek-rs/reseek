@@ -564,6 +564,7 @@ async fn an_import_counts_what_it_added_and_skipped() {
   let blocks = json!([
     { "username": "dave", "reason": "x".repeat(501), "scopes": ["uploads"], "source": "api" },
     { "username": "erin", "reason": "x".repeat(500), "scopes": ["uploads"], "source": "api" },
+    { "username": "oscar", "reason": "", "scopes": [], "source": "api" },
   ]);
   let mut import = request("POST", "/api/v0/users/blocked/import", Some(blocks));
   import
@@ -573,9 +574,29 @@ async fn an_import_counts_what_it_added_and_skipped() {
   assert_eq!(answer.status, 200);
   assert_eq!(
     answer.json(),
-    json!({ "added": 1, "skipped": 1 }),
-    "a reason over 500 characters is skipped"
+    json!({ "added": 1, "skipped": 2 }),
+    "a reason over 500 characters and a block of no scope are skipped"
   );
+}
+
+#[tokio::test]
+async fn a_block_of_no_scope_is_refused() {
+  let app = app(&format!("{CONFIG}[blocking]\ndefault_scopes = []\n"), &[]).await;
+  let (status, _) = app
+    .call(
+      "PUT",
+      "/api/v0/users/oscar/block",
+      Some(json!({ "scopes": [] })),
+    )
+    .await;
+  assert_eq!(status, 400);
+  let (status, _) = app
+    .call("PUT", "/api/v0/users/oscar/block", Some(json!({})))
+    .await;
+  assert_eq!(status, 409, "no scope given and none configured");
+  let ours = "/api/v0/users/blocked?includeConfig=false";
+  let (_, blocked) = app.call("GET", ours, None).await;
+  assert_eq!(blocked["users"], json!([]));
 }
 
 #[tokio::test]
