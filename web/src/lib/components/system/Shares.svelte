@@ -56,7 +56,8 @@
   // the shared directories by host, the exclusions, and the scan that counts them
   type Row = Schemas["Share"] & { host: string };
 
-  const rows = new Keyed<Row>((r) => `${r.host}\u0000${r.localPath}`);
+  const key = (r: Row) => `${r.host}\u0000${r.localPath}`;
+  const rows = new Keyed<Row>(key);
   const shares = new Loader(async () => {
     const outcome = await call(() => api.GET("/api/v0/shares"));
     if (outcome.ok) {
@@ -144,7 +145,6 @@
   const busy = new Busy();
   let open = $state<Row | null>(null);
 
-  const key = (r: Row) => `${r.host}\u0000${r.localPath}`;
   const sharedList = new ListControl<Row>({
     lines: () => shared,
     key,
