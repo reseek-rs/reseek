@@ -2,7 +2,8 @@
 //! Requests are decided one at a time per user and [`DECIDING`] at a time over every user; a
 //! request waits for its user's turn before it takes one of those, so one user cannot hold them
 //! all. When the requests waiting would take more than [`BACKLOG_MILLIS`] at the pace of the
-//! last ones accepted, a new request is dropped, since its peer would have given up by then.
+//! last ones decided, a new request is dropped, since its peer would have given up by then, and
+//! so is one finding [`WAITING`] waiting, whatever the pace.
 //! A request of a user not in the queue is refused when the queue holds [`QUEUED_USERS`]
 //! users, or [`QUEUED_PER_ADDRESS`] from the request's address, counting those being decided.
 //! A request for a file queued to its user already is answered as queued. One for a file not
@@ -81,6 +82,9 @@ pub const QUEUED_PER_ADDRESS: usize = 100;
 /// The longest the requests waiting may take, at the pace of the last ones, in milliseconds.
 const BACKLOG_MILLIS: f64 = 180_000.0;
 
+/// The most requests that may wait to be decided, whatever their pace; each holds a task.
+const WAITING: usize = 10_000;
+
 /// How many requests are decided at once over every user.
 const DECIDING: usize = 10;
 
@@ -103,7 +107,8 @@ pub(super) struct Intake {
   pub(super) waiting: AtomicUsize,
   /// the addresses users count against in the queue's bounds
   addresses: Mutex<Addresses>,
-  /// the moving average of the time accepted requests took, in milliseconds, as `f64` bits
+  /// the moving average of the time decided requests held their turn, in milliseconds, as `f64`
+  /// bits; 0 before the first
   pub(super) latency: AtomicU64,
 }
 
@@ -187,10 +192,32 @@ impl Intake {
     )
   }
 
-  /// How long, in milliseconds, the requests waiting would take at the pace of the last ones.
-  fn backlog(&self) -> f64 {
+  /// The requests waiting and how long, in milliseconds, they would take at the pace of the
+  /// last ones, when there are [`WAITING`] or more of them or they would take more than
+  /// [`BACKLOG_MILLIS`].
+  fn overwhelmed(&self) -> Option<(usize, f64)> {
     let latency = f64::from_bits(self.latency.load(Ordering::Acquire));
-    self.waiting.load(Ordering::Acquire) as f64 * latency
+    let waiting = self.waiting.load(Ordering::Acquire);
+    let backlog = waiting as f64 * latency;
+    (waiting >= WAITING || backlog > BACKLOG_MILLIS).then_some((waiting, backlog))
+  }
+
+  /// Moves the pace toward `millis`, the time a request held its turn, with a weight of one
+  /// half; the first request sets it.
+  fn paced(&self, millis: f64) {
+    let next = |bits: u64| {
+      let pace = f64::from_bits(bits);
+      let next = if pace == 0.0 {
+        millis
+      } else {
+        (pace + millis) / 2.0
+      };
+      Some(next.to_bits())
+    };
+    // the update always gives a value, so it always applies
+    let _ = self
+      .latency
+      .fetch_update(Ordering::AcqRel, Ordering::Acquire, next);
   }
 
   /// Drops the turns of users nobody holds or waits for; skipped when a request is taking a
@@ -251,19 +278,20 @@ impl Uploads {
     self.telemetry.metrics().enqueue.requests_rejected.inc();
   }
 
-  /// Whether the requests waiting would take more than `BACKLOG_MILLIS` at the pace of the
-  /// last ones; a request that finds them so is counted as dropped and refused.
+  /// Whether too many requests wait to be decided: [`WAITING`], or more than would be decided
+  /// in [`BACKLOG_MILLIS`] at the pace of the last ones. A request that finds them so is counted
+  /// as dropped and refused.
   pub fn overwhelmed(&self, username: &str) -> bool {
-    let backlog = self.intake.backlog();
-    if backlog <= BACKLOG_MILLIS {
+    let Some((waiting, backlog)) = self.intake.overwhelmed() else {
       return false;
-    }
+    };
     let enqueue = &self.telemetry.metrics().enqueue;
     enqueue.requests_dropped.inc();
     enqueue.requests_rejected.inc();
     if let Some(suppressed) = DROPPED.allow() {
       warn!(
         username,
+        waiting,
         backlog_ms = backlog as u64,
         suppressed,
         "upload request dropped; too many wait to be decided"
@@ -401,8 +429,28 @@ impl Uploads {
     sees: &BTreeSet<String>,
   ) -> Result<(), NotQueued> {
     let (_turn, waiting) = self.intake.turn(username).await;
+    self
+      .telemetry
+      .metrics()
+      .enqueue
+      .queue_depth
+      .set(waiting as f64);
+    let held = Instant::now();
+    let decided = self.decide_in_turn(username, from, filename, sees).await;
+    // every request decided sets the pace, a refused one too, since each held a turn
+    self.intake.paced(millis(held));
+    decided
+  }
+
+  /// The request of [`Uploads::decide_request`], under its user's turn.
+  async fn decide_in_turn(
+    &self,
+    username: &str,
+    from: IpAddr,
+    filename: &str,
+    sees: &BTreeSet<String>,
+  ) -> Result<(), NotQueued> {
     let enqueue = &self.telemetry.metrics().enqueue;
-    enqueue.queue_depth.set(waiting as f64);
     let Some(_place) = self.hold_place(username, from) else {
       return Err(NotQueued::Refused(QUEUE_FULL.to_string()));
     };
@@ -450,11 +498,7 @@ impl Uploads {
     }
     let total = millis(started);
     enqueue.latency.observe(total);
-    let average = enqueue.latency_current.update(total);
-    self
-      .intake
-      .latency
-      .store(average.to_bits(), Ordering::Release);
+    enqueue.latency_current.update(total);
     enqueue.requests_accepted.inc();
     info!(
       username,
@@ -755,14 +799,23 @@ mod tests {
   }
 
   #[test]
-  fn the_backlog_is_the_waiting_requests_at_the_pace_of_the_last_ones() {
+  fn too_many_wait_past_the_backlog_at_the_pace_of_the_last_ones_or_past_the_cap() {
     let intake = Intake::default();
     intake.waiting.store(4, Ordering::Release);
-    assert_eq!(intake.backlog(), 0.0, "no pace before an accepted request");
-    intake.latency.store(45_001f64.to_bits(), Ordering::Release);
-    assert!(intake.backlog() > BACKLOG_MILLIS);
-    intake.latency.store(45_000f64.to_bits(), Ordering::Release);
-    assert!(intake.backlog() <= BACKLOG_MILLIS);
+    assert!(intake.overwhelmed().is_none());
+    intake.paced(45_001.0);
+    assert!(intake.overwhelmed().is_some());
+    intake.paced(44_999.0);
+    assert!(intake.overwhelmed().is_none(), "the pace is 45 000 ms now");
+
+    let unpaced = Intake::default();
+    unpaced.waiting.store(WAITING - 1, Ordering::Release);
+    assert!(unpaced.overwhelmed().is_none());
+    unpaced.waiting.store(WAITING, Ordering::Release);
+    assert!(
+      unpaced.overwhelmed().is_some(),
+      "no pace before a decided request"
+    );
   }
 
   #[test]
