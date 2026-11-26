@@ -92,4 +92,40 @@ describe("the public room feed", () => {
     expect(followed).toBeGreaterThan(0);
     unmount(feed);
   });
+
+  it("counts the messages that come while scrolled up, and no change of the filter", async () => {
+    app.state = { server: { isConnected: true } } as never;
+    const net = connected(() => undefined, "Administrator");
+    const feed = mount(PublicFeed, { target: document.body, props: {} });
+    await flush();
+    const say = async (message: string) => {
+      net.frame("rooms.public_message", {
+        roomName: "indie",
+        username: "alice",
+        message,
+        receivedAt: "2026-11-05T10:00:00Z"
+      });
+      await flush();
+    };
+    await say("one");
+    await say("two");
+    // jsdom lays nothing out: the log is taller than its view, which is at its top
+    const log = document.querySelector<HTMLElement>('[role="log"]')!;
+    Object.defineProperty(log, "scrollHeight", { value: 1000 });
+    log.dispatchEvent(new Event("scroll"));
+    await flush();
+    const button = () => document.querySelector("section > div > button")?.textContent?.trim();
+    expect(button()).toBe("Jump to latest");
+    await say("three");
+    expect(button()).toBe("1 new");
+
+    const filter = document.querySelector<HTMLInputElement>('input[aria-label="Filter messages"]')!;
+    for (const text of ["two", ""]) {
+      filter.value = text;
+      filter.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+      expect(button()).toBe("1 new");
+    }
+    unmount(feed);
+  });
 });

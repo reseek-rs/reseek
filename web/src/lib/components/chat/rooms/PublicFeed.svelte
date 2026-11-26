@@ -53,15 +53,21 @@
     fresh = 0;
   };
 
-  // a new message is followed at the bottom unless the list is held, as by an open card;
-  // otherwise the button counts it
-  let count = 0;
+  // the newest line counted, and the last line shown; a view at the bottom follows a change of
+  // either unless the list is held, as by an open card, and otherwise the button counts the new
+  // lines the filter shows
+  let counted = 0;
+  let last = 0;
   $effect(() => {
-    const now = shown.at(-1)?.id ?? 0;
-    if (now === count) return;
-    count = now;
+    const newest = feed.lines.at(-1)?.id ?? 0;
+    let added = 0;
+    for (let i = shown.length - 1; i >= 0 && shown[i].id > counted; i -= 1) added += 1;
+    counted = newest;
+    const end = shown.at(-1)?.id ?? 0;
+    if (end === last) return;
+    last = end;
     if (atBottom && !freeze.frozen) void tick().then(toBottom);
-    else fresh += 1;
+    else fresh += added;
   });
 </script>
 
