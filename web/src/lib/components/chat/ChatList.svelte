@@ -398,7 +398,7 @@
               <span class="flex min-w-0 text-xs text-fg-muted">
                 {#if preview}
                   {#if author}
-                    <span class="max-w-1/2 shrink-0 truncate" dir="auto">{author}</span>
+                    <Username plain name={author} class="max-w-1/2 shrink-0" />
                     <span class="shrink-0 whitespace-pre">{action ? " " : ": "}</span>
                   {/if}
                   <span class="min-w-0 truncate" dir="auto">{action ?? preview.text}</span>

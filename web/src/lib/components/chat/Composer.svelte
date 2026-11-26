@@ -25,6 +25,7 @@
   import Button from "#lib/components/ui/Button.svelte";
   import Textarea from "#lib/components/ui/Textarea.svelte";
   import Tooltip from "#lib/components/ui/Tooltip.svelte";
+  import Username from "#lib/components/users/Username.svelte";
   import { toast } from "#lib/feedback/toast.svelte.js";
   import { plural } from "#lib/format.js";
   import { chatHref, roomHref, userHref } from "#lib/nav.js";
@@ -104,7 +105,11 @@
     });
   });
 
-  type Suggestion = { key: string; label: string; detail?: string; insert: string };
+  /** a completion, shown as its label, or a username after `@` shown as a name */
+  type Suggestion = { key: string; detail?: string; insert: string } & (
+    | { label: string }
+    | { name: string }
+  );
 
   // what is being typed at the caret: a name after @, an emoji name after :, or a command
   const word = $derived.by(() => {
@@ -140,7 +145,7 @@
     return names()
       .filter((n) => n.toLowerCase().startsWith(prefix))
       .slice(0, SUGGESTIONS)
-      .map((n) => ({ key: n, label: n, insert: `@${n} ` }));
+      .map((n) => ({ key: n, name: n, insert: `@${n} ` }));
   });
 
   const complete = (s: Suggestion) => {
@@ -295,7 +300,11 @@
             type="button"
             class="flex min-h-control-sm w-full items-center gap-2 rounded-badge px-2 text-left hover:bg-hover/60"
             onclick={() => complete(s)}>
-            <span>{s.label}</span>
+            {#if "name" in s}
+              <Username plain name={s.name} />
+            {:else}
+              <span>{s.label}</span>
+            {/if}
             {#if s.detail}<span class="text-fg-muted">{s.detail}</span>{/if}
           </button>
         </li>
