@@ -235,7 +235,6 @@ export const detectSeparator = (directories: { name: string }[]): Separator => {
  */
 export const listingTree = (directories: RemoteDirectory[], separator: Separator): Listing => {
   const byPath: Listing["byPath"] = new Map();
-  if (!directories.length || !directories[0].name) return { roots: [], byPath };
   for (const d of directories) {
     if (byPath.has(d.name)) continue;
     let files: RemoteFile[] | null = null;

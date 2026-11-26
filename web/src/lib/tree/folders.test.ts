@@ -166,6 +166,13 @@ describe("browse listings", () => {
     ]);
   });
 
+  it("show a listing whose first folder has an empty name, and nothing for no folders", () => {
+    const listing = listingTree([dir("", ["a.flac"]), dir("Music", ["b.flac"])], "\\");
+    expect(listing.roots.map((r) => r.path)).toEqual([""]);
+    expect(listing.roots[0].count).toBe(2);
+    expect(listingTree([], "\\").roots).toEqual([]);
+  });
+
   it("keep a file's figures that can't be true as unknown, as a search does", () => {
     const wrapped = 4_294_967_295;
     const odd = { ...remote("odd.flac"), length: wrapped, bitRate: wrapped, sampleRate: wrapped };
