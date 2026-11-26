@@ -23,7 +23,7 @@ use soulseek_client::{Client, Error as ClientError, ErrorKind};
 use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, error, info, info_span, warn};
+use tracing::{Instrument, Span, debug, error, info, info_span, warn};
 
 use crate::config::Options;
 use crate::shares::Shares;
@@ -76,6 +76,8 @@ struct Inner {
   outage: Mutex<Outage>,
   /// the username and password of the latest attempt, which a session it logged in has
   login: Mutex<Option<(String, String)>>,
+  /// the span of the timer and of every connect loop
+  span: Span,
 }
 
 /// Whether the watchdog is on, and what may turn it on
@@ -191,14 +193,11 @@ impl Watchdog {
         status: Mutex::new(Status::default()),
         outage: Mutex::new(Outage::new()),
         login: Mutex::new(None),
+        span: info_span!("connection_watchdog"),
       }),
     };
-    tokio::spawn(
-      watchdog
-        .clone()
-        .backstop()
-        .instrument(info_span!("connection_watchdog")),
-    );
+    let span = watchdog.inner.span.clone();
+    tokio::spawn(watchdog.clone().backstop().instrument(span));
     watchdog
   }
 
@@ -394,6 +393,7 @@ impl Watchdog {
       return;
     };
     let watchdog = self.clone();
+    let span = self.inner.span.clone();
     tokio::spawn(
       async move {
         watchdog.run().await;
@@ -402,7 +402,7 @@ impl Watchdog {
         watchdog.publish();
         drop(running);
       }
-      .in_current_span(),
+      .instrument(span),
     );
   }
 
