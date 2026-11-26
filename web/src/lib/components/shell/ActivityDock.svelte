@@ -21,7 +21,7 @@
     DOCK_MIN,
     dockMax
   } from "#lib/activity/activity.svelte.js";
-  import { activityParts, activityText, baseName, KINDS, kindOf } from "#lib/activity/text.js";
+  import { activityParts, activityText, KINDS, kindOf } from "#lib/activity/text.js";
   import Button from "#lib/components/ui/Button.svelte";
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
   import * as Filter from "#lib/components/ui/filter/filter.js";
@@ -30,7 +30,7 @@
   import ResizeHandle from "#lib/components/ui/ResizeHandle.svelte";
   import Tooltip from "#lib/components/ui/Tooltip.svelte";
   import Username from "#lib/components/users/Username.svelte";
-  import { formatBytes } from "#lib/format.js";
+  import { formatBytes, getFileName } from "#lib/format.js";
   import type { ActiveFilter } from "#lib/lists/filtered.js";
   import { freezesWhileUsed } from "#lib/lists/interaction.svelte.js";
   import { ListControl } from "#lib/lists/list.svelte.js";
@@ -206,7 +206,7 @@
           {#each activityParts(e, formatBytes) as part, n (n)}{#if part.kind === "user"}<Username
                 name={part.name} />{:else if part.kind === "file"}<Tooltip text={part.path} dense
                 >{#snippet child({ props })}<span {...props} class="font-medium"
-                    >{baseName(part.path)}</span
+                    >{getFileName(part.path)}</span
                   >{/snippet}</Tooltip
               >{:else if part.kind === "room"}<a
                 class="font-medium text-accent hover:underline"

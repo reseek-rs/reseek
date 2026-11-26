@@ -1,10 +1,7 @@
-import { plural } from "#lib/format.js";
+import { getFileName, plural } from "#lib/format.js";
 import { endingText, isSucceeded } from "#lib/transfers/states.js";
 
 import type { ActivityEntry, ActivityType } from "./activity.svelte";
-
-/** A file's name without its folders, from a path in either separator */
-export const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
 /** What each kind of entry is called in the dock's filter */
 export const KINDS: { type: ActivityType; label: string }[] = [
@@ -100,7 +97,7 @@ export const activityText = (e: ActivityEntry, size: (bytes: number) => string):
       p.kind === "user" || p.kind === "room"
         ? p.name
         : p.kind === "file"
-          ? baseName(p.path)
+          ? getFileName(p.path)
           : p.text
     )
     .join("");

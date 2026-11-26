@@ -7,7 +7,7 @@
   import Progress from "#lib/components/ui/Progress.svelte";
   import Tooltip from "#lib/components/ui/Tooltip.svelte";
   import { toast } from "#lib/feedback/toast.svelte.js";
-  import { formatCount, plural } from "#lib/format.js";
+  import { formatCount, getFileName, plural } from "#lib/format.js";
   import { session } from "#lib/session.svelte.js";
 
   // the files waiting for or under analysis, with how far each is and a way to cancel it. The
@@ -15,7 +15,6 @@
   // its first files says how many more there are, as a batch can queue thousands
   const SHOWN = 50;
   const write = $derived(session.can("ReadWrite"));
-  const name = (path: string) => path.split(/[/\\]/).pop() ?? path;
   const waiting = $derived(jobs.list.filter((j) => j.state !== "running").length + jobs.backlog);
   const shown = $derived(jobs.list.slice(0, SHOWN));
   const cancelWaiting = async () => {
@@ -40,7 +39,7 @@
           <Tooltip text={job.path} dense>
             {#snippet child({ props })}
               <span {...props} class="flex min-w-0 flex-1"
-                ><MiddleTruncate text={name(job.path)} /></span>
+                ><MiddleTruncate text={getFileName(job.path)} /></span>
             {/snippet}
           </Tooltip>
           <span class="w-24 shrink-0 text-right text-xs text-fg-muted tabular-nums">
@@ -48,16 +47,16 @@
           </span>
           <Progress
             value={job.state === "running" ? (job.progress ?? 0) * 100 : null}
-            label={`Analysis of ${name(job.path)}`}
+            label={`Analysis of ${getFileName(job.path)}`}
             class="w-20 shrink-0 max-sm:hidden" />
           {#if write}
-            <Tooltip text={`Cancel analysis of ${name(job.path)}`}>
+            <Tooltip text={`Cancel analysis of ${getFileName(job.path)}`}>
               {#snippet child({ props })}
                 <Button
                   {...props}
                   variant="ghost"
                   size="icon-sm"
-                  aria-label={`Cancel analysis of ${name(job.path)}`}
+                  aria-label={`Cancel analysis of ${getFileName(job.path)}`}
                   onclick={() => void jobs.cancel(job.id)}><XIcon /></Button>
               {/snippet}
             </Tooltip>
