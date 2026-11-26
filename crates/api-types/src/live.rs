@@ -175,8 +175,8 @@ pub enum LiveFrame {
 #[into_params(parameter_in = Query)]
 pub struct LiveQuery {
   /// the topics to follow, comma-separated: `application`, `logs`, `metrics`, `search`,
-  /// `search:<id>`, `transfers`, `jobs`, `conversations`, `rooms`, `users`, `events`, `activity`;
-  /// `application` when left out
+  /// `search:<id>`, `transfers`, `jobs`, `conversations`, `rooms`, `public_rooms`, `users`, `events`,
+  /// `activity`; `application` when left out
   #[param(example = "application,transfers")]
   pub topics: Option<String>,
   /// an API token or a configuration API key, for clients that cannot set an
