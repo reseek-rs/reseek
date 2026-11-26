@@ -1,6 +1,7 @@
 //! One open stream: its queue of published frames, and the task that writes the stream with
 //! keep-alive comments, at most one application state every 100 ms, a fresh check of its
-//! credential every 30 s and whenever a session or token ends, and a goodbye before it closes.
+//! credential every 30 s and whenever a session or token ends, and a goodbye before it closes
+//! when the connection takes one.
 
 use std::collections::VecDeque;
 use std::convert::Infallible;
@@ -107,6 +108,18 @@ impl Queue {
     true
   }
 
+  /// Returns once a frame did not fit.
+  async fn overflowed(&self) {
+    loop {
+      // made before the check so a push between the two still wakes it
+      let notified = self.ready.notified();
+      if self.lock().overflowed {
+        return;
+      }
+      notified.await;
+    }
+  }
+
   pub(super) fn clear(&self) {
     *self.lock() = Pending::default();
   }
@@ -163,6 +176,41 @@ pub fn body(registered: Registered, first: Vec<Bytes>, revalidate: Revalidate) -
   ))
 }
 
+/// Why a stream ended while the connection was not taking what it wrote.
+#[derive(Debug)]
+enum Stalled {
+  Left,
+  Shutdown,
+  Lagged,
+}
+
+impl Stalled {
+  fn log(&self) {
+    match self {
+      Self::Left => debug!("event stream closed by the client"),
+      Self::Shutdown => debug!("event stream closed at shutdown without a goodbye"),
+      Self::Lagged => warn!("event stream fell too far behind; closing it without a goodbye"),
+    }
+  }
+}
+
+/// Hands `bytes` to the connection, giving up when the client leaves, the daemon shuts down or
+/// the queue overflows first, since a client that stopped reading would hold the stream open.
+async fn deliver(
+  output: &mpsc::Sender<Bytes>,
+  bytes: Bytes,
+  queue: &Queue,
+  cancel: &CancellationToken,
+) -> Result<(), Stalled> {
+  tokio::select! {
+    // a piece that fits is handed over even when the stream is ending
+    biased;
+    sent = output.send(bytes) => sent.map_err(|_| Stalled::Left),
+    () = cancel.cancelled() => Err(Stalled::Shutdown),
+    () = queue.overflowed() => Err(Stalled::Lagged),
+  }
+}
+
 /// The stream's task.
 async fn write(
   registered: Registered,
@@ -177,7 +225,8 @@ async fn write(
   credentials.mark_changed();
   let mut last_id = registered.at;
   for bytes in std::iter::once(Bytes::from_static(b"retry: 1000\n\n")).chain(first) {
-    if output.send(bytes).await.is_err() {
+    if let Err(stalled) = deliver(&output, bytes, &queue, &cancel).await {
+      stalled.log();
       return;
     }
   }
@@ -196,8 +245,8 @@ async fn write(
           if !frame.topics.contains(&Topic::Logs) {
             trace!(seq = frame.seq, "frame sent");
           }
-          if output.send(frame.block.clone()).await.is_err() {
-            debug!("event stream closed by the client");
+          if let Err(stalled) = deliver(&output, frame.block.clone(), &queue, &cancel).await {
+            stalled.log();
             return;
           }
           last_id = frame.seq;
@@ -228,7 +277,9 @@ async fn write(
       () = queue.ready.notified() => false,
       () = sleep_until(held.unwrap_or(far)), if held.is_some() => false,
       () = sleep_until(last_write + PING) => {
-        if output.send(Bytes::from_static(b": ping\n\n")).await.is_err() {
+        let ping = Bytes::from_static(b": ping\n\n");
+        if let Err(stalled) = deliver(&output, ping, &queue, &cancel).await {
+          stalled.log();
           return;
         }
         last_write = Instant::now();
@@ -246,8 +297,11 @@ async fn write(
     }
   };
   match registered.render(last_id, &LiveFrame::Bye(Bye { reason })) {
-    // the client may already be gone, which ends the stream all the same
-    Ok(bytes) => drop(output.send(bytes).await),
+    Ok(bytes) => {
+      if let Err(stalled) = deliver(&output, bytes, &queue, &cancel).await {
+        debug!(?stalled, "goodbye frame not delivered");
+      }
+    }
     Err(e) => error!(error = %e, "goodbye frame not written"),
   }
   debug!(?reason, "event stream closed");
@@ -256,6 +310,7 @@ async fn write(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::live::{Live, Opening};
 
   fn published(seq: u64, state: bool) -> Arc<Published> {
     Arc::new(Published {
@@ -265,6 +320,71 @@ mod tests {
       state,
       block: Bytes::new(),
     })
+  }
+
+  fn opening() -> Opening {
+    Opening {
+      topics: vec![Topic::Users],
+      holder: "alice".into(),
+      limit: 1,
+      last_seen: None,
+      reopen: false,
+      person: false,
+    }
+  }
+
+  fn removed(live: &Live, n: usize) {
+    live.publish(LiveFrame::UsersRemoved(api_types::users::UserRemoved {
+      username: format!("user{n}"),
+    }));
+  }
+
+  /// Waits until `done` holds, failing after five seconds.
+  async fn until(what: &str, done: impl Fn() -> bool) {
+    let waited = tokio::time::timeout(Duration::from_secs(5), async {
+      while !done() {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+      }
+    });
+    assert!(waited.await.is_ok(), "{what}");
+  }
+
+  /// A stream whose client never reads, with its task waiting for the connection to take a
+  /// frame; the body is returned so the connection stays open.
+  async fn stalled(live: &Live) -> (Body, Arc<Queue>) {
+    let registered = live.open(opening()).await.unwrap();
+    let queue = registered.queue.clone();
+    let revalidate: Revalidate = Arc::new(|| Box::pin(async { Ok(()) }));
+    let unread = body(registered, Vec::new(), revalidate);
+    // `retry` takes one place in the output, so the last of these frames waits to be taken
+    for n in 0..OUTPUT {
+      removed(live, n);
+    }
+    until("the task takes every frame", || {
+      queue.lock().frames.is_empty()
+    })
+    .await;
+    (unread, queue)
+  }
+
+  #[tokio::test]
+  async fn a_stream_whose_client_stopped_reading_is_closed_once_it_overflows() {
+    let live = Live::new(CancellationToken::new());
+    let (_unread, _queue) = stalled(&live).await;
+    for n in 0..=QUEUE {
+      removed(&live, n);
+    }
+    until("the stream closes", || !live.followed(Topic::Users)).await;
+    assert!(live.open(opening()).await.is_ok(), "its place is free");
+  }
+
+  #[tokio::test]
+  async fn a_stream_whose_client_stopped_reading_is_closed_at_shutdown() {
+    let shutdown = CancellationToken::new();
+    let live = Live::new(shutdown.clone());
+    let (_unread, _queue) = stalled(&live).await;
+    shutdown.cancel();
+    until("the stream closes", || !live.followed(Topic::Users)).await;
   }
 
   fn written(next: Next) -> u64 {
