@@ -3,7 +3,8 @@
 //! is on disk then. A file is read again unless its size and time are unchanged, a directory
 //! the index does not have is scanned with everything under it, and a path that is gone takes
 //! its rows with it. When the system says changes were dropped, the directory they were in is
-//! scanned again, and when they were dropped for a whole share, a scan of the shares starts.
+//! scanned again. When they were dropped for a whole share, the index is marked drifted at
+//! once and a scan of the shares starts once the shares have been quiet.
 //!
 //! Notifications come from the local kernel only: a change made on another machine to a
 //! network or FUSE mount is not seen until a rescan.
@@ -174,9 +175,10 @@ pub(super) enum Need {
 }
 
 /// Collects notifications per path and applies each path once it has been quiet for the
-/// engine's quiet time; ends when the watches are dropped, applying what was still waiting, or
-/// when `retired`, applying nothing more.
-async fn apply_changes(
+/// engine's quiet time, and starts a scan once that time has passed since changes were last
+/// dropped for a whole share. Ends when the watches are dropped, applying what was still
+/// waiting but starting no scan, or when `retired`, applying nothing more.
+pub(super) async fn apply_changes(
   shares: Arc<Shares>,
   settings: Arc<Settings>,
   roots: Vec<PathBuf>,
@@ -185,6 +187,8 @@ async fn apply_changes(
 ) {
   let quiet = shares.quiet;
   let mut pending: HashMap<PathBuf, (Instant, Need)> = HashMap::new();
+  // when changes were last dropped for a whole share, while its scan waits for quiet
+  let mut missed: Option<Instant> = None;
   let mut tick = tokio::time::interval((quiet / 4).max(Duration::from_millis(10)));
   loop {
     tokio::select! {
@@ -218,18 +222,23 @@ async fn apply_changes(
           }
         };
         if need == Need::Rescan && lost_a_share(&roots, &paths) {
-          scan_missed(&shares).await;
-          continue;
-        }
-        for path in paths {
-          let entry = pending.entry(path).or_insert((now, need));
-          entry.0 = now;
-          if need == Need::Rescan {
-            entry.1 = Need::Rescan;
+          mark_missed(&shares).await;
+          missed = Some(now);
+        } else {
+          for path in paths {
+            let entry = pending.entry(path).or_insert((now, need));
+            entry.0 = now;
+            if need == Need::Rescan {
+              entry.1 = Need::Rescan;
+            }
           }
         }
       }
       _ = tick.tick() => {}
+    }
+    if missed.is_some_and(|at| at.elapsed() >= quiet) {
+      missed = None;
+      scan_missed(&shares).await;
     }
     let due: Vec<(PathBuf, Need)> = pending
       .iter()
@@ -257,12 +266,19 @@ fn lost_a_share(roots: &[PathBuf], paths: &[PathBuf]) -> bool {
       .any(|path| roots.iter().any(|root| share::is_within(root, path)))
 }
 
-/// Marks the index drifted and starts a scan of the shares; a scan already running stays
-/// pending after it, as it may have read the shares before the changes.
-async fn scan_missed(shares: &Shares) {
+/// Marks the index drifted after changes under a whole share were dropped, so a scan running
+/// now leaves a rescan pending.
+async fn mark_missed(shares: &Shares) {
   if let Err(e) = shares.request_scan().await {
     warn!(error = %e, "the index not marked drifted after changes were missed");
   }
+}
+
+/// Starts a scan of the shares once they are quiet after changes were dropped; a scan already
+/// running is marked drifted again and a rescan stays pending after it, as it may have read
+/// the shares before the changes.
+async fn scan_missed(shares: &Shares) {
+  mark_missed(shares).await;
   match shares.scan(false, ScanOrigin::Missed) {
     Ok(()) => info!("Changes under the shares were missed; scanning them again"),
     Err(conflict) => debug!(

@@ -956,6 +956,58 @@ async fn lost_events_rescan_the_directory_and_drop_what_is_gone() {
 }
 
 #[tokio::test]
+async fn changes_lost_for_a_share_scan_it_once_the_losses_stop() {
+  let (files, engine) = shared_engine().await;
+  let started = Arc::new(std::sync::Mutex::new(Vec::new()));
+  let told = started.clone();
+  let (shares, _) = engine
+    .again_hooked(Box::new(move |notice| {
+      if let ScanNotice::Started { origin, .. } = notice {
+        lock(&told).push(origin);
+      }
+      Box::pin(async {})
+    }))
+    .await;
+  shares.initialized().await;
+  eventually(async || idle(&shares) && !lock(&shares.status).scan_pending).await;
+  let (sender, receiver) = tokio::sync::mpsc::channel(8);
+  tokio::spawn(watcher::apply_changes(
+    shares.clone(),
+    Arc::new(shares.scan_settings()),
+    vec![files.path().join("music")],
+    CancellationToken::new(),
+    receiver,
+  ));
+  let lost =
+    || Ok(notify::Event::new(notify::EventKind::Other).set_flag(notify::event::Flag::Rescan));
+  // losses closer together than the quiet time, as while a large copy goes on
+  for _ in 0..3 {
+    sender.send(lost()).await.unwrap();
+    tokio::time::sleep(QUIET * 2 / 5).await;
+  }
+  assert!(
+    lock(&shares.status).scan_pending,
+    "the index is marked drifted at once"
+  );
+  tokio::time::sleep(QUIET / 4).await;
+  assert!(
+    !lock(&started).contains(&ScanOrigin::Missed),
+    "no scan before the shares are quiet"
+  );
+  eventually(async || lock(&started).contains(&ScanOrigin::Missed)).await;
+  eventually(async || idle(&shares)).await;
+  assert_eq!(
+    lock(&started)
+      .iter()
+      .filter(|origin| **origin == ScanOrigin::Missed)
+      .count(),
+    1
+  );
+  drop(sender);
+  drop(files);
+}
+
+#[tokio::test]
 async fn a_faulted_scan_keeps_the_served_index_ready_and_marks_a_scan_pending() {
   let (files, engine) = shared_engine().await;
   let shares = engine.shares.clone();
