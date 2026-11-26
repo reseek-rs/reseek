@@ -458,9 +458,7 @@ async fn requests_are_checked_before_any_service_is_asked() {
 #[tokio::test]
 async fn a_method_a_route_does_not_take_is_answered_405_with_an_error_body() {
   let app = app(CONFIG, &[]).await;
-  let answer = app
-    .send(request("DELETE", "/api/v0/activity", None))
-    .await;
+  let answer = app.send(request("DELETE", "/api/v0/activity", None)).await;
   assert_eq!(answer.status, 405);
   assert!(answer.json()["error"].is_string(), "{:?}", answer.body);
   let allow = answer.headers.get("allow").and_then(|v| v.to_str().ok());
