@@ -628,7 +628,7 @@ impl Uploads {
       _ => placement,
     };
     if placement.privileged {
-      debug!(username, "Limits bypassed; the user is privileged");
+      debug!(username, "limits bypassed; the user is privileged");
       return Ok(Decided::Accepted(located));
     }
     let now = Utc::now();
@@ -685,7 +685,7 @@ impl Uploads {
             path = %resolved.path.display(),
             error,
             suppressed,
-            "The shared file could not be located on disk. A share scan should be performed"
+            "shared file not found on disk; a share scan should be performed"
           );
         }
         self.scan_needed().await;
@@ -727,7 +727,7 @@ impl Uploads {
       return Locating::Later;
     };
     if !exists || length == 0 {
-      debug!(agent, filename, "The file could not be located on Agent");
+      debug!(agent, filename, "file not found on the agent");
       return Locating::NotShared;
     }
     if length != resolved.size {
@@ -736,7 +736,7 @@ impl Uploads {
         filename,
         indexed = resolved.size,
         length,
-        "The file's size differs between the share and disk. A share scan should be performed"
+        "an agent's file size differs from the share index; a share scan should be performed"
       );
     }
     Locating::Found(Located {

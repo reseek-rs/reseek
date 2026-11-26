@@ -146,7 +146,7 @@ impl Uploads {
       Err(e) => return self.fail(&mut record, &Failed::Here(e), None).await,
     };
     self.users.watch(&client, &record.username).await;
-    info!(filename = record.filename, "Initializing upload");
+    debug!(filename = record.filename, "upload task started");
     let username = record.username.clone();
     let users = self.users.clone();
     let (governor, reporter) = self
@@ -297,7 +297,10 @@ impl Uploads {
     move |transfer| {
       let start = this.queue.await_start(id);
       let uploads = this.clone();
-      let (username, filename) = (transfer.username.clone(), transfer.filename.as_str().to_owned());
+      let (username, filename) = (
+        transfer.username.clone(),
+        transfer.filename.as_str().to_owned(),
+      );
       Box::pin(async move {
         let start = match start {
           Ok(start) => start,

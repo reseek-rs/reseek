@@ -384,7 +384,11 @@ async fn a_file_gone_while_its_upload_waits_for_its_slot_fails_it_when_the_slot_
   assert_eq!(status, 204);
   let ended = tokio::time::timeout(within, async {
     loop {
-      if let Some(ended) = listed("bob").await.into_iter().find(|t| t.ended_at.is_some()) {
+      if let Some(ended) = listed("bob")
+        .await
+        .into_iter()
+        .find(|t| t.ended_at.is_some())
+      {
         return ended;
       }
       tokio::time::sleep(std::time::Duration::from_millis(10)).await;
