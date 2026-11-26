@@ -20,9 +20,10 @@ export const readResponse = (response: SearchResponse): SearchResponse => ({
 });
 
 /**
- * Keys responses in the order they came: the username, then how many responses that user gave
- * before, since a peer can answer twice. The streamed responses and the stored ones come in the
- * same order, so a card keeps its key when the stored list replaces the streamed one
+ * Keys responses in the order they came: the username, after how many responses that user gave
+ * before. A search takes one response from each user; the count keeps keys unique should a
+ * stored list ever hold two. The streamed responses and the stored ones come in the same order,
+ * so a card keeps its key when the stored list replaces the streamed one
  */
 export class ResultKeys {
   #seen = new Map<string, number>();
