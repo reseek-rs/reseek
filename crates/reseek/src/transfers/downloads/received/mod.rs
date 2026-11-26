@@ -260,7 +260,8 @@ impl Downloads {
         Ok(())
       }
       (Ok(_), Err(reason)) => Err(NotTaken::Refused(reason)),
-      (Err(_), Err(reason)) => Err(NotTaken::Failed(reason)),
+      // the reason of a 500 is never in its message, and the caller logs it
+      (Err(e), Err(message)) => Err(NotTaken::Failed(e.reason().map_or(message, str::to_string))),
     }
   }
 

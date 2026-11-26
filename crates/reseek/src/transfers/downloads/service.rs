@@ -86,12 +86,17 @@ impl Downloads {
             }
           }
         }
-        Err(e) => results.extend(records.into_iter().map(|record| {
-          Err(BulkFailure {
-            id: record.id,
-            error: e.message().to_string(),
-          })
-        })),
+        Err(e) => {
+          if let Some(reason) = e.reason() {
+            error!(downloads = records.len(), reason, "downloads not retried");
+          }
+          results.extend(records.into_iter().map(|record| {
+            Err(BulkFailure {
+              id: record.id,
+              error: e.message().to_string(),
+            })
+          }));
+        }
       }
     }
     (Some(job), results)
@@ -352,10 +357,15 @@ impl TransferService for Downloads {
                 id: record.id,
                 error: super::COMPLETED.to_string(),
               }),
-              Err(e) => Err(BulkFailure {
-                id: record.id,
-                error: e.message().to_string(),
-              }),
+              Err(e) => {
+                if let Some(reason) = e.reason() {
+                  error!(id = %record.id, username = record.username, reason, "download not canceled");
+                }
+                Err(BulkFailure {
+                  id: record.id,
+                  error: e.message().to_string(),
+                })
+              }
             },
           );
         }
