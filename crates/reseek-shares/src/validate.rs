@@ -59,7 +59,7 @@ pub fn check(shares: &Shares, downloads: &Path, case_sensitive: bool) -> Vec<Inv
   let mut report = Vec::new();
   let mut invalid: Vec<&str> = Vec::new();
   for written in &shares.directories {
-    if let Err(message) = valid(written) {
+    if let Err(message) = valid(written, cfg!(windows)) {
       report.push(Invalid::new(KEY, message));
       invalid.push(trimmed(written));
     }
@@ -157,8 +157,9 @@ fn check_cache(cache: &ShareCache, report: &mut Vec<Invalid>) {
   }
 }
 
-/// Says what is wrong with an entry as written, if anything.
-fn valid(written: &str) -> Result<(), String> {
+/// Says what is wrong with an entry as written, if anything, with drive letters read as on
+/// Windows when `windows`.
+fn valid(written: &str, windows: bool) -> Result<(), String> {
   if ROOT.is_match(written) {
     return Err(format!(
       "Share {written} specifies a root mount, which is not supported."
@@ -170,12 +171,14 @@ fn valid(written: &str) -> Result<(), String> {
   }
   let parts = share::entry(trimmed);
   let (alias, path) = (parts.alias, parts.path);
-  if has_drive(path) && path[2..].trim_start_matches(['/', '\\']).is_empty() {
+  // `path` has lost its trailing separators, so the drive is read from the entry as written
+  let drive = windows && has_drive(share::entry(written).path);
+  if drive && path.len() == 2 {
     return Err(format!(
       "Share {written} specifies a root mount, which is not supported."
     ));
   }
-  if !(path.starts_with('/') || path.starts_with("\\\\") || has_drive(path)) {
+  if !(path.starts_with('/') || path.starts_with("\\\\") || drive) {
     return Err(format!(
       "Share {written} contains a relative path. Only absolute paths are supported."
     ));
@@ -203,15 +206,14 @@ fn valid(written: &str) -> Result<(), String> {
   Ok(())
 }
 
-/// On Windows, a drive letter, a colon and a separator, which start an absolute path. Without
-/// the separator the path is relative to the drive's current directory, and elsewhere a drive
-/// letter is the start of a relative path.
+/// Whether `path` starts with a drive letter, a colon and a separator, which on Windows start
+/// an absolute path. Without the separator the path is relative to the drive's current
+/// directory, and elsewhere a drive letter is the start of a relative path.
 fn has_drive(path: &str) -> bool {
-  cfg!(windows)
-    && matches!(
-      path.as_bytes(),
-      [letter, b':', b'/' | b'\\', ..] if letter.is_ascii_alphabetic()
-    )
+  matches!(
+    path.as_bytes(),
+    [letter, b':', b'/' | b'\\', ..] if letter.is_ascii_alphabetic()
+  )
 }
 
 #[cfg(test)]
@@ -275,6 +277,23 @@ mod tests {
         )]
       );
     }
+  }
+
+  #[test]
+  fn a_drive_letter_is_absolute_on_windows_only_with_a_separator() {
+    let root =
+      |entry: &str| format!("Share {entry} specifies a root mount, which is not supported.");
+    let relative = |entry: &str| {
+      format!("Share {entry} contains a relative path. Only absolute paths are supported.")
+    };
+    for entry in ["C:\\", "C:/", "[c]C:\\\\"] {
+      assert_eq!(valid(entry, true), Err(root(entry)));
+    }
+    assert_eq!(valid("C:music", true), Err(relative("C:music")));
+    assert_eq!(valid("C:", true), Err(relative("C:")));
+    assert_eq!(valid("C:\\Music", true), Ok(()));
+    assert_eq!(valid("[m]C:/Music/", true), Ok(()));
+    assert_eq!(valid("C:\\Music", false), Err(relative("C:\\Music")));
   }
 
   #[test]
