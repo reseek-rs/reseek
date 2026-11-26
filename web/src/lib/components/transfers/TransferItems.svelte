@@ -73,7 +73,7 @@
   <Menu.Item onSelect={() => copyPath(t.localPath!)}
     ><A.copyLocalPath.icon />{A.copyLocalPath.label}</Menu.Item>
 {/if}
-<Menu.Separator />
+{#if can.open || t.localPath}<Menu.Separator />{/if}
 <RemoteFileItems path={t.filename} username={t.username} />
 {#if write}
   <Menu.Separator />
