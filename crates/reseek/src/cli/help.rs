@@ -61,7 +61,11 @@ pub(super) fn flags(schema: &Schema) -> Vec<FlagDoc> {
       short: field.short,
       long: long.clone(),
       value: (field.kind != Kind::Bool).then(|| kind_name(&field.kind)),
-      doc: described(field),
+      doc: if field.negated {
+        format!("{} This flag disables it.", described(field))
+      } else {
+        described(field)
+      },
     });
   }
   flags
@@ -120,13 +124,9 @@ fn flag_item(short: Option<char>, long: &str) -> String {
   }
 }
 
-/// The option's help on one line, with its default unless it is a boolean, and what a flag
-/// that turns it off does.
+/// The option's help on one line, with its default unless it is a boolean.
 fn described(field: &Field) -> String {
   let doc = field.doc.split_whitespace().collect::<Vec<_>>().join(" ");
-  if field.negated {
-    return format!("{doc} This flag disables it.");
-  }
   if field.kind == Kind::Bool {
     return doc;
   }
