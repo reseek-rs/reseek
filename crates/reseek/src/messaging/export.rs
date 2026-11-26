@@ -11,9 +11,16 @@ use serde::Serialize;
 
 use crate::api::error::ApiError;
 
-/// One line of the text form: when, who, and what, the message's line breaks indented.
+/// The characters a text viewer may start a new line at, besides `\n`.
+const LINE_BREAKS: [char; 6] = ['\r', '\u{b}', '\u{c}', '\u{85}', '\u{2028}', '\u{2029}'];
+
+/// One line of the text form: when, who, and what, every line break of the message made a `\n`
+/// and indented, so no line of a message reads as an entry of its own.
 fn line(at: DateTime<Utc>, author: &str, text: &str) -> String {
-  let text = text.replace('\n', "\n  ");
+  let text = text
+    .replace("\r\n", "\n")
+    .replace(LINE_BREAKS, "\n")
+    .replace('\n', "\n  ");
   format!(
     "{} {author}: {text}\n",
     at.to_rfc3339_opts(SecondsFormat::Secs, true)
@@ -109,6 +116,10 @@ mod tests {
     assert_eq!(
       line(at, "alice", "hi\nthere"),
       "2026-10-26T10:00:00Z alice: hi\n  there\n"
+    );
+    assert_eq!(
+      line(at, "mallory", "hi\r\nthere\rbob: no\u{2028}x"),
+      "2026-10-26T10:00:00Z mallory: hi\n  there\n  bob: no\n  x\n"
     );
     assert_eq!(file_safe("a b/../c"), "a_b_.._c");
   }
