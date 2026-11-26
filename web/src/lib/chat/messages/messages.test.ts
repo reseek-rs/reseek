@@ -46,6 +46,22 @@ describe("the message list's lines", () => {
     expect(lines[2]).toMatchObject({ kind: "gap", gap: { from: "2026-10-26T10:00:30Z" } });
   });
 
+  it("puts a gap under the line of the day it starts on", () => {
+    const local = (day: number, hour: number, minute: number) =>
+      new Date(2026, 9, day, hour, minute).toISOString();
+    const lines = layout(
+      [message(1, local(24, 20, 0)), message(2, local(26, 9, 0))],
+      [
+        { from: local(25, 3, 0), to: local(25, 3, 5), reason: "disconnected" },
+        { from: local(25, 22, 0), to: local(26, 1, 0), reason: "disconnected" },
+        { from: local(26, 9, 30), to: null, reason: "disconnected" }
+      ],
+      null
+    );
+    expect(kinds(lines)).toEqual(["day", "1*", "day", "gap", "gap", "day", "2*", "gap"]);
+    expect(lines[2]).toMatchObject({ kind: "day", date: local(25, 3, 0) });
+  });
+
   it("marks where the unread messages start and a day change", () => {
     // days change at the browser's midnight, so these times are on its clock
     const local = (day: number, hour: number, minute: number) =>

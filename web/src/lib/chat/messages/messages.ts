@@ -93,6 +93,11 @@ export const layout = (messages: Message[], gaps: Gap[], unreadFrom: number | nu
   const placeBetween = (before: number) => {
     while (pending.length && pending[0].at < before) {
       const { at: _at, ...line } = pending.shift()!;
+      // a gap that starts on a day no message has opened yet is put under that day's line
+      if (day(line.gap.from) !== lastDay) {
+        lines.push({ kind: "day", key: `day:${line.key}`, date: line.gap.from });
+        lastDay = day(line.gap.from);
+      }
       lines.push(line);
       previous = null;
     }
