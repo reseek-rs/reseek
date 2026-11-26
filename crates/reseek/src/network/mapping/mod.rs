@@ -243,7 +243,17 @@ impl Mapping {
     });
     let mut reasons = Vec::new();
     for (index, gateway) in self.gateways.iter().enumerate() {
-      match asking(gateway.map(ip, port)).await {
+      let Ok(answer) = tokio::time::timeout(ASKING, gateway.map(ip, port)).await else {
+        // the router may have made the mapping before the limit, and the gateway kept it
+        if let Err(reason) = asking(gateway.unmap()).await {
+          debug!(reason, "nothing removed after a mapping ran out of time");
+        }
+        let reason = unanswered();
+        debug!(reason, "the router did not forward the port this way");
+        reasons.push(reason);
+        continue;
+      };
+      match answer {
         Ok(mapped) => {
           info!(
             method = ?mapped.method,
@@ -339,7 +349,12 @@ impl Mapping {
 async fn asking<T>(request: impl Future<Output = Result<T, String>>) -> Result<T, String> {
   tokio::time::timeout(ASKING, request)
     .await
-    .unwrap_or_else(|_| Err(format!("no answer within {} s", ASKING.as_secs())))
+    .unwrap_or_else(|_| Err(unanswered()))
+}
+
+/// Why a request that ran out of time failed.
+fn unanswered() -> String {
+  format!("no answer within {} s", ASKING.as_secs())
 }
 
 fn off() -> PortMappingState {

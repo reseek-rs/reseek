@@ -24,6 +24,9 @@ const SEARCHING: Duration = Duration::from_secs(3);
 /// The lease asked for, in seconds.
 const LEASE: u32 = 3600;
 
+/// How long the router may take to say our external address once it mapped the port.
+const ADDRESS_ASKING: Duration = Duration::from_secs(3);
+
 /// A mapping made, as it is renewed and removed.
 #[derive(Clone)]
 struct Held {
@@ -96,24 +99,38 @@ impl Gateway for Upnp {
       .map_err(|e| format!("no UPnP router found: {e}"))?;
     let local = SocketAddr::new(local_toward(router.addr.ip(), ip)?, port);
     let lease = Self::add(&router, local, LEASE).await.map_err(refused)?;
-    let external_address = match router.get_external_ip().await {
-      Ok(address) => Some(address),
-      Err(e) => {
-        debug!(error = %e, "the UPnP router did not say our external address");
-        None
-      }
-    };
-    let mapped = Mapped {
-      method: PortMappingMethod::Upnp,
-      external_address,
-      external_port: port,
-      lifetime: lifetime(lease),
-    };
-    *self.held() = Some(Held {
+    // held before the address is asked, so a mapping the caller gives up on can be removed
+    let held = Held {
       router,
       local,
       lease,
+      mapped: Mapped {
+        method: PortMappingMethod::Upnp,
+        external_address: None,
+        external_port: port,
+        lifetime: lifetime(lease),
+      },
+    };
+    *self.held() = Some(held.clone());
+    let external_address =
+      match tokio::time::timeout(ADDRESS_ASKING, held.router.get_external_ip()).await {
+        Ok(Ok(address)) => Some(address),
+        Ok(Err(e)) => {
+          debug!(error = %e, "the UPnP router did not say our external address");
+          None
+        }
+        Err(_) => {
+          debug!("the UPnP router did not say our external address in time");
+          None
+        }
+      };
+    let mapped = Mapped {
+      external_address,
+      ..held.mapped.clone()
+    };
+    *self.held() = Some(Held {
       mapped: mapped.clone(),
+      ..held
     });
     Ok(mapped)
   }

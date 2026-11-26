@@ -17,6 +17,8 @@ struct Fake {
   renewed_port: Option<u16>,
   /// how many of the first requests to map are refused
   refused_maps: usize,
+  /// whether a request to map is never answered
+  stalls: bool,
   asked: Arc<Mutex<Vec<String>>>,
 }
 
@@ -29,6 +31,9 @@ impl Gateway for Fake {
       asked.push(request.clone());
       asked.iter().filter(|seen| **seen == request).count()
     };
+    if self.stalls {
+      std::future::pending::<()>().await;
+    }
     if asked <= self.refused_maps {
       return Err("not ready".into());
     }
@@ -111,6 +116,7 @@ fn router(name: &'static str, answer: Result<Mapped, String>) -> Fake {
     renewals_refused: false,
     renewed_port: None,
     refused_maps: 0,
+    stalls: false,
     asked: Arc::default(),
   }
 }
@@ -315,6 +321,30 @@ async fn a_mapping_no_router_made_is_asked_for_again_later() {
   tokio::time::sleep(Duration::from_secs(2)).await;
   assert_eq!(asked(&requests), ["pcp map 50300", "pcp map 50300"]);
   assert_eq!(mapping(&state).state, PortMappingStatus::Mapped);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_mapping_that_runs_out_of_time_is_removed_and_the_next_way_tried() {
+  let Rig {
+    mapper,
+    state,
+    requests,
+    ..
+  } = rig(vec![
+    Fake {
+      stalls: true,
+      ..router("upnp", Ok(mapped(3600)))
+    },
+    router("pcp", Ok(mapped(3600))),
+  ]);
+  mapper.logged_in(true);
+  settle().await;
+  tokio::time::sleep(ASKING + Duration::from_secs(1)).await;
+  assert_eq!(
+    asked(&requests),
+    ["upnp map 50300", "upnp unmap", "pcp map 50300"]
+  );
+  assert_eq!(mapping(&state).method, Some(PortMappingMethod::Pcp));
 }
 
 #[tokio::test(start_paused = true)]
