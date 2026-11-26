@@ -170,6 +170,11 @@ fn valid(written: &str) -> Result<(), String> {
   }
   let parts = share::entry(trimmed);
   let (alias, path) = (parts.alias, parts.path);
+  if has_drive(path) && path[2..].trim_start_matches(['/', '\\']).is_empty() {
+    return Err(format!(
+      "Share {written} specifies a root mount, which is not supported."
+    ));
+  }
   if !(path.starts_with('/') || path.starts_with("\\\\") || has_drive(path)) {
     return Err(format!(
       "Share {written} contains a relative path. Only absolute paths are supported."
@@ -198,10 +203,15 @@ fn valid(written: &str) -> Result<(), String> {
   Ok(())
 }
 
-/// A drive letter and a colon, with or without a separator after it.
+/// On Windows, a drive letter, a colon and a separator, which start an absolute path. Without
+/// the separator the path is relative to the drive's current directory, and elsewhere a drive
+/// letter is the start of a relative path.
 fn has_drive(path: &str) -> bool {
-  let bytes = path.as_bytes();
-  bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+  cfg!(windows)
+    && matches!(
+      path.as_bytes(),
+      [letter, b':', b'/' | b'\\', ..] if letter.is_ascii_alphabetic()
+    )
 }
 
 #[cfg(test)]
@@ -235,10 +245,14 @@ mod tests {
       problems(&["/"]),
       ["Share / specifies a root mount, which is not supported."]
     );
-    assert_eq!(
-      problems(&["music"]),
-      ["Share music contains a relative path. Only absolute paths are supported."]
-    );
+    for relative in ["music", "d:music"] {
+      assert_eq!(
+        problems(&[relative]),
+        [format!(
+          "Share {relative} contains a relative path. Only absolute paths are supported."
+        )]
+      );
+    }
     assert_eq!(
       problems(&["/x/.."]),
       ["Share /x/.. contains an unsafe path traversal segment."]
