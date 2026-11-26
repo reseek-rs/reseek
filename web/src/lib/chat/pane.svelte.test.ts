@@ -463,6 +463,7 @@ describe("a conversation's pane", () => {
 
 describe("a room's pane at the newest messages", () => {
   afterEach(() => {
+    live.stop();
     chat.clear();
     vi.unstubAllGlobals();
   });
@@ -477,6 +478,32 @@ describe("a room's pane at the newest messages", () => {
     await pane.load();
     expect(ids(pane)).toEqual(Array.from({ length: 200 }, (_, n) => n + 51));
     expect(pane.hasNewer).toBe(true);
+  });
+
+  it("reads every message missed when one arrives as it reads on past a page", async () => {
+    const held = stored(150);
+    const pane = new MessagePane(room, () => "me");
+    await pane.load();
+    const stop = following(pane, held.frame);
+    held.total = 400;
+    let release!: () => void;
+    const waiting = new Promise<void>((done) => (release = done));
+    const network = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: Request) => {
+      if (new URL(input.url).searchParams.get("after") === "150") await waiting;
+      return network(input);
+    });
+    const loading = pane.load();
+    await flush();
+    held.total = 401;
+    held.frame("rooms.message", { roomName: "indie", message: message(401) });
+    await flush();
+    release();
+    await loading;
+    expect(ids(pane)).toEqual(Array.from({ length: 200 }, (_, n) => n + 51));
+    while (pane.hasNewer) await pane.newer();
+    stop();
+    expect(ids(pane)).toEqual(Array.from({ length: 351 }, (_, n) => n + 51));
   });
 
   it("keeps a message being sent when a read brings an older one with its text", async () => {

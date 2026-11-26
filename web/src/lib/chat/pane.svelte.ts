@@ -199,6 +199,13 @@ export class MessagePane {
     for (const m of page.data.messages) this.#store(m);
     this.#gapsFrom(page.data.gaps);
     this.hasNewer = page.data.hasMore;
+    if (!this.hasNewer) return;
+    // frames stored during the read are past the messages still to read, which `newer` reads on
+    // from the newest held
+    const last = page.data.messages.at(-1)?.localId ?? newest;
+    for (const m of this.messages.rows.filter((m) => m.localId > last)) {
+      this.messages.remove(String(m.localId));
+    }
   }
 
   /** The first messages are here: where the unread ones start, and a conversation's draft */
