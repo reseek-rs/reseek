@@ -1,8 +1,9 @@
 //! One socket to the controller, from its challenge to its close. The agent answers the
 //! challenge with its credential and must hear back within ten seconds; logged in, it uploads
 //! its shares and serves what the controller asks, each request in a task of its own so the
-//! socket is never held up by a file. Both sides ping every 15 seconds, and the socket closes
-//! after 30 seconds without a frame or when a frame waits 30 seconds to be written.
+//! socket is never held up by a file. Both sides send a `ping` message every 15 seconds, and the
+//! socket closes after 30 seconds without a frame or when a frame waits 30 seconds to be
+//! written.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -215,7 +216,8 @@ impl AgentClient {
         }
         _ = defer.tick() => self.defer_while_scanning(),
         _ = ping.tick() => {
-          if !write(&mut socket, &link.closing, Message::Ping(Default::default())).await {
+          let ping = frames::encode(None, RelayMessage::Ping {});
+          if !write(&mut socket, &link.closing, Message::Text(ping.into())).await {
             break;
           }
         }

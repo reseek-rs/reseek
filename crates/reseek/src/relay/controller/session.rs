@@ -1,12 +1,12 @@
 //! One agent's socket on the controller, from the challenge to its close. The socket is sent a
 //! challenge as it opens and must log in within the challenge's life; logged in, the agent is
 //! registered and has two minutes to start sending its shares; an agent whose shares are being
-//! scanned renews that by saying so, up to the configured deferral in all. Both sides ping every
-//! 15 seconds, and the socket closes after 30 seconds without a frame or when a frame waits 30
-//! seconds to be written. The API key or token the socket was opened with is checked again every
-//! 30 seconds, and the socket closed once it no longer lets the agent in. One task owns the
-//! socket: it reads the agent's frames, writes what the controller queues for it, and keeps the
-//! timers.
+//! scanned renews that by saying so, up to the configured deferral in all. Both sides send a
+//! `ping` message every 15 seconds, and the socket closes after 30 seconds without a frame or
+//! when a frame waits 30 seconds to be written. The API key or token the socket was opened with
+//! is checked again every 30 seconds, and the socket closed once it no longer lets the agent in.
+//! One task owns the socket: it reads the agent's frames, writes what the controller queues for
+//! it, and keeps the timers.
 
 use std::net::IpAddr;
 use std::sync::{Arc, OnceLock};
@@ -190,7 +190,8 @@ impl Session {
           }
         }
         _ = ping.tick() => {
-          if let Err(ended) = self.write(&mut socket, Message::Ping(Default::default())).await {
+          let ping = frames::encode(None, RelayMessage::Ping {});
+          if let Err(ended) = self.write(&mut socket, Message::Text(ping.into())).await {
             return ended;
           }
         }

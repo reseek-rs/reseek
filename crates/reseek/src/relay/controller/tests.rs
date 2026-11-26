@@ -89,7 +89,7 @@ async fn settle() {
 /// The frames the socket sent since the last look, without its pings.
 fn written(from: &mut mpsc::Receiver<Message>) -> Vec<Message> {
   std::iter::from_fn(|| from.try_recv().ok())
-    .filter(|m| !matches!(m, Message::Ping(_)))
+    .filter(|m| !matches!(m, Message::Text(_)) || read(m) != RelayMessage::Ping {})
     .collect()
 }
 
