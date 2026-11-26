@@ -37,7 +37,11 @@
     if (admin) void view.load();
   });
   // a change from anywhere (another tab, the file, an expiry) arrives as new options
-  $effect(() => live.on("application.options", () => void view.load()));
+  $effect(() =>
+    live.on("application.options", () => {
+      if (admin) void view.load();
+    })
+  );
 
   const all = $derived(view.data ? sections : []);
   /** the sections of the side list by their headings, in the order they come on the page */
