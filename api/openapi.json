@@ -22520,7 +22520,7 @@
           },
           "message": {
             "type": "string",
-            "description": "the message with its fields, and the chain of error messages when an error is attached"
+            "description": "the message followed by its fields, each as ` name=value`"
           },
           "subContext": {
             "type": [

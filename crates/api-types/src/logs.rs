@@ -34,6 +34,6 @@ pub struct LogRecord {
   pub sub_context: Option<String>,
   /// how severe it is
   pub level: LogLevel,
-  /// the message with its fields, and the chain of error messages when an error is attached
+  /// the message followed by its fields, each as ` name=value`
   pub message: String,
 }

@@ -6244,7 +6244,7 @@ export interface components {
             context: string;
             /** @description how severe it is */
             level: components["schemas"]["LogLevel"];
-            /** @description the message with its fields, and the chain of error messages when an error is attached */
+            /** @description the message followed by its fields, each as ` name=value` */
             message: string;
             /** @description what the module logged it for, such as a share host or a relay agent, when it says */
             subContext?: string | null;
