@@ -169,7 +169,6 @@
 <!-- a file row's whole menu: the file, its folder and its user, which the list has no lines for.
      A bare file name has no folder -->
 {#snippet rowItems(row: ResultRow)}
-  {@const folder = folderOf(row)}
   <RemoteFileItems
     path={row.file.filename}
     username={row.username}
