@@ -337,11 +337,11 @@ fn redact_field(field: &Field, value: &mut Value) {
 }
 
 /// Puts back the secrets of `value`, a new value of `field`, which is a list of tables or a
-/// user-keyed map, wherever it shows them as `*****`: what a client read comes with its secrets
-/// hidden, and it sends the whole value back when it changes one entry. A map's entry keeps its
-/// secret from the entry of the same name in `current`, the value in effect. Nothing can tell
-/// whose secret a renamed entry or a list element shows, so those are refused, and the text
-/// `*****` never takes the place of a secret.
+/// user-keyed map, wherever it shows them as `*****`, and leaves out the empty ones: what a
+/// client read comes with its secrets hidden, and it sends the whole value back when it changes
+/// one entry. A map's entry keeps its secret from the entry of the same name in `current`, the
+/// value in effect. Nothing can tell whose secret a renamed entry or a list element shows, so
+/// those are refused, and the text `*****` never takes the place of a secret.
 pub(crate) fn keep_secrets(
   field: &Field,
   value: &mut Value,
@@ -363,6 +363,11 @@ fn kept_in(
   current: Option<&Value>,
 ) -> Result<(), String> {
   if field.secret {
+    // an empty secret in an entry is no secret, as at the top level
+    if value.as_str() == Some("") {
+      *value = Value::Null;
+      return Ok(());
+    }
     if !field.keeps(value) {
       return Ok(());
     }
@@ -573,6 +578,20 @@ mod tests {
   #[should_panic(expected = "`ranks` is not a list of strings")]
   fn only_a_list_of_names_is_an_order() {
     Schema::of::<NumberOrder>();
+  }
+
+  #[test]
+  fn an_empty_secret_in_an_entry_is_left_out() {
+    let schema = example_schema();
+    let field = schema.field("api_keys").unwrap();
+    let mut value = json!({ "a": { "key": "", "role": "r" } });
+    keep_secrets(
+      field,
+      &mut value,
+      Some(&json!({ "a": { "key": "k", "role": "r" } })),
+    )
+    .unwrap();
+    assert_eq!(value, json!({ "a": { "key": null, "role": "r" } }));
   }
 
   #[test]

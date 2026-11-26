@@ -693,6 +693,31 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn an_empty_secret_in_an_entry_removes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[[webhooks]]\nurl = \"u\"\ntoken = \"t\"\n").unwrap();
+    let watcher = watched(dir.path());
+    let revision = watcher.current().files[0].revision.clone();
+    let cleared = json!([{ "url": "u", "token": "" }]);
+    watcher
+      .patch_file(
+        "config.toml",
+        revision.as_deref(),
+        None,
+        values(&[("webhooks", cleared)]),
+        vec![],
+      )
+      .await
+      .unwrap();
+    assert_eq!(
+      fs::read_to_string(&path).unwrap(),
+      "[[webhooks]]\nurl = \"u\"\n"
+    );
+    assert_eq!(watcher.current().values.webhooks[0].token, None);
+  }
+
+  #[tokio::test]
   async fn a_hidden_secret_with_nothing_to_keep_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
