@@ -9,6 +9,10 @@ const RANK: Record<Role, number> = { ReadOnly: 0, ReadWrite: 1, Administrator: 2
 /** After the tab was hidden this long, the session is checked again when it comes back */
 export const IDLE_CHECK_MS = 5 * 60_000;
 
+/** The first and the longest wait between checks of a session this browser's clock holds expired */
+const OVERDUE_FIRST_MS = 60_000;
+const OVERDUE_MOST_MS = 30 * 60_000;
+
 /**
  * What a session check found: signed in, signed out, signed in but with no role right now, or
  * no answer
@@ -24,6 +28,8 @@ class Session {
   principal = $state.raw<Principal | null>(null);
   #expiry: ReturnType<typeof setTimeout> | undefined;
   #hiddenAt: number | null = null;
+  /** the wait before the next check of a session the daemon still keeps past its local expiry */
+  #overdue = 0;
   #ended: () => void = () => {};
 
   get role(): Role | null {
@@ -85,6 +91,7 @@ class Session {
   /** Forgets the principal, as when the session ended */
   clear() {
     clearTimeout(this.#expiry);
+    this.#overdue = 0;
     this.principal = null;
   }
 
@@ -100,13 +107,22 @@ class Session {
   };
 
   #set(principal: Principal) {
+    const was = this.principal?.session?.expiresAt;
     this.principal = principal;
     clearTimeout(this.#expiry);
     const expires = principal.session?.expiresAt;
     if (!expires) return;
-    // timers fire at most 2^31 - 1 ms out, about 24 days; a later expiry is checked on the way
-    const ms = Math.min(Math.max(Date.parse(expires) - Date.now(), 0) + 1_000, 2 ** 31 - 1);
-    this.#expiry = setTimeout(() => void this.#recheck(), ms);
+    const left = Date.parse(expires) - Date.now();
+    if (left > 0 || expires !== was) this.#overdue = 0;
+    if (left > 0) {
+      // timers fire at most 2^31 - 1 ms out, about 24 days; a later expiry is checked on the way
+      this.#expiry = setTimeout(() => void this.#recheck(), Math.min(left + 1_000, 2 ** 31 - 1));
+      return;
+    }
+    // the daemon keeps a session this browser's clock holds expired, so the two clocks disagree,
+    // and the session is checked less and less often until it ends
+    this.#overdue = this.#overdue ? Math.min(this.#overdue * 2, OVERDUE_MOST_MS) : OVERDUE_FIRST_MS;
+    this.#expiry = setTimeout(() => void this.#recheck(), this.#overdue);
   }
 
   async #recheck() {

@@ -74,6 +74,16 @@ describe("session", () => {
     expect(ended).toHaveBeenCalledOnce();
   });
 
+  it("checks less and less often when the browser's clock is ahead of the daemon's", async () => {
+    const fetcher = serve({
+      "GET /api/v0/session": () => json(principal("2026-10-26T11:55:00Z"))
+    });
+    await session.check();
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    // after 1, 3, 7, 15, 31 minutes, then 30 minutes apart
+    expect(fetcher.mock.calls.length).toBe(1 + 5);
+  });
+
   it("checks again when the tab comes back after a long time hidden", async () => {
     const fetcher = serve({
       "GET /api/v0/session": () => json(principal(null))
