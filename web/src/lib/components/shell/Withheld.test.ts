@@ -28,7 +28,7 @@ describe("the screen of a session with no access", () => {
     component = mount(Withheld, { target: document.body });
     flushSync();
     const signOut = [...document.querySelectorAll("button")].find(
-      (b) => b.textContent?.trim() === "Sign out"
+      (b) => b.textContent?.trim() === "Log out"
     )!;
     signOut.click();
     await flush();
@@ -49,7 +49,7 @@ describe("the screen of a session with no access", () => {
     component = mount(Withheld, { target: document.body });
     flushSync();
     [...document.querySelectorAll("button")]
-      .find((b) => b.textContent?.trim() === "Sign out")!
+      .find((b) => b.textContent?.trim() === "Log out")!
       .click();
     await flush();
     expect(app.phase).toBe("login");

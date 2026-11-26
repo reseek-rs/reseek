@@ -22,6 +22,6 @@
   </p>
   <div class="flex gap-inline">
     <Button variant="outline" onclick={() => void app.bootstrap()}>Check now</Button>
-    <Button variant="ghost" onclick={() => void signOut()}>Sign out</Button>
+    <Button variant="ghost" onclick={() => void signOut()}>Log out</Button>
   </div>
 </div>
