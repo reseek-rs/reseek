@@ -63,4 +63,23 @@ describe("unblocking several users", () => {
       ]
     ]);
   });
+
+  it("offers no Undo for a block that had ended", async () => {
+    let block: unknown = {
+      reason: "",
+      scopes: ["uploads"],
+      addresses: [],
+      expiresAt: "2000-01-01T00:00:00Z"
+    };
+    fakeNetwork((url, method) => {
+      if (url.pathname.endsWith("/summary")) return { username: "alice", block };
+      if (url.pathname.endsWith("/block") && method === "DELETE") {
+        block = null;
+        return { status: 204 };
+      }
+      return undefined;
+    });
+    await unblockMany(["alice"]);
+    expect(toasts.map((t) => [t.text, t.action])).toEqual([["alice is unblocked", undefined]]);
+  });
 });

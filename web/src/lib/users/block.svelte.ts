@@ -91,7 +91,7 @@ export const block = async (username: string, request: BlockRequest) => {
 
 /**
  * Lifts the block on `username`, giving back the request that makes the same block again (its
- * reason, scopes and end), null when none was held. The failure is toasted
+ * reason, scopes and end), null when none was held or it had ended. The failure is toasted
  */
 const lift = async (username: string): Promise<{ ok: boolean; again: BlockRequest | null }> => {
   await users.load(username);
@@ -104,18 +104,18 @@ const lift = async (username: string): Promise<{ ok: boolean; again: BlockReques
     return { ok: false, again: null };
   }
   await users.load(username, { fresh: true });
-  const ends = was?.expiresAt && Date.parse(was.expiresAt) > Date.now() ? was.expiresAt : null;
   return {
     ok: true,
-    again: was
-      ? {
-          reason: was.reason,
-          scopes: was.scopes,
-          addresses: was.addresses,
-          expiresAt: ends,
-          cancelTransfers: false
-        }
-      : null
+    again:
+      was && !blockEnded(was, Date.now())
+        ? {
+            reason: was.reason,
+            scopes: was.scopes,
+            addresses: was.addresses,
+            expiresAt: was.expiresAt,
+            cancelTransfers: false
+          }
+        : null
   };
 };
 
