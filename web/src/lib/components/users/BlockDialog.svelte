@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from "svelte";
+
   import Field from "#lib/components/Field.svelte";
   import Form from "#lib/components/Form.svelte";
   import Button from "#lib/components/ui/Button.svelte";
@@ -45,7 +47,8 @@
   const names = $derived(blocking.asked?.usernames ?? []);
   const title = $derived(names.length === 1 ? names[0] : plural(names.length, "user", "users"));
 
-  // each opening starts from the defaults, with what the caller adds ticked
+  // each opening starts from the defaults, with what the caller adds ticked; the defaults are
+  // read untracked so an options change while the dialog is open keeps what the user entered
   $effect(() => {
     const asked = blocking.asked;
     if (!blocking.open || !asked) return;
@@ -53,7 +56,7 @@
     duration = "";
     custom = "";
     error = "";
-    scopes = [...new Set([...defaultScopes(), ...(asked.add ?? [])])];
+    scopes = [...new Set([...untrack(defaultScopes), ...(asked.add ?? [])])];
     addresses = "";
   });
 

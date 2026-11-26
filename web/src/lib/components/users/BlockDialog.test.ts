@@ -70,4 +70,17 @@ describe("the block dialog", () => {
     ]);
     expect(blocking.open).toBe(false);
   });
+
+  it("keeps what is entered when the options change while it is open", async () => {
+    app.options = { blocking: { default_scopes: ["searches"] } } as never;
+    await open();
+    const reason = document.querySelector<HTMLInputElement>("#block-reason")!;
+    reason.value = "spam";
+    reason.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    app.options = { blocking: { default_scopes: ["browse"] } } as never;
+    flushSync();
+    expect(document.querySelector<HTMLInputElement>("#block-reason")!.value).toBe("spam");
+    expect(checked()).toEqual(["Withhold search results"]);
+  });
 });
