@@ -34,6 +34,10 @@ use crate::transfers::{PROGRESS_EVERY, Record, store};
 /// The smallest size an old 32-bit client reports as 0, one byte short of 2 GiB.
 const OVERFLOWED_SIZE: u64 = i32::MAX as u64;
 
+/// Why a download of a file the client already downloads from the same user fails.
+pub(super) const DUPLICATE: &str =
+  "A duplicate download of the same file to the same user is already registered";
+
 /// How long a file the peer took into its queue holds the slot it asked in when the peer
 /// neither offers it nor says its place, from the question to the end of the wait. A peer with
 /// a free upload slot offers the file as it takes the request, and one that waits to look at
@@ -143,9 +147,7 @@ pub(super) fn failure(error: &ClientError) -> Failure {
       },
       retryable: false,
     },
-    ErrorKind::DuplicateTransfer => Failure::terminal(
-      "A duplicate download of the same file to the same user is already registered".to_string(),
-    ),
+    ErrorKind::DuplicateTransfer => Failure::terminal(DUPLICATE.to_string()),
     ErrorKind::Io => Failure {
       outcome: TransferOutcome::Errored,
       message: error.to_string(),

@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, warn};
 use uuid::Uuid;
 
-use super::attempt::{Attempted, Failure};
+use super::attempt::{Attempted, DUPLICATE, Failure};
 use super::away::Heard;
 use super::destination::incomplete_path;
 use super::starts::{Ask, Grant, Pending, Turn};
@@ -210,8 +210,7 @@ impl Downloads {
       .iter()
       .any(|t| t.username == record.username && t.filename.as_str() == record.filename);
     if tracked {
-      let message = "A duplicate download of the same file to the same user is already registered";
-      return Ended::failed(Some(record), Failure::terminal(message.to_string()), None);
+      return Ended::failed(Some(record), Failure::terminal(DUPLICATE.to_string()), None);
     }
     let incomplete = match incomplete_path(
       &self.incomplete,
