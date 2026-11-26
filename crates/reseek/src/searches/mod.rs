@@ -412,6 +412,9 @@ impl SearchService for Searches {
       search::Scope::Users(users) => Some(users.clone()),
       _ => None,
     };
+    // a named user can answer over a connection we opened, so only a search sent to everyone
+    // says whether peers reach us
+    let judges_reachability = asked.is_none();
     let network = self.network.clone();
     let text = record.search_text.clone();
     let (slots, session) = (self.slots.clone(), lock(&self.session).clone());
@@ -451,7 +454,9 @@ impl SearchService for Searches {
               }
               response = responses.next() => match response {
                 Some(response) => {
-                  network.search_answered(token);
+                  if judges_reachability {
+                    network.search_answered(token);
+                  }
                   taker.response_taken(response, &live, &users);
                 }
                 None => break,

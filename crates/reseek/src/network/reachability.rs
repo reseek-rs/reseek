@@ -1,9 +1,9 @@
 //! Whether other users can connect to us, judged from what happens rather than asked of anyone:
 //! a peer that connects to our listener shows they can, whether it came by itself or to answer
 //! a connection request we had the server relay (nothing else gets a peer to our port); ten
-//! minutes logged in, or five of our searches drawing responses, with every peer connection one
-//! we opened ourselves, shows they cannot. The judgment starts over at every login and whenever
-//! the listening port or its mapping on the router changes; it is
+//! minutes logged in, or five of our searches sent to everyone drawing responses, with every peer
+//! connection one we opened ourselves, shows they cannot. The judgment starts over at every login
+//! and whenever the listening port or its mapping on the router changes; it is
 //! `State.server.listen.reachable`.
 
 use std::collections::HashSet;
@@ -23,7 +23,8 @@ use crate::state::StateOwner;
 /// How long we stay logged in before nobody connecting to us says they cannot.
 pub const WAITED: Duration = Duration::from_secs(600);
 
-/// How many of our searches draw responses before nobody connecting to us says they cannot.
+/// How many of our searches sent to everyone draw responses before nobody connecting to us says
+/// they cannot.
 pub const SEARCHES: usize = 5;
 
 /// What the judgment is made from, since it last started over.
@@ -101,9 +102,12 @@ impl Reachability {
     self.changed.notify_one();
   }
 
-  /// Our search `token` took a response.
+  /// Our search `token`, sent to everyone, took a response. Only the first [`SEARCHES`] are
+  /// kept, which is all the judgment reads.
   pub fn search_answered(&self, token: u32) {
-    if self.evidence().answered.insert(token) {
+    let mut evidence = self.evidence();
+    if evidence.answered.len() < SEARCHES && evidence.answered.insert(token) {
+      drop(evidence);
       self.changed.notify_one();
     }
   }
@@ -187,5 +191,15 @@ mod tests {
     reachability.logged_out();
     settle().await;
     assert_eq!(reachable(), Reachable::Unknown);
+  }
+
+  #[tokio::test]
+  async fn only_the_searches_the_judgment_reads_are_kept() {
+    let client = soulseek_client::Client::new(soulseek_client::Config::default());
+    let reachability = Reachability::new(crate::testing::state(), client.inbound_connections());
+    for token in 0..100 {
+      reachability.search_answered(token);
+    }
+    assert_eq!(reachability.evidence().answered.len(), SEARCHES);
   }
 }
