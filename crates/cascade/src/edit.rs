@@ -64,7 +64,7 @@ impl<'a> FileEditor<'a> {
     }
     for key in removals {
       let parts: Vec<&str> = key.split('.').collect();
-      remove_key(doc.as_table_mut(), &parts);
+      remove_key(&mut doc, &parts);
     }
     let first_value = (!had_values)
       .then(|| {
@@ -132,7 +132,22 @@ fn set_item(
     }
     node = &mut node[part];
   }
+  if node.get(last).is_none_or(Item::is_none)
+    && item.is_table()
+    && node.is_table()
+    && tables.is_empty()
+  {
+    added_top = Some(last.to_string());
+  }
   let in_inline = node.is_inline_table();
+  let path: Vec<Step> = tables.iter().map(|t| Step::Table(t.to_string())).collect();
+  if table_at(doc, &path).is_some() {
+    merge(doc, &path, last, item);
+    return Ok(added_top);
+  }
+  let node = tables
+    .iter()
+    .fold(doc.as_item_mut(), |node, part| &mut node[part]);
   let item = match item {
     // a table inside an inline table has to be inline too
     Item::Table(table) if in_inline => {
@@ -143,23 +158,326 @@ fn set_item(
     }
     other => other,
   };
-  let item = match (item, node.get(last).and_then(Item::as_value)) {
+  let item = with_old_decor(item, node.get(last));
+  node[last] = item;
+  Ok(added_top)
+}
+
+/// `new` with the spacing and trailing comment of `old` when both are values.
+fn with_old_decor(new: Item, old: Option<&Item>) -> Item {
+  match (new, old.and_then(Item::as_value)) {
     (Item::Value(mut value), Some(old)) => {
-      // keep the old value's spacing and trailing comment
       *value.decor_mut() = old.decor().clone();
       Item::Value(value)
     }
-    (item, _) => item,
-  };
-  if node.get(last).is_none_or(Item::is_none)
-    && item.is_table()
-    && node.is_table()
-    && tables.is_empty()
-  {
-    added_top = Some(last.to_string());
+    (new, _) => new,
   }
-  node[last] = item;
-  Ok(added_top)
+}
+
+/// A step from a table to one under it: a `[section]`, or an element of a `[[section]]` list.
+#[derive(Clone, Debug, PartialEq)]
+enum Step {
+  Table(String),
+  Element(String, usize),
+}
+
+impl Step {
+  fn key(&self) -> &str {
+    match self {
+      Step::Table(key) | Step::Element(key, _) => key,
+    }
+  }
+}
+
+/// A line of the file that the comments above it belong to: the header of the table at a path,
+/// or a `key = value` in the table at a path.
+#[derive(Clone, Debug, PartialEq)]
+enum Line {
+  Header(Vec<Step>),
+  Value(Vec<Step>, String),
+}
+
+impl Line {
+  /// Whether the line is `key` of the table at `path`, or inside it.
+  fn is_under(&self, path: &[Step], key: &str) -> bool {
+    let below = |steps: &[Step]| {
+      steps.len() > path.len() && steps.starts_with(path) && steps[path.len()].key() == key
+    };
+    match self {
+      Line::Header(steps) => below(steps),
+      Line::Value(steps, name) => (steps == path && name == key) || below(steps),
+    }
+  }
+}
+
+/// The table at `path`, a `[section]` or an element of a `[[section]]` list.
+fn table_at<'a>(doc: &'a DocumentMut, path: &[Step]) -> Option<&'a Table> {
+  path
+    .iter()
+    .try_fold(doc.as_table(), |table, step| match step {
+      Step::Table(key) => table.get(key)?.as_table(),
+      Step::Element(key, index) => table.get(key)?.as_array_of_tables()?.get(*index),
+    })
+}
+
+/// [`table_at`], to change the table.
+fn table_at_mut<'a>(doc: &'a mut DocumentMut, path: &[Step]) -> Option<&'a mut Table> {
+  path
+    .iter()
+    .try_fold(doc.as_table_mut(), |table, step| match step {
+      Step::Table(key) => table.get_mut(key)?.as_table_mut(),
+      Step::Element(key, index) => table
+        .get_mut(key)?
+        .as_array_of_tables_mut()?
+        .get_mut(*index),
+    })
+}
+
+/// The headers and values of the file in the order they print. toml_edit orders tables by
+/// where each was read, a table added since coming right after the one visited before it.
+fn printed(doc: &DocumentMut) -> Vec<Line> {
+  let mut tables = Vec::new();
+  let mut position = 0;
+  collect_tables(doc.as_table(), &mut Vec::new(), &mut position, &mut tables);
+  tables.sort_by_key(|(position, path, _)| (!path.is_empty(), *position));
+  let mut lines = Vec::new();
+  for (_, path, table) in tables {
+    // an implicit table prints no header until it holds a value
+    if !path.is_empty() && !(table.is_implicit() && table.get_values().is_empty()) {
+      lines.push(Line::Header(path.clone()));
+    }
+    for (key, item) in table.iter() {
+      if item.is_value() {
+        lines.push(Line::Value(path.clone(), key.to_string()));
+      }
+    }
+  }
+  lines
+}
+
+/// Each table at or under `table` that is not dotted, with its path and the position it prints
+/// at.
+fn collect_tables<'a>(
+  table: &'a Table,
+  path: &mut Vec<Step>,
+  position: &mut isize,
+  tables: &mut Vec<(isize, Vec<Step>, &'a Table)>,
+) {
+  if !table.is_dotted() {
+    if let Some(at) = table.position() {
+      *position = at;
+    }
+    tables.push((*position, path.clone(), table));
+  }
+  for (key, item) in table.iter() {
+    match item {
+      Item::Table(inner) => {
+        path.push(Step::Table(key.to_string()));
+        collect_tables(inner, path, position, tables);
+        path.pop();
+      }
+      Item::ArrayOfTables(list) => {
+        for (index, inner) in list.iter().enumerate() {
+          path.push(Step::Element(key.to_string(), index));
+          collect_tables(inner, path, position, tables);
+          path.pop();
+        }
+      }
+      _ => {}
+    }
+  }
+}
+
+/// The comments and blank lines above `line`.
+fn prefix(doc: &DocumentMut, line: &Line) -> String {
+  let decor = match line {
+    Line::Header(path) => table_at(doc, path).map(Table::decor),
+    Line::Value(path, key) => table_at(doc, path)
+      .and_then(|table| table.key(key))
+      .map(toml_edit::Key::leaf_decor),
+  };
+  decor
+    .and_then(|decor| decor.prefix())
+    .and_then(|prefix| prefix.as_str())
+    .unwrap_or_default()
+    .to_string()
+}
+
+fn set_prefix(doc: &mut DocumentMut, line: &Line, prefix: String) {
+  match line {
+    Line::Header(path) => {
+      if let Some(table) = table_at_mut(doc, path) {
+        table.decor_mut().set_prefix(prefix);
+      }
+    }
+    Line::Value(path, key) => {
+      if let Some(mut key) = table_at_mut(doc, path).and_then(|table| table.key_mut(key)) {
+        key.leaf_decor_mut().set_prefix(prefix);
+      }
+    }
+  }
+}
+
+/// Splits the comments above an item after its last blank line: what comes before is not about
+/// the item, and is empty when it holds no comment.
+fn split_at_gap(prefix: &str) -> (&str, &str) {
+  let mut end = 0;
+  let mut offset = 0;
+  for line in prefix.split_inclusive('\n') {
+    offset += line.len();
+    if line.ends_with('\n') && line.trim().is_empty() {
+      end = offset;
+    }
+  }
+  let (before, after) = prefix.split_at(end);
+  if before.trim().is_empty() {
+    ("", after)
+  } else {
+    (before, after)
+  }
+}
+
+/// Puts `comments`, which end in a blank line, above `line`, or at the end of the file when it
+/// is `None`. The blank lines that opened what was there go, so the gap is not doubled.
+fn put_above(doc: &mut DocumentMut, line: Option<&Line>, comments: &str) {
+  if comments.is_empty() {
+    return;
+  }
+  let below = match line {
+    Some(line) => prefix(doc, line),
+    None => doc.trailing().as_str().unwrap_or_default().to_string(),
+  };
+  let mut rest = below.as_str();
+  while let Some(blank) = rest
+    .split_inclusive('\n')
+    .next()
+    .filter(|first| first.ends_with('\n') && first.trim().is_empty())
+  {
+    rest = &rest[blank.len()..];
+  }
+  let joined = format!("{comments}{rest}");
+  match line {
+    Some(line) => set_prefix(doc, line, joined),
+    None => doc.set_trailing(joined),
+  }
+}
+
+/// Sets `key` in the table at `path` to `new`, changing only what differs so the comments on
+/// what stays are kept: a table is changed key by key, a list of tables of the same length
+/// element by element.
+fn merge(doc: &mut DocumentMut, path: &[Step], key: &str, new: Item) {
+  let table = table_at_mut(doc, path).expect("the caller walked or made the path");
+  match (table.get_mut(key), new) {
+    (Some(Item::Table(old)), Item::Table(new)) if !old.is_dotted() => {
+      // an empty table, or one that holds values, prints its header
+      if !new.is_implicit() {
+        old.set_implicit(false);
+      }
+      let mut inner = path.to_vec();
+      inner.push(Step::Table(key.to_string()));
+      merge_table(doc, &inner, new);
+    }
+    (Some(Item::ArrayOfTables(old)), Item::ArrayOfTables(new)) if old.len() == new.len() => {
+      for (index, new) in new.into_iter().enumerate() {
+        let mut inner = path.to_vec();
+        inner.push(Step::Element(key.to_string(), index));
+        merge_table(doc, &inner, new);
+      }
+    }
+    (Some(old @ Item::Value(_)), new @ Item::Value(_)) => {
+      let new = with_old_decor(new, Some(old));
+      *old = new;
+    }
+    (None, new) => {
+      table.insert(key, new);
+    }
+    (Some(_), new) => replace(doc, path, key, new),
+  }
+}
+
+/// [`merge`] for each key of `new` into the table at `path`, then the removal of those `new`
+/// lacks.
+fn merge_table(doc: &mut DocumentMut, path: &[Step], new: Table) {
+  let old = table_at(doc, path).expect("the caller found the table");
+  let gone: Vec<String> = old
+    .iter()
+    .map(|(key, _)| key.to_string())
+    .filter(|key| !new.contains_key(key))
+    .collect();
+  for (key, item) in new {
+    merge(doc, path, &key, item);
+  }
+  for key in gone {
+    remove_entry(doc, path, &key);
+  }
+}
+
+/// Replaces `key` in the table at `path` with `new`, of another shape. The comments above the
+/// old item go above the new one, but when one is a header and the other a value, which print
+/// in different places, those a blank line sets apart from the old item stay where it was.
+fn replace(doc: &mut DocumentMut, path: &[Step], key: &str, mut new: Item) {
+  let lines = printed(doc);
+  let first = lines.iter().position(|line| line.is_under(path, key));
+  let old_prefix = first.map(|i| prefix(doc, &lines[i])).unwrap_or_default();
+  let next = first.and_then(|i| {
+    lines[i + 1..]
+      .iter()
+      .find(|line| !line.is_under(path, key))
+      .cloned()
+  });
+  // the position of the old item's first header, when it printed one
+  let old_header = first.and_then(|i| match &lines[i] {
+    Line::Header(steps) => Some(table_at(doc, steps).and_then(Table::position)),
+    Line::Value(..) => None,
+  });
+  let new_header = match &mut new {
+    Item::Table(table) => Some(table),
+    Item::ArrayOfTables(list) => list.iter_mut().next(),
+    _ => None,
+  };
+  let same_place = old_header.is_some() == new_header.is_some();
+  // a header put in place of another prints where that one did
+  if let (Some(Some(position)), Some(table)) = (old_header, new_header) {
+    table.set_position(Some(position));
+  }
+  let (stays, travels) = if same_place {
+    ("", old_prefix.as_str())
+  } else {
+    split_at_gap(&old_prefix)
+  };
+  let table = table_at_mut(doc, path).expect("the caller found the table");
+  if old_header.is_some()
+    && new.is_value()
+    && let Some(mut name) = table.key_mut(key)
+  {
+    // a header's key is spaced for inside its brackets
+    name.leaf_decor_mut().clear();
+  }
+  table.insert(key, new);
+  if let Some(line) = printed(doc).iter().find(|line| line.is_under(path, key)) {
+    set_prefix(doc, line, travels.to_string());
+  }
+  put_above(doc, next.as_ref(), stays);
+}
+
+/// Removes `key` from the table at `path`. The comments above it that a blank line sets apart
+/// from it are not about it, and go above what follows.
+fn remove_entry(doc: &mut DocumentMut, path: &[Step], key: &str) {
+  let lines = printed(doc);
+  let first = lines.iter().position(|line| line.is_under(path, key));
+  let stays = first
+    .map(|i| split_at_gap(&prefix(doc, &lines[i])).0.to_string())
+    .unwrap_or_default();
+  let next = first.and_then(|i| {
+    lines[i + 1..]
+      .iter()
+      .find(|line| !line.is_under(path, key))
+      .cloned()
+  });
+  if let Some(table) = table_at_mut(doc, path) {
+    table.remove(key);
+  }
+  put_above(doc, next.as_ref(), &stays);
 }
 
 /// A file that ends in comments (often all of it, a file of commented-out examples) keeps them
@@ -264,14 +582,27 @@ fn first_header(item: &mut Item) -> Option<&mut Table> {
   }
 }
 
-fn remove_key(table: &mut dyn toml_edit::TableLike, parts: &[&str]) {
+/// Removes the dotted key `parts`; under `[section]` tables with [`remove_entry`], so the
+/// comments that are not about the key stay.
+fn remove_key(doc: &mut DocumentMut, parts: &[&str]) {
+  let (last, tables) = parts.split_last().expect("split always yields one part");
+  let path: Vec<Step> = tables.iter().map(|t| Step::Table(t.to_string())).collect();
+  if table_at(doc, &path).is_some() {
+    remove_entry(doc, &path, last);
+  } else {
+    remove_table_like(doc.as_table_mut(), parts);
+  }
+}
+
+/// Removes the dotted key `parts` under inline tables too.
+fn remove_table_like(table: &mut dyn toml_edit::TableLike, parts: &[&str]) {
   match parts {
     [last] => {
       table.remove(last);
     }
     [first, rest @ ..] => {
       if let Some(inner) = table.get_mut(first).and_then(Item::as_table_like_mut) {
-        remove_key(inner, rest);
+        remove_table_like(inner, rest);
       }
     }
     [] => {}
@@ -521,6 +852,68 @@ mod tests {
     let replaced = patch(&edited, &[("api_keys", json!({}))], &[]).unwrap();
     let parsed: toml::Table = replaced.parse().unwrap();
     assert!(parsed["api_keys"].as_table().unwrap().is_empty());
+  }
+
+  #[test]
+  fn changing_a_map_keeps_the_comments_of_what_stays() {
+    let banner = "# my reseek config\n# see docs\n\n";
+    let text = format!("{banner}[api_keys.laptop]\nkey = \"1\"\n");
+    let both = json!({ "laptop": { "key": "1" }, "phone": { "key": "3" } });
+    let edited = patch(&text, &[("api_keys", both.clone())], &[]).unwrap();
+    assert_eq!(edited, format!("{text}\n[api_keys.phone]\nkey = \"3\"\n"));
+
+    let text = "[server]\nport = 1\n\n# keys for my devices\n[api_keys.laptop]\nkey = \"1\" # rotate in May\n";
+    let edited = patch(text, &[("api_keys", both)], &[]).unwrap();
+    assert_eq!(edited, format!("{text}\n[api_keys.phone]\nkey = \"3\"\n"));
+
+    let text = format!(
+      "{banner}# old laptop\n[api_keys.laptop]\nkey = \"1\"\n\n[api_keys.phone]\nkey = \"3\"\n"
+    );
+    let phone = json!({ "phone": { "key": "3" } });
+    let edited = patch(&text, &[("api_keys", phone)], &[]).unwrap();
+    assert_eq!(
+      edited,
+      format!("{banner}[api_keys.phone]\nkey = \"3\"\n"),
+      "the banner stays, the comment on the removed entry goes with it"
+    );
+
+    let text = "[[webhooks]]\n# the main one\nurl = \"a\" # mine\n";
+    let edited = patch(text, &[("webhooks", json!([{ "url": "b" }]))], &[]).unwrap();
+    assert_eq!(edited, text.replace("\"a\"", "\"b\""));
+  }
+
+  #[test]
+  fn a_list_of_tables_emptied_keeps_the_banner() {
+    let text = "# top\n\n# hooks\n[[webhooks]]\nurl = \"a\"\n\n[server]\nport = 1\n";
+    let edited = patch(text, &[("webhooks", json!([]))], &[]).unwrap();
+    assert_eq!(
+      edited,
+      "# top\n\n# hooks\nwebhooks = []\n[server]\nport = 1\n"
+    );
+  }
+
+  #[test]
+  fn removing_a_key_leaves_the_comments_not_about_it() {
+    let text = "# banner\n\n# about debug\ndebug = true\ninstance_name = \"x\"\n";
+    assert_eq!(
+      patch(text, &[], &["debug"]).unwrap(),
+      "# banner\n\ninstance_name = \"x\"\n"
+    );
+    assert_eq!(
+      patch(text, &[("debug", Value::Null)], &[]).unwrap(),
+      "# banner\n\ninstance_name = \"x\"\n"
+    );
+    let text = "# banner\n\ndebug = true\n\n[server]\nport = 1\n";
+    assert_eq!(
+      patch(text, &[], &["debug"]).unwrap(),
+      "# banner\n\n[server]\nport = 1\n"
+    );
+    let text = "[server]\nport = 1\n\n# the end\n\naddress = \"a\"\n";
+    assert_eq!(
+      patch(text, &[], &["server.address"]).unwrap(),
+      "[server]\nport = 1\n\n# the end\n\n",
+      "with nothing after it, they end the file"
+    );
   }
 
   #[test]
