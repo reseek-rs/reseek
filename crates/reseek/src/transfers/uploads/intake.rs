@@ -8,9 +8,9 @@
 //! users, or [`QUEUED_PER_ADDRESS`] from the request's address, counting those being decided.
 //! A request for a file not shared to the request, or shared and gone from disk, is refused.
 //! One for a file it sees that is queued to its user already is answered as queued, and one
-//! past the limits of its user's group is refused, unless the user is privileged. A request for a file of a relay agent that cannot say
-//! now whether it has it, being away, loading its shares or slow to answer, is failed instead,
-//! so the peer asks again.
+//! past the limits of its user's group is refused, unless the user is privileged. A request for
+//! a file of a relay agent that cannot say now whether it has it, being away, loading its shares
+//! or slow to answer, is failed instead, so the peer asks again.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::IpAddr;

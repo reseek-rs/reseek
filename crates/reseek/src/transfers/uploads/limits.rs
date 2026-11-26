@@ -2,8 +2,8 @@
 //! leaf by leaf, and the user's figures they are held against, from one query over the user's
 //! uploads. Windows are rolling: the last 24 hours and the last 7 days before now, by when an
 //! upload started. A failure counts when its peer's side caused it: one canceled here, whose
-//! file is gone here, or that a stop of the daemon ended does not. A megabyte is 1 000 000 bytes. A refused request is told why in the words
-//! other clients know.
+//! file is gone here, or that a stop of the daemon ended does not. A megabyte is 1 000 000
+//! bytes. A refused request is told why in the words other clients know.
 
 use api_types::transfers::TransferDirection;
 use api_types::transfers::{UploadLimitUsage, UploadLimitWindow, UploadLimits};
