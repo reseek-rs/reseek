@@ -412,6 +412,32 @@ describe("search results", () => {
     expect(all()).toBe("checked");
   });
 
+  it("keep a user's tick whole when the filter hides some of their ticked files", async () => {
+    const one = response("alice", 300);
+    const net = await open([one]);
+    net.frame("search.response", { searchId: ID, response: one });
+    await streamed();
+    const user = () =>
+      document.querySelector<HTMLButtonElement>('[aria-label="Select every file from alice"]')!;
+    const ticked = () =>
+      [...document.querySelectorAll("[role=treegrid] [role=row][aria-selected=true]")].length;
+    user().click();
+    flushSync();
+    expect(ticked()).toBe(2);
+
+    const box = document.querySelector<HTMLInputElement>('input[aria-label="Filter"]')!;
+    box.value = "One";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(200);
+    flushSync();
+    expect(ticked()).toBe(1);
+    expect(user().getAttribute("data-state")).toBe("checked");
+
+    user().click();
+    flushSync();
+    expect(ticked()).toBe(0);
+  });
+
   it("open and close a folder, and with Alt every folder beside it", async () => {
     const two = response("alice", 1, [
       sharedFile("@@a\\Music\\One\\1.flac"),

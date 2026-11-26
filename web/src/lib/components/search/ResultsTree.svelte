@@ -126,14 +126,14 @@
   const all = $derived(roots.flatMap((root) => itemsUnder(root)));
   const byId = $derived(new Map(all.map((f) => [idOf(f), f])));
   const chosen = $derived([...selected].flatMap((id) => byId.get(id) ?? []));
-  /** ticked files under each folder, by its key, and under each user, by their result */
-  const ticked = $derived(tickedCounts(selected));
+  /**
+   * ticked files in view under each folder, by its key, and under each user, by their result;
+   * a file the filter hides stays ticked and is not counted
+   */
+  const ticked = $derived(tickedCounts(chosen.map(idOf)));
   const tickedOf = $derived.by(() => {
     const counts = new Map<string, number>();
-    for (const id of selected) {
-      const result = id.slice(0, id.indexOf("\u0000"));
-      counts.set(result, (counts.get(result) ?? 0) + 1);
-    }
+    for (const f of chosen) counts.set(f.result, (counts.get(f.result) ?? 0) + 1);
     return counts;
   });
   const attributed = $derived(all.some((f) => f.suspect || formatAttributes(f)));
