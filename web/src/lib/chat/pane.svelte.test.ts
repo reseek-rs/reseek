@@ -312,6 +312,8 @@ describe("a pane opened at a message", () => {
     await loading;
     expect(ids(pane)).toEqual([]);
     expect([pane.loaded, pane.hasMore, pane.hasNewer]).toEqual([true, false, false]);
+    await pane.load();
+    expect(ids(pane)).toEqual([]);
   });
 
   it("reads a conversation's draft when the view is emptied before the first page", async () => {
@@ -551,6 +553,20 @@ describe("a room's pane at the newest messages", () => {
     held.total = 152;
     await pane.load();
     expect(ids(pane)).toEqual([151, 152]);
+  });
+
+  it("stays empty on a reload after the view is emptied at an older message", async () => {
+    const held = stored(1000);
+    const pane = new MessagePane(room, () => "me", 300);
+    await pane.load();
+    expect(pane.hasNewer).toBe(true);
+    pane.clearView();
+    await pane.load();
+    expect(ids(pane)).toEqual([]);
+    expect(pane.hasNewer).toBe(false);
+    held.total = 1002;
+    await pane.load();
+    expect(ids(pane)).toEqual([1001, 1002]);
   });
 
   it("empties when the room's stored history is deleted", async () => {
