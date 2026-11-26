@@ -50,7 +50,7 @@ pub enum TransferOutcome {
   Errored,
   /// the peer refused the transfer
   Rejected,
-  /// our size and the peer's differ
+  /// the file is gone here, or the two sides disagree on its size
   Aborted,
 }
 
