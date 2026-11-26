@@ -151,9 +151,9 @@ fn windows(options: &Options, own: &Limits) -> (Window, Window, Window) {
 }
 
 /// Why one more upload of `size` bytes to a user whose groups set `own` with `figures` is
-/// refused, `None` when it is not: the queued window first, then the last week, then the last day, each
-/// checking files before megabytes. The queued window's answers are the ones clients ask
-/// again after.
+/// refused, `None` when it is not: the queued window first, then the last week, then the last
+/// day, each checking files before megabytes. The queued window's answers are the ones clients
+/// ask again after.
 pub fn refusal(
   options: &Options,
   own: &Limits,
