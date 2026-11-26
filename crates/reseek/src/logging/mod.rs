@@ -42,8 +42,8 @@ const FILE_QUEUE: usize = 128_000;
 /// reads.
 pub struct Logging {
   filter: reload::Handle<EnvFilter, Registry>,
-  /// `soulseek.diagnostic_level` as the daemon started with it, which a reload does not change
-  diagnostics: DiagnosticLevel,
+  /// the restart-class inputs of the filter as the daemon started with them
+  started: Started,
   buffer: Arc<LogBuffer>,
   /// whether `RUST_LOG` set the filter, which the options then do not change
   from_env: bool,
@@ -51,6 +51,15 @@ pub struct Logging {
   _file: Option<WorkerGuard>,
   /// the Loki sink until it is started, with the address it pushes to
   loki: Mutex<Option<(loki::Sink, String)>>,
+}
+
+/// The filter's inputs that only a restart changes: `debug` and `soulseek.diagnostic_level`.
+#[derive(Clone, Copy)]
+struct Started {
+  /// debug mode, which lowers the level to at least `debug`
+  debug: bool,
+  /// the Soulseek client's level
+  diagnostics: DiagnosticLevel,
 }
 
 /// Where the logs go besides the console.
@@ -80,11 +89,14 @@ impl<'writer> FormatFields<'writer> for ConsoleFields {
 /// Installs the global subscriber for `options`.
 pub fn init(options: &Options, sinks: Sinks) -> Result<Logging, String> {
   let from_env = std::env::var_os("RUST_LOG").is_some();
-  let diagnostics = options.soulseek.diagnostic_level;
+  let started = Started {
+    debug: options.debug,
+    diagnostics: options.soulseek.diagnostic_level,
+  };
   let filter = if from_env {
     EnvFilter::try_from_default_env().map_err(|e| format!("RUST_LOG: {e}"))?
   } else {
-    filter(options, diagnostics)?
+    filter(options, started)?
   };
   let (filter, handle) = reload::Layer::new(filter);
   let color = !(options.logger.no_color || sinks.no_color_env);
@@ -134,7 +146,7 @@ pub fn init(options: &Options, sinks: Sinks) -> Result<Logging, String> {
     .map_err(|e| e.to_string())?;
   Ok(Logging {
     filter: handle,
-    diagnostics,
+    started,
     buffer,
     from_env,
     _file: guard,
@@ -149,7 +161,7 @@ impl Logging {
     if self.from_env {
       return;
     }
-    match filter(options, self.diagnostics) {
+    match filter(options, self.started) {
       Ok(filter) => {
         if let Err(e) = self.filter.reload(filter) {
           tracing::error!(error = %e, "log filter not changed");
@@ -195,24 +207,24 @@ impl Logging {
 }
 
 /// The filter for `options`: `logging.level`, at least `debug` in debug mode, then the Soulseek
-/// client's level from `diagnostics` with its distributed network left out unless
+/// client's level with its distributed network left out unless
 /// `soulseek.distributed_network.logging` is on, then each of `logging.targets`, which can
-/// override both.
-pub fn filter(options: &Options, diagnostics: DiagnosticLevel) -> Result<EnvFilter, String> {
+/// override both. Debug mode and the client's level come from `started`.
+fn filter(options: &Options, started: Started) -> Result<EnvFilter, String> {
   EnvFilter::builder()
-    .parse(directives(options, diagnostics))
+    .parse(directives(options, started))
     .map_err(|e| e.to_string())
 }
 
 /// The target the Soulseek client logs under.
 const CLIENT: &str = "soulseek_client";
 
-fn directives(options: &Options, diagnostics: DiagnosticLevel) -> String {
-  let level = match (options.debug, options.logging.level) {
+fn directives(options: &Options, started: Started) -> String {
+  let level = match (started.debug, options.logging.level) {
     (true, LogLevel::Error | LogLevel::Warn | LogLevel::Info) => LogLevel::Debug,
     (_, level) => level,
   };
-  let client = match diagnostics {
+  let client = match started.diagnostics {
     DiagnosticLevel::None => "off",
     DiagnosticLevel::Warning => "warn",
     DiagnosticLevel::Info => "info",
@@ -233,23 +245,30 @@ mod tests {
   #[test]
   fn the_filter_is_the_level_lowered_by_debug_then_the_client_then_the_targets() {
     let mut options = Options::default();
+    let started = |debug, diagnostics| Started { debug, diagnostics };
     let quiet_tree = "soulseek_client=info,soulseek_client::distributed=off";
     assert_eq!(
-      directives(&options, DiagnosticLevel::Info),
+      directives(&options, started(false, DiagnosticLevel::Info)),
       format!("info,{quiet_tree}")
     );
+    // debug mode is read as the daemon started, whatever the current values say
     options.debug = true;
     assert_eq!(
-      directives(&options, DiagnosticLevel::Info),
+      directives(&options, started(false, DiagnosticLevel::Info)),
+      format!("info,{quiet_tree}")
+    );
+    options.debug = false;
+    assert_eq!(
+      directives(&options, started(true, DiagnosticLevel::Info)),
       format!("debug,{quiet_tree}")
     );
     options.logging.level = LogLevel::Trace;
     options.logging.targets = vec!["hyper=warn".into(), "reseek::http=trace".into()];
     options.soulseek.distributed_network.logging = true;
     assert_eq!(
-      directives(&options, DiagnosticLevel::None),
+      directives(&options, started(true, DiagnosticLevel::None)),
       "trace,soulseek_client=off,hyper=warn,reseek::http=trace"
     );
-    assert!(filter(&options, DiagnosticLevel::Debug).is_ok());
+    assert!(filter(&options, started(false, DiagnosticLevel::Debug)).is_ok());
   }
 }
