@@ -113,8 +113,16 @@ impl Messaging {
 
   /// Gives up our private room `room` and leaves it, since the server makes it a public room
   /// without an owner and keeps us in a room we no longer own. Only a join says who owns a room,
-  /// so one not joined as its owner is refused.
+  /// so one not joined as its owner is refused. It runs to its end, so a request dropped once
+  /// the server is told leaves no room we gave up still shown as ours.
   pub(in crate::messaging) async fn drop_ownership(&self, room: &str) -> Result<(), ApiError> {
+    let room = room.to_string();
+    self
+      .to_the_end(move |this| async move { this.give_up(&room).await })
+      .await?
+  }
+
+  async fn give_up(&self, room: &str) -> Result<(), ApiError> {
     self.belongs(room)?;
     let client = self.client();
     let us = super::own_username(client, &format!("give up private room {room}"))

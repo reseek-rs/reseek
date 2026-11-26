@@ -39,6 +39,7 @@ use tracing::{Instrument, debug, info_span, trace, warn};
 
 pub use conversations::store::{figures as message_figures, summary as conversation_summary};
 
+use crate::api::error::ApiError;
 use crate::config::Options;
 use crate::db::{self, Database, DbError, Location, Schema};
 use crate::events::EventBus;
@@ -233,6 +234,17 @@ impl Messaging {
       .this
       .upgrade()
       .expect("the engine is alive while a method runs on it")
+  }
+
+  /// Runs what `work` makes on the engine's task set and waits for it, so it runs to its end
+  /// even when the request waiting for it is dropped.
+  async fn to_the_end<T, F>(&self, work: impl FnOnce(Arc<Self>) -> F) -> Result<T, ApiError>
+  where
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+  {
+    let running = self.tasks.spawn(work(self.this()).in_current_span());
+    running.await.map_err(ApiError::internal)
   }
 
   fn client(&self) -> &Client {

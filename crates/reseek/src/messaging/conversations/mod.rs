@@ -314,8 +314,21 @@ impl Messaging {
 
   /// Sends a private message to `username`, on one line, and opens the conversation and stores
   /// what was sent once the server took it, marked when it is the `auto_reply` sent while we
-  /// are away; a user blocked from messages is refused, as is a text of line breaks alone.
+  /// are away; a user blocked from messages is refused, as is a text of line breaks alone. It
+  /// runs to its end, so a message the server took is stored even when the request is dropped.
   pub(super) async fn send(
+    &self,
+    username: &str,
+    message: String,
+    auto_reply: bool,
+  ) -> Result<(), ApiError> {
+    let username = username.to_string();
+    self
+      .to_the_end(move |this| async move { this.send_now(&username, message, auto_reply).await })
+      .await?
+  }
+
+  async fn send_now(
     &self,
     username: &str,
     message: String,
@@ -656,6 +669,52 @@ mod tests {
       .send_from(from, request("GET", "/api/v0/conversations/alice", None))
       .await;
     assert_eq!(read.status, 404);
+  }
+
+  #[tokio::test]
+  async fn a_message_the_server_took_is_stored_though_its_request_is_dropped() {
+    use soulseek_client::soulseek_proto::ServerRequest;
+
+    let app = crate::testing::soulseek::app(crate::testing::TRUSTED).await;
+    let mut server = crate::testing::soulseek::Server::start(|_| Vec::new()).await;
+    server.login(&app).await;
+    // the writer is held until the request is gone
+    let db = app.state.messaging.database().clone();
+    let (holds, held) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let holding = tokio::spawn(async move {
+      db.write(move |_| {
+        holds.send(()).unwrap();
+        released.recv().unwrap();
+        Ok(())
+      })
+      .await
+    });
+    held.await.unwrap();
+    let to_alice = |request: &ServerRequest| {
+      matches!(request, ServerRequest::PrivateMessage(m) if m.username == "alice").then_some(())
+    };
+    let body = Some(serde_json::json!("hello"));
+    tokio::select! {
+      (status, _) = app.call("POST", "/api/v0/conversations/alice", body) => {
+        panic!("answered {status} while the writer was held");
+      }
+      () = server.received(to_alice) => {}
+    }
+    release.send(()).unwrap();
+    holding.await.unwrap().unwrap();
+    let messaging = &app.state.messaging;
+    let stored = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+      loop {
+        let read = messaging.database().read(|conn| super::store::exists(conn, "alice"));
+        if read.await.unwrap() {
+          return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+      }
+    })
+    .await;
+    assert!(stored.is_ok(), "the message sent was never stored");
   }
 
   #[test]

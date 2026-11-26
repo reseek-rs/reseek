@@ -642,31 +642,31 @@ impl Messaging {
     });
   }
 
-  /// Joins the room `request` names for the API. The join runs to its end on the engine's task
-  /// set, so a request dropped while the server is asked leaves no join half done.
+  /// Joins the room `request` names for the API. The join runs to its end, so a request
+  /// dropped while the server is asked leaves no join half done.
   pub(super) async fn join(&self, request: JoinRoom) -> Result<Joined, ApiError> {
     let leaves = self.rooms.tracker().leaves(&request.name);
-    let this = self.this();
-    let joining = self.tasks.spawn(
-      async move {
+    let room = self
+      .to_the_end(move |this| async move {
         this
           .join_now(&request.name, request.private, true, leaves)
           .await
-      }
-      .in_current_span(),
-    );
-    let room = joining
-      .await
-      .map_err(ApiError::internal)?
+      })
+      .await?
       .map_err(refused)?;
     Ok(room.map_or(Joined::Already, Joined::New))
   }
 
+  /// Leaves `room`. The leave runs to its end, so a request dropped once the server is told
+  /// leaves no room the server took us out of still listed.
   pub(super) async fn leave(&self, room: &str) -> Result<(), ApiError> {
+    let room = room.to_string();
     self
-      .leave_room(room)
-      .instrument(info_span!("room", room))
-      .await
+      .to_the_end(move |this| async move {
+        let span = info_span!("room", room);
+        this.leave_room(&room).instrument(span).await
+      })
+      .await?
   }
 
   async fn leave_room(&self, room: &str) -> Result<(), ApiError> {
