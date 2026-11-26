@@ -27714,7 +27714,7 @@
                   "string",
                   "null"
                 ],
-                "description": "the first three lines of the description in the last info fetched, null when never\nfetched"
+                "description": "the first three lines of the description in the last info fetched, at most 300\ncharacters, null when never fetched"
               },
               "figures": {
                 "$ref": "#/components/schemas/SummaryFigures",

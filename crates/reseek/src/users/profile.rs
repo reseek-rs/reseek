@@ -78,9 +78,21 @@ fn info_summary(username: &str, info: &Info) -> StoredInfoSummary {
   }
 }
 
+/// How many characters of a user's description their summary carries at most. A peer may
+/// send a description of 256 KiB on one line, and the summary goes out with every change.
+const DESCRIPTION_CHARS: usize = 300;
+
 /// The first `count` lines of `text`.
 fn first_lines(text: &str, count: usize) -> String {
   text.lines().take(count).collect::<Vec<_>>().join("\n")
+}
+
+/// `text` cut to its first `count` characters.
+fn first_chars(mut text: String, count: usize) -> String {
+  if let Some((end, _)) = text.char_indices().nth(count) {
+    text.truncate(end);
+  }
+  text
 }
 
 /// The summary of a user the directory lists.
@@ -90,7 +102,8 @@ pub fn summary(user: KnownUser, stored: Option<&Stored>, figures: &UserFigures) 
   let active = |side: &api_types::users::TransferFigures| side.counts.active + side.counts.queued;
   UserSummary {
     info,
-    description: stored_info.map(|info| first_lines(&info.description, 3)),
+    description: stored_info
+      .map(|info| first_chars(first_lines(&info.description, 3), DESCRIPTION_CHARS)),
     notes: stored
       .filter(|s| !s.notes.is_empty())
       .map(|s| first_lines(&s.notes, 2)),
@@ -141,6 +154,9 @@ mod tests {
     assert_eq!(first_lines("one", 2), "one");
     assert_eq!(first_lines("", 3), "");
     assert_eq!(first_lines("\n\nthird", 2), "\n");
+    assert_eq!(first_chars("ab\u{e9}cd".to_string(), 3), "ab\u{e9}");
+    assert_eq!(first_chars("ab".to_string(), 3), "ab");
+    assert_eq!(first_chars("abc".to_string(), 3), "abc");
 
     let at = "2026-10-26T12:00:00Z".parse().unwrap();
     let stored = Stored {

@@ -8989,8 +8989,8 @@ export interface components {
              */
             activeTransfers: number;
             /**
-             * @description the first three lines of the description in the last info fetched, null when never
-             *     fetched
+             * @description the first three lines of the description in the last info fetched, at most 300
+             *     characters, null when never fetched
              */
             description?: string | null;
             /** @description what we did with the user */

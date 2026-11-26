@@ -366,8 +366,8 @@ pub struct UserSummary {
   pub user: KnownUser,
   /// the last info fetched without the description, null when never
   pub info: Option<StoredInfoSummary>,
-  /// the first three lines of the description in the last info fetched, null when never
-  /// fetched
+  /// the first three lines of the description in the last info fetched, at most 300
+  /// characters, null when never fetched
   pub description: Option<String>,
   /// the first two lines of our private notes about the user, null when there are none
   pub notes: Option<String>,
