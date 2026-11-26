@@ -461,7 +461,7 @@ fn log_refusal(
     LoginFailure::ChallengeExpired => {
       warn!(
         agent = name,
-        "Unauthorized login attempt: no challenge token cached for the socket"
+        "Unauthorized login attempt: the login came after its challenge expired"
       )
     }
     LoginFailure::BadCredential => {
