@@ -1,7 +1,7 @@
 //! The wishlist: saved searches run again with the server's wishlist search, one item a turn,
 //! the item searched longest ago first, on the interval the server gives at login. Each item
-//! remembers the files it found by user and filename, so a turn that finds new ones tells of
-//! them with a `search.wishlist_found` frame.
+//! remembers the [`KEPT`] files it found most recently by user and filename, so a turn that
+//! finds new ones tells of them with a `search.wishlist_found` frame.
 
 use std::time::Duration;
 
@@ -27,6 +27,10 @@ const NAMED: usize = 5;
 
 /// The longest wishlist text kept.
 const LONGEST: usize = 256;
+
+/// The most files an item keeps as found, four times what one search takes at most: past it,
+/// the files found longest ago are forgotten, and count as new if found again.
+const KEPT: u32 = 100_000;
 
 fn item(row: &Row) -> rusqlite::Result<WishlistItem> {
   let id = |i: usize| -> rusqlite::Result<Option<Uuid>> {
@@ -82,32 +86,53 @@ fn next(conn: &Connection) -> rusqlite::Result<Option<WishlistItem>> {
     .optional()
 }
 
-/// Marks the files `found` as seen by the item `id` and records its turn; returns those not
-/// seen before, or `None` when the item was removed meanwhile.
+/// Marks the files `found` as seen by the item `id` in this turn, keeps the `kept` files it found
+/// most recently, and records its turn; returns those not seen before, or `None` when the item
+/// was removed meanwhile.
 fn seen(
   conn: &mut Connection,
   id: Uuid,
   search: Uuid,
   found: &[(String, String)],
+  kept: u32,
 ) -> rusqlite::Result<Option<Vec<(String, String)>>> {
   let tx = conn.transaction()?;
-  let kept = tx
-    .prepare_cached("SELECT 1 FROM wishlist WHERE id = ?1")?
-    .exists([id.to_string()])?;
-  if !kept {
+  let Some(turn) = tx
+    .query_row(
+      "UPDATE wishlist SET turns = turns + 1 WHERE id = ?1 RETURNING turns",
+      [id.to_string()],
+      |row| row.get::<_, i64>(0),
+    )
+    .optional()?
+  else {
     return Ok(None);
-  }
+  };
   let mut fresh = Vec::new();
   {
     let mut insert = tx.prepare_cached(
-      "INSERT OR IGNORE INTO wishlist_seen (item_id, username, filename) VALUES (?1, ?2, ?3)",
+      "INSERT OR IGNORE INTO wishlist_seen (item_id, username, filename, last_turn) \
+       VALUES (?1, ?2, ?3, ?4)",
     )?;
+    let mut found_again = tx.prepare_cached(
+      "UPDATE wishlist_seen SET last_turn = ?4 WHERE item_id = ?1 AND username = ?2 \
+       AND filename = ?3",
+    )?;
+    let item_id = id.to_string();
     for (username, filename) in found {
-      if insert.execute(params![id.to_string(), username, filename])? > 0 {
+      let file = (&item_id, username, filename, turn);
+      if insert.execute(file)? > 0 {
         fresh.push((username.clone(), filename.clone()));
+      } else {
+        found_again.execute(file)?;
       }
     }
   }
+  tx.execute(
+    "DELETE FROM wishlist_seen WHERE item_id = ?1 AND (username, filename) IN ( \
+       SELECT username, filename FROM wishlist_seen WHERE item_id = ?1 \
+       ORDER BY last_turn DESC LIMIT -1 OFFSET ?2)",
+    params![id.to_string(), kept],
+  )?;
   tx.execute(
     "UPDATE wishlist SET last_searched_at = ?2, last_search_id = ?3, last_new_files = ?4 \
      WHERE id = ?1",
@@ -288,7 +313,7 @@ impl Searches {
     let (id, search_id) = (item.id, search.id);
     let fresh = match self
       .db
-      .write(move |conn| seen(conn, id, search_id, &found))
+      .write(move |conn| seen(conn, id, search_id, &found, KEPT))
       .await
     {
       Ok(Some(fresh)) => fresh,
@@ -364,7 +389,7 @@ mod tests {
     let turn = |found: Vec<(String, String)>| {
       let db = db.clone();
       async move {
-        db.write(move |conn| seen(conn, item, Uuid::new_v4(), &found))
+        db.write(move |conn| seen(conn, item, Uuid::new_v4(), &found, KEPT))
           .await
           .unwrap()
           .unwrap()
@@ -390,7 +415,7 @@ mod tests {
     let gone = Uuid::new_v4();
     let found = vec![file("dave", "d\\1.flac")];
     let removed = db
-      .write(move |conn| seen(conn, gone, Uuid::new_v4(), &found))
+      .write(move |conn| seen(conn, gone, Uuid::new_v4(), &found, KEPT))
       .await
       .unwrap();
     assert_eq!(
@@ -402,6 +427,57 @@ mod tests {
       .await
       .unwrap();
     assert_eq!(rows, 4, "and keeps no files for it");
+  }
+
+  #[tokio::test]
+  async fn an_item_keeps_the_files_it_found_most_recently() {
+    let db = crate::db::Database::memory(&super::super::store::SCHEMA).await;
+    let item = Uuid::new_v4();
+    let (id, at) = (item.to_string(), timestamp(Utc::now()));
+    db.write(move |conn| {
+      conn.execute(
+        "INSERT INTO wishlist (id, search_text, added_at) VALUES (?1, 'animals', ?2)",
+        params![id, at],
+      )
+    })
+    .await
+    .unwrap();
+    let files = |names: &[&str]| -> Vec<(String, String)> {
+      names
+        .iter()
+        .map(|name| ("alice".to_string(), (*name).to_string()))
+        .collect()
+    };
+    let turn = |found: Vec<(String, String)>| {
+      let db = db.clone();
+      async move {
+        db.write(move |conn| seen(conn, item, Uuid::new_v4(), &found, 3))
+          .await
+          .unwrap()
+          .unwrap()
+      }
+    };
+    turn(files(&["a", "b"])).await;
+    turn(files(&["c"])).await;
+    // `a` found again stays, `b` found longest ago goes
+    let fresh = turn(files(&["a", "d"])).await;
+    assert_eq!(fresh, files(&["d"]));
+    let mut kept: Vec<String> = db
+      .read(|conn| {
+        conn
+          .prepare("SELECT filename FROM wishlist_seen")?
+          .query_map([], |row| row.get(0))?
+          .collect()
+      })
+      .await
+      .unwrap();
+    kept.sort();
+    assert_eq!(kept, ["a", "c", "d"]);
+    assert_eq!(
+      turn(files(&["b"])).await,
+      files(&["b"]),
+      "a file forgotten is new"
+    );
   }
 
   #[tokio::test]
