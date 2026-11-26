@@ -80,7 +80,7 @@
   );
   let loaded: Record<string, Draft> = untrack(() => running);
   let draft = $state<Record<string, Draft>>(untrack(() => ({ ...running })));
-  /** keys whose running value changed under an edit in progress */
+  /** keys whose running value changed under an edit still in progress */
   let moved = $state<string[]>([]);
   let errors = $state<Record<string, string>>({});
   /** how many writes each key has had, so its control starts afresh after one */
@@ -100,7 +100,9 @@
           return [key, edited ? draft[key] : value];
         })
       );
-      moved = shifted;
+      // a key stays marked while its draft is still an edit of what runs
+      const still = moved.filter((key) => !shifted.includes(key) && !same(draft[key], next[key]));
+      moved = [...still, ...shifted];
       loaded = next;
     });
   });

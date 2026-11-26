@@ -657,4 +657,38 @@ describe("a settings section", () => {
     expect(toasts).toHaveLength(0);
     vi.unstubAllGlobals();
   });
+
+  it("keeps saying a running value changed under an edit across later reloads", async () => {
+    const target = document.createElement("div");
+    document.body.append(target);
+    const props = $state({
+      section: sections.find((s) => s.id === "web")!,
+      view,
+      onchanged: async () => {}
+    });
+    mounted.push(mount(Section, { target, props }));
+    flushSync();
+    let current = view;
+    const reload = (change: (values: { web: Record<string, unknown> }) => void) => {
+      current = structuredClone(current);
+      change(current.values as { web: Record<string, unknown> });
+      props.view = current;
+      flushSync();
+    };
+    const port = () => target.querySelector<HTMLInputElement>('[id="web.port"]')!;
+    port().value = "6001";
+    port().dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    reload((values) => (values.web.port = 6005));
+    expect(target.textContent).toContain("The running value has changed");
+    // another option changes: the edit still stands to overwrite the other change
+    reload((values) => (values.web.url_base = "/other"));
+    expect(target.textContent).toContain("The running value has changed");
+    // the edit made the same as what runs: nothing left to warn about
+    port().value = "6005";
+    port().dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    reload((values) => (values.web.url_base = "/again"));
+    expect(target.textContent).not.toContain("The running value has changed");
+  });
 });
