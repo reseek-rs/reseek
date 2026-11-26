@@ -25,7 +25,8 @@ const message = (localId: number) => ({
 const stored = (total: number) => {
   const asked: string[] = [];
   const held = { asked, total, frame: (() => {}) as ReturnType<typeof fakeNetwork>["frame"] };
-  const net = fakeNetwork((url) => {
+  const net = fakeNetwork((url, method) => {
+    if (method === "DELETE") return { status: 204 };
     if (url.pathname.endsWith("/rooms/joined")) return [];
     if (url.pathname.endsWith("/conversations")) return [];
     if (!url.pathname.endsWith("/messages")) return undefined;
@@ -516,6 +517,16 @@ describe("a room's pane at the newest messages", () => {
     held.total = 152;
     await pane.load();
     expect(ids(pane)).toEqual([151, 152]);
+  });
+
+  it("empties when the room's stored history is deleted", async () => {
+    stored(150);
+    const pane = new MessagePane(room, () => "me");
+    const stop = $effect.root(() => pane.follow());
+    await pane.load();
+    expect((await chat.clearRoom("indie")).ok).toBe(true);
+    stop();
+    expect(ids(pane)).toEqual([]);
   });
 
   it("keeps a message being sent when a read brings an older one with its text", async () => {

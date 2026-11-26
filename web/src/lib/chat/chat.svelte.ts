@@ -281,9 +281,29 @@ class Chat {
     return newest === undefined ? page : this.markRoomRead(name, newest);
   };
 
+  /** the panes told when their chat's stored history is deleted, by pane key */
+  #deleted = new Set<(key: string) => void>();
+
+  /**
+   * Calls `run` with a chat's pane key when its stored history is deleted, until the returned
+   * function is called
+   */
+  onDeleted = (run: (key: string) => void) => {
+    this.#deleted.add(run);
+    return () => void this.#deleted.delete(run);
+  };
+
   /** Deletes a room's stored history */
-  clearRoom = (name: string) =>
-    call(() => api.DELETE("/api/v0/rooms/history/{roomName}", { params: byRoom(name) }));
+  clearRoom = async (name: string) => {
+    const outcome = await call(() =>
+      api.DELETE("/api/v0/rooms/history/{roomName}", { params: byRoom(name) })
+    );
+    if (!outcome.ok) return outcome;
+    // the daemon sends no frame for it, only the counts
+    if (this.rooms.get(name)) this.rooms.assign(name, { lastMessage: null, lastMessageAt: null });
+    for (const run of this.#deleted) run(paneKey("room", name));
+    return outcome;
+  };
 
   /** Closes a conversation; the history stays unless `purge` */
   close = async (username: string, purge = false) => {
@@ -297,6 +317,7 @@ class Chat {
       this.conversations.remove(username);
       if (purge && username === SERVER) this.latestNotice = null;
     }
+    if (outcome.ok && purge) for (const run of this.#deleted) run(paneKey("user", username));
     return outcome;
   };
 

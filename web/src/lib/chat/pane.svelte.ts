@@ -10,7 +10,7 @@ import { Keyed } from "#lib/lists/keyed.svelte.js";
 import { live } from "#lib/live/live.svelte.js";
 import { call, type Outcome } from "#lib/request.js";
 
-import { chat } from "./chat.svelte";
+import { chat, paneKey } from "./chat.svelte";
 
 /** What a pane shows: the conversation with a user, or a room */
 export type Target = { kind: "user"; name: string } | { kind: "room"; name: string };
@@ -123,6 +123,13 @@ export class MessagePane {
   /** Follows the pane's frames; call from a component's setup, it stops with the component */
   follow() {
     const { kind, name } = this.target;
+    // a history deleted here leaves nothing to show
+    const key = paneKey(kind, name);
+    $effect(() =>
+      chat.onDeleted((deleted) => {
+        if (deleted === key) this.clearView();
+      })
+    );
     if (kind === "user") {
       $effect(() =>
         live.on("conversations.message", ({ username, message }) => {
