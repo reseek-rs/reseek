@@ -70,7 +70,7 @@
     ]);
     const found: Entry[] = [];
     if (transfers.ok) found.push(...transfers.data.transfers.map(transferEntry));
-    // a missing conversation is no messages, not a failure
+    // a user never messaged has no conversation, which the daemon answers with 404
     if (messages.ok) {
       const days = new Map<string, { at: string; n: number }>();
       for (const m of messages.data) {
@@ -104,7 +104,14 @@
       (transfers.ok && transfers.data.total > limit) ||
       (messages.ok && messages.data.length >= limit) ||
       (events.ok && events.data.length >= limit);
-    const errors = [transfers, events].flatMap((o) => (o.ok ? [] : [o.error]));
+    const failed = [
+      { key: "transfers", outcome: transfers },
+      { key: "messages", outcome: messages.ok || messages.status === 404 ? null : messages },
+      { key: "events", outcome: events }
+    ];
+    const errors = failed.flatMap(({ key, outcome }) =>
+      outcome && !outcome.ok ? [{ key, error: outcome.error }] : []
+    );
     return { ok: true as const, data: { entries: found, more, errors } };
   });
   const entries = $derived(activity.data?.entries ?? []);
@@ -115,7 +122,8 @@
   });
 </script>
 
-{#each activity.data?.errors ?? [] as error (error)}<Notice kind="error">{error}</Notice>{/each}
+{#each activity.data?.errors ?? [] as { key, error } (key)}<Notice kind="error">{error}</Notice
+  >{/each}
 
 {#if activity.loading}
   <Skeleton class="h-40" />

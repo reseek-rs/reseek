@@ -45,4 +45,27 @@ describe("a user's activity", () => {
     expect(document.querySelectorAll("li")).toHaveLength(150);
     unmount(component);
   });
+
+  it("says each read that failed, a missing conversation aside", async () => {
+    const busy = { status: 500, body: { error: "Database busy" } };
+    const show = async (messages: unknown) => {
+      fakeNetwork((url) => (url.pathname.endsWith("/messages") ? messages : busy));
+      const component = mount(ProfileActivity, {
+        target: document.body,
+        props: { username: "alice" }
+      });
+      await flush();
+      const notices = [...document.querySelectorAll("[role=alert]")].map((n) =>
+        n.textContent?.trim()
+      );
+      unmount(component);
+      vi.unstubAllGlobals();
+      return notices;
+    };
+    expect(await show({ status: 404, body: { error: "Not found" } })).toEqual([
+      "Database busy",
+      "Database busy"
+    ]);
+    expect(await show(busy)).toEqual(["Database busy", "Database busy", "Database busy"]);
+  });
 });
