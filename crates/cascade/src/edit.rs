@@ -331,9 +331,9 @@ fn set_prefix(doc: &mut DocumentMut, line: &Line, prefix: String) {
   }
 }
 
-/// Splits the comments above an item after its last blank line: what comes before is not about
-/// the item, and is empty when it holds no comment.
-fn split_at_gap(prefix: &str) -> (&str, &str) {
+/// Where the comments above an item end that a blank line sets apart from it: the offset just
+/// after its last blank line, or 0.
+fn gap_end(prefix: &str) -> usize {
   let mut end = 0;
   let mut offset = 0;
   for line in prefix.split_inclusive('\n') {
@@ -342,7 +342,13 @@ fn split_at_gap(prefix: &str) -> (&str, &str) {
       end = offset;
     }
   }
-  let (before, after) = prefix.split_at(end);
+  end
+}
+
+/// Splits the comments above an item after its last blank line: what comes before is not about
+/// the item, and is empty when it holds no comment.
+fn split_at_gap(prefix: &str) -> (&str, &str) {
+  let (before, after) = prefix.split_at(gap_end(prefix));
   if before.trim().is_empty() {
     ("", after)
   } else {
@@ -382,12 +388,12 @@ fn merge(doc: &mut DocumentMut, path: &[Step], key: &str, new: Item) {
   let table = table_at_mut(doc, path).expect("the caller walked or made the path");
   match (table.get_mut(key), new) {
     (Some(Item::Table(old)), Item::Table(new)) if !old.is_dotted() => {
-      // an empty table, or one that holds values, prints its header
-      if !new.is_implicit() {
-        old.set_implicit(false);
-      }
       let mut inner = path.to_vec();
       inner.push(Step::Table(key.to_string()));
+      // an empty table, or one that holds values, prints its header
+      if old.is_implicit() && !new.is_implicit() {
+        show_header(doc, path, key);
+      }
       merge_table(doc, &inner, new);
     }
     (Some(Item::ArrayOfTables(old)), Item::ArrayOfTables(new)) if old.len() == new.len() => {
@@ -408,6 +414,37 @@ fn merge(doc: &mut DocumentMut, path: &[Step], key: &str, new: Item) {
   }
 }
 
+/// Makes the implicit table `key` of the table at `path` print its header, above the first line
+/// under it. The comments a blank line sets apart from that line go above the header.
+fn show_header(doc: &mut DocumentMut, path: &[Step], key: &str) {
+  let first = printed(doc)
+    .into_iter()
+    .find(|line| line.is_under(path, key));
+  let mut above = String::new();
+  let mut position = None;
+  if let Some(line) = &first {
+    let old = prefix(doc, line);
+    let (before, after) = old.split_at(gap_end(&old));
+    above = before.to_string();
+    set_prefix(doc, line, after.to_string());
+    // an implicit table has no position of its own, and prints where the last table before it
+    // in the map did
+    if let Line::Header(steps) = line {
+      position = table_at(doc, steps).and_then(Table::position);
+    }
+  }
+  let mut inner = path.to_vec();
+  inner.push(Step::Table(key.to_string()));
+  let table = table_at_mut(doc, &inner).expect("the caller found the table");
+  table.set_implicit(false);
+  if first.is_some() {
+    table.decor_mut().set_prefix(above);
+  }
+  if position.is_some() {
+    table.set_position(position);
+  }
+}
+
 /// [`merge`] for each key of `new` into the table at `path`, then the removal of those `new`
 /// lacks.
 fn merge_table(doc: &mut DocumentMut, path: &[Step], new: Table) {
@@ -425,9 +462,9 @@ fn merge_table(doc: &mut DocumentMut, path: &[Step], new: Table) {
   }
 }
 
-/// Replaces `key` in the table at `path` with `new`, of another shape. The comments above the
-/// old item go above the new one, but when one is a header and the other a value, which print
-/// in different places, those a blank line sets apart from the old item stay where it was.
+/// Replaces `key` in the table at `path` with `new`, of another shape. When the new item prints
+/// where the old one did, after the same lines, the comments above the old item go above it.
+/// Otherwise those a blank line sets apart from the old item stay where it was.
 fn replace(doc: &mut DocumentMut, path: &[Step], key: &str, mut new: Item) {
   let lines = printed(doc);
   let first = lines.iter().position(|line| line.is_under(path, key));
@@ -438,9 +475,9 @@ fn replace(doc: &mut DocumentMut, path: &[Step], key: &str, mut new: Item) {
       .find(|line| !line.is_under(path, key))
       .cloned()
   });
-  // the position of the old item's first header, when it printed one
-  let old_header = first.and_then(|i| match &lines[i] {
-    Line::Header(steps) => Some(table_at(doc, steps).and_then(Table::position)),
+  // a header put in place of another prints where that one did
+  let old_position = first.and_then(|i| match &lines[i] {
+    Line::Header(steps) => table_at(doc, steps).and_then(Table::position),
     Line::Value(..) => None,
   });
   let new_header = match &mut new {
@@ -448,27 +485,28 @@ fn replace(doc: &mut DocumentMut, path: &[Step], key: &str, mut new: Item) {
     Item::ArrayOfTables(list) => list.iter_mut().next(),
     _ => None,
   };
-  let same_place = old_header.is_some() == new_header.is_some();
-  // a header put in place of another prints where that one did
-  if let (Some(Some(position)), Some(table)) = (old_header, new_header) {
+  if let (Some(position), Some(table)) = (old_position, new_header) {
     table.set_position(Some(position));
   }
-  let (stays, travels) = if same_place {
-    ("", old_prefix.as_str())
-  } else {
-    split_at_gap(&old_prefix)
+  // inserting over a key resets its decor, so a header's key spaced for inside its brackets
+  // prints as `key = value`
+  table_at_mut(doc, path)
+    .expect("the caller found the table")
+    .insert(key, new);
+  let after = printed(doc);
+  let Some(new_first) = after.iter().position(|line| line.is_under(path, key)) else {
+    put_above(doc, next.as_ref(), split_at_gap(&old_prefix).0);
+    return;
   };
-  let table = table_at_mut(doc, path).expect("the caller found the table");
-  if old_header.is_some()
-    && new.is_value()
-    && let Some(mut name) = table.key_mut(key)
-  {
-    // a header's key is spaced for inside its brackets
-    name.leaf_decor_mut().clear();
+  let same_place = first.is_some_and(|i| lines[..i] == after[..new_first]);
+  if same_place {
+    set_prefix(doc, &after[new_first], old_prefix);
+    return;
   }
-  table.insert(key, new);
-  if let Some(line) = printed(doc).iter().find(|line| line.is_under(path, key)) {
-    set_prefix(doc, line, travels.to_string());
+  let (stays, travels) = split_at_gap(&old_prefix);
+  // with nothing to carry, the new item keeps the spacing it prints with by default
+  if !travels.is_empty() {
+    set_prefix(doc, &after[new_first], travels.to_string());
   }
   put_above(doc, next.as_ref(), stays);
 }
@@ -519,7 +557,7 @@ fn move_trailing_comments(doc: &mut DocumentMut, top: &str) {
 
 /// A value added at the top level of a file that had none prints above everything else, so the
 /// comments that opened the file move in front of it: the whole text of a file that was only
-/// comments, else what comes before the first blank line above the first table.
+/// comments, else what comes up to the last blank line above the first table.
 fn keep_banner_first(doc: &mut DocumentMut, key: &str, had_items: bool) {
   let banner = if had_items {
     let Some(table) = first_printed_table(doc) else {
@@ -534,7 +572,10 @@ fn keep_banner_first(doc: &mut DocumentMut, key: &str, had_items: bool) {
     let Some(end) = prefix.rfind("\n\n") else {
       return;
     };
-    table.decor_mut().set_prefix(prefix[end + 2..].to_string());
+    // the blank line stays, now between the new value and the table
+    table
+      .decor_mut()
+      .set_prefix(format!("\n{}", &prefix[end + 2..]));
     prefix[..end + 2].to_string()
   } else {
     let trailing = doc.trailing().as_str().unwrap_or_default().to_string();
@@ -765,7 +806,7 @@ mod tests {
     let edited = patch(text, &[("debug", json!(true))], &[]).unwrap();
     assert_eq!(
       edited,
-      "# mine\n\ndebug = true\n# the server\n[server]\nport = 1\n"
+      "# mine\n\ndebug = true\n\n# the server\n[server]\nport = 1\n"
     );
 
     let text = "debug = false\n# mine\n[server]\nport = 1\n";
@@ -876,7 +917,7 @@ mod tests {
     assert_eq!(edited, format!("{text}\n[api_keys.phone]\nkey = \"3\"\n"));
 
     let text = "[server]\nport = 1\n\n# keys for my devices\n[api_keys.laptop]\nkey = \"1\" # rotate in May\n";
-    let edited = patch(text, &[("api_keys", both)], &[]).unwrap();
+    let edited = patch(text, &[("api_keys", both.clone())], &[]).unwrap();
     assert_eq!(edited, format!("{text}\n[api_keys.phone]\nkey = \"3\"\n"));
 
     let text = format!(
@@ -893,16 +934,49 @@ mod tests {
     let text = "[[webhooks]]\n# the main one\nurl = \"a\" # mine\n";
     let edited = patch(text, &[("webhooks", json!([{ "url": "b" }]))], &[]).unwrap();
     assert_eq!(edited, text.replace("\"a\"", "\"b\""));
+
+    let text = "# top\n\n# keys\n[api_keys.laptop]\nkey = \"1\"\n\n[server]\nport = 1\n";
+    let edited = patch(text, &[("api_keys", json!({}))], &[]).unwrap();
+    assert_eq!(
+      edited, "# top\n\n[api_keys]\n\n[server]\nport = 1\n",
+      "an emptied map prints its header below the banner"
+    );
+
+    let text = "# top\n\napi_keys = { laptop = { key = \"1\" } }\n";
+    let edited = patch(text, &[("api_keys", both.clone())], &[]).unwrap();
+    assert_eq!(
+      edited,
+      "# top\n\n[api_keys.laptop]\nkey = \"1\"\n\n[api_keys.phone]\nkey = \"3\"\n"
+    );
+
+    let text = "# top\n\napi_keys.laptop.key = \"1\"\ndebug = true\n";
+    let edited = patch(text, &[("api_keys", both)], &[]).unwrap();
+    assert_eq!(
+      edited,
+      "# top\n\ndebug = true\n\n[api_keys.laptop]\nkey = \"1\"\n\n[api_keys.phone]\nkey = \"3\"\n",
+      "a map written with dotted keys"
+    );
   }
 
   #[test]
-  fn a_list_of_tables_emptied_keeps_the_banner() {
+  fn a_list_of_tables_changing_shape_keeps_the_banner() {
     let text = "# top\n\n# hooks\n[[webhooks]]\nurl = \"a\"\n\n[server]\nport = 1\n";
     let edited = patch(text, &[("webhooks", json!([]))], &[]).unwrap();
     assert_eq!(
       edited,
-      "# top\n\n# hooks\nwebhooks = []\n[server]\nport = 1\n"
+      "# top\n\n# hooks\nwebhooks = []\n\n[server]\nport = 1\n"
     );
+
+    let text = "# top\n\n[server]\nport = 1\n\n# hooks\n[[webhooks]]\nurl = \"a\"\n";
+    let edited = patch(text, &[("webhooks", json!([]))], &[]).unwrap();
+    assert_eq!(
+      edited,
+      "# top\n\n# hooks\nwebhooks = []\n\n[server]\nport = 1\n"
+    );
+
+    let text = "# top\n\nwebhooks = [{ url = \"a\" }] # c\n";
+    let edited = patch(text, &[("webhooks", json!([{ "url": "b" }]))], &[]).unwrap();
+    assert_eq!(edited, "# top\n\n[[webhooks]]\nurl = \"b\"\n");
   }
 
   #[test]
