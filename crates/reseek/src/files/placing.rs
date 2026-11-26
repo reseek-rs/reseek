@@ -182,14 +182,33 @@ fn copy_beside(source: &Path, dir: &Path) -> io::Result<PathBuf> {
     to.sync_all()
   })();
   if let Err(e) = copied {
-    if let Err(removed) = std::fs::remove_file(&part)
-      && removed.kind() != ErrorKind::NotFound
-    {
-      debug!(path = %part.display(), error = %removed, "unfinished copy not removed");
-    }
+    remove_part(&part);
     return Err(e);
   }
   Ok(part)
+}
+
+/// Deletes the hidden copy `part` a move across filesystems did not put in place.
+fn remove_part(part: &Path) {
+  if let Err(removed) = std::fs::remove_file(part)
+    && removed.kind() != ErrorKind::NotFound
+  {
+    debug!(path = %part.display(), error = %removed, "unfinished copy not removed");
+  }
+}
+
+/// Moves `source` into `dir` across filesystems: copies it beside its destination, puts the
+/// copy in place with `place` and deletes the source. The copy is deleted when it cannot be put
+/// in place.
+fn move_across(
+  source: &Path,
+  dir: &Path,
+  place: impl FnOnce(&Path) -> io::Result<PathBuf>,
+) -> io::Result<PathBuf> {
+  let part = copy_beside(source, dir)?;
+  let to = place(&part).inspect_err(|_| remove_part(&part))?;
+  std::fs::remove_file(source)?;
+  Ok(to)
 }
 
 /// Moves `source` into `dir` as `name`, the missing directories made with `mode` and an
@@ -232,21 +251,16 @@ fn move_inner(
     let to = dir.join(name);
     match std::fs::rename(source, &to) {
       Ok(()) => Ok(to),
-      Err(e) if e.kind() == ErrorKind::CrossesDevices => {
-        let part = copy_beside(source, dir)?;
-        std::fs::rename(&part, &to)?;
-        std::fs::remove_file(source)?;
+      Err(e) if e.kind() == ErrorKind::CrossesDevices => move_across(source, dir, |part| {
+        std::fs::rename(part, &to)?;
         Ok(to)
-      }
+      }),
       Err(e) => Err(e),
     }
   } else {
     match place_new(source, dir, name) {
       Err(e) if e.kind() == ErrorKind::CrossesDevices => {
-        let part = copy_beside(source, dir)?;
-        let to = place_new(&part, dir, name)?;
-        std::fs::remove_file(source)?;
-        Ok(to)
+        move_across(source, dir, |part| place_new(part, dir, name))
       }
       placed => placed,
     }
@@ -414,6 +428,26 @@ mod tests {
     assert_eq!(placed, dir.path().join("taken (1).flac"));
     assert_eq!(std::fs::read_to_string(&placed).unwrap(), "copied");
     assert!(!part.exists());
+  }
+
+  #[test]
+  fn a_copy_that_cannot_be_put_in_place_is_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let incoming = dir.path().join("incoming");
+    let downloads = dir.path().join("downloads");
+    std::fs::create_dir_all(&incoming).unwrap();
+    std::fs::create_dir_all(downloads.join("01.flac")).unwrap();
+    std::fs::write(downloads.join("01.flac").join("inside"), "x").unwrap();
+    let source = incoming.join("01.flac");
+    std::fs::write(&source, "copied").unwrap();
+    let to = downloads.join("01.flac");
+    let moved = move_across(&source, &downloads, |part| {
+      std::fs::rename(part, &to)?;
+      Ok(to)
+    });
+    assert!(moved.is_err());
+    assert_eq!(names(&downloads), ["01.flac"]);
+    assert!(source.exists(), "the source stays when the move fails");
   }
 
   #[test]
