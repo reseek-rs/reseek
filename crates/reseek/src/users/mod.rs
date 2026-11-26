@@ -184,12 +184,9 @@ impl Directory {
     let options = config.current().values.clone();
     let blocks = Blocks::new(&options, &ours);
     if let Some(path) = blocklist_file(&options) {
-      let list = load_blocklist(path.clone()).await.map_err(|e| {
-        format!(
-          "Fatal error loading blacklist from file {}: {e}",
-          path.display()
-        )
-      })?;
+      let list = load_blocklist(path.clone())
+        .await
+        .map_err(|e| format!("blacklist not loaded from {}: {e}", path.display()))?;
       blocks.set_blocklist(Some((path, list)));
     }
     let (toucher, receiver) = Toucher::channel();
@@ -780,7 +777,7 @@ async fn load_blocklist(path: PathBuf) -> Result<Blocklist, String> {
       count = list.count(),
       path = %path.display(),
       ms = started.elapsed().as_millis() as u64,
-      "Blacklist updated"
+      "blacklist loaded"
     );
     Ok(list)
   })

@@ -30,7 +30,7 @@ use reseek_shares::LogLimiter;
 use reseek_shares::lock;
 use soulseek_client::{Client, Error as ClientError, ErrorKind};
 use soulseek_proto::server::UserStats;
-use tracing::{Instrument, debug, info, trace, warn};
+use tracing::{Instrument, debug, trace, warn};
 
 use super::groups::{self, Facts, Placement};
 use super::store::Stored;
@@ -775,7 +775,7 @@ impl Directory {
       warn!(username, error = %e, "status of a watched user not fetched");
     }
     turn.completed();
-    info!(username, "Added user to watch list");
+    debug!(username, "user watched");
     Ok(())
   }
 
