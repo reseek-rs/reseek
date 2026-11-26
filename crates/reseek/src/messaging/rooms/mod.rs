@@ -939,6 +939,16 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn a_room_name_the_server_would_not_take_is_refused_before_it_is_asked() {
+    let app = app(TRUSTED, &[]).await;
+    let request = Some(json!({ "name": "two  spaces" }));
+    let (status, refused) = app.call("POST", "/api/v0/rooms/joined", request).await;
+    assert_eq!(status, 400, "{refused}");
+    let error = refused["error"].as_str().unwrap();
+    assert!(error.starts_with("Invalid room name: "), "{error}");
+  }
+
+  #[tokio::test]
   async fn a_room_the_server_puts_us_in_after_its_join_gave_up_is_left() {
     let app = soulseek::app(TRUSTED).await;
     let mut server = Server::silent().await;

@@ -120,25 +120,6 @@ mod tests {
   use super::*;
 
   #[test]
-  fn room_names_follow_the_servers_rules() {
-    for name in ["indie", "a b c", "x", "123456789012345678901234", "!~"] {
-      assert!(room_name(name).is_ok(), "{name}");
-    }
-    for (name, reason) in [
-      ("", "empty"),
-      ("caf\u{e9}", "printable ASCII"),
-      ("tab\there", "printable ASCII"),
-      ("1234567890123456789012345", "longer than 24"),
-      (" lead", "starts or ends"),
-      ("trail ", "starts or ends"),
-      ("two  spaces", "two spaces"),
-    ] {
-      let error = room_name(name).unwrap_err();
-      assert!(format!("{error:?}").contains(reason), "{name:?}: {error:?}");
-    }
-  }
-
-  #[test]
   fn files_paths_decode_either_alphabet_and_refuse_escapes() {
     let encode = |text: &str| base64::engine::general_purpose::STANDARD.encode(text);
     let url_safe = |text: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text);

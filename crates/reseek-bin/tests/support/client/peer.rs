@@ -80,7 +80,7 @@ impl PeerSide {
   }
 
   /// the next whole frame of `kind`, or `None` when the client closes the connection first
-  pub async fn frame_or_close(&mut self, kind: FrameKind) -> Option<Vec<u8>> {
+  async fn frame_or_close(&mut self, kind: FrameKind) -> Option<Vec<u8>> {
     loop {
       if let Some((_, consumed)) = frame::split(kind, &self.buffer, &Limits::DEFAULT).unwrap() {
         return Some(self.buffer.drain(..consumed).collect());

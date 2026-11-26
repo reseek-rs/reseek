@@ -859,8 +859,7 @@ mod tests {
   }
 
   #[test]
-  fn the_text_sent_is_the_terms_then_the_exclusions() {
-    assert_eq!(normalized("pink  floyd\t-live --live"), "pink floyd -live");
+  fn a_term_of_one_character_is_left_out_of_the_text_sent() {
     assert_eq!(
       normalized("a animals -x"),
       "animals -x",

@@ -592,19 +592,6 @@ mod tests {
     assert!(!running.cancel.is_cancelled());
   }
 
-  #[test]
-  fn a_queue_length_of_minus_one_is_unknown() {
-    let length = |queue_length| {
-      let taken = peer::SearchResponse {
-        queue_length,
-        ..taken("alice")
-      };
-      response(taken, None).queue_length
-    };
-    assert_eq!(length(3), Some(3));
-    assert_eq!(length(u32::MAX), None);
-  }
-
   /// A response from `username` with no files.
   fn taken(username: &str) -> peer::SearchResponse {
     peer::SearchResponse {

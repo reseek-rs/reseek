@@ -43,7 +43,7 @@ pub type Asked = mpsc::UnboundedReceiver<(String, RemoteFilename)>;
 
 /// The handler of a client that queues every upload a peer asks for and hands the request to the
 /// returned receiver, which is where a test starts the upload
-pub fn queueing() -> (Queueing, Asked) {
+fn queueing() -> (Queueing, Asked) {
   let (asked, requests) = mpsc::unbounded_channel();
   (Queueing { asked }, requests)
 }
