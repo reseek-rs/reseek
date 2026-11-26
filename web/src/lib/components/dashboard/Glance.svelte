@@ -40,8 +40,9 @@
   <div class="flex min-w-0 flex-col gap-1.5 p-4">
     <span class="flex items-center gap-1.5 text-xs text-fg-muted"
       ><Icon class={["size-3.5", tone]} />{title}</span>
+    <!-- a tile's parts are a fixed list, so a part is its place in it, whatever its live text -->
     <span class="flex flex-wrap items-baseline gap-x-2 text-sm">
-      {#each parts as p (p.text)}
+      {#each parts as p, i (i)}
         <a
           href={href(p.to)}
           class={[
