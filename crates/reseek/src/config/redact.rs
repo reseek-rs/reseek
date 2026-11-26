@@ -109,10 +109,25 @@ pub fn url(text: &str) -> String {
   without_credentials(text).unwrap_or_else(|| text.to_string())
 }
 
-/// `text` with the credentials of every URL in it replaced, when one has some. A URL is found by
-/// its `scheme://`; its credentials are what comes before the last `@` of the authority, which
-/// ends at the first `/`, `?`, `#`, quote or white space. The rest of the text stays as written.
+/// `text` with the credentials of every URL in it replaced, when one has some. Text that is one
+/// URL with credentials is read by the URL parser, as the clients that use it read it, so a
+/// password holding a quote, a backslash or a space is hidden whole.
 fn without_credentials(text: &str) -> Option<String> {
+  if let Ok(mut url) = url::Url::parse(text)
+    && (!url.username().is_empty() || url.password().is_some())
+  {
+    url.set_password(None).ok()?;
+    url.set_username(REDACTED).ok()?;
+    return Some(url.to_string());
+  }
+  credentials_in_text(text)
+}
+
+/// [`without_credentials`] for text that is not one URL with credentials, such as a command. A
+/// URL is found by its `scheme://`; its credentials are what comes before the last `@` of the
+/// authority, which ends at the first `/`, `?`, `#`, quote, backslash or white space. The rest of
+/// the text stays as written.
+fn credentials_in_text(text: &str) -> Option<String> {
   let mut out = String::with_capacity(text.len());
   let mut changed = false;
   let mut rest = text;
@@ -159,6 +174,11 @@ mod tests {
       "rooms": ["https://user@example.net/x"],
       "soulseek": { "description": "not a url: a:b@c" },
       "run": { "command": "curl -s https://ntfy:hunter2@ntfy.lan/reseek -d a@b" },
+      "whole": [
+        "http://grafana:it's secret@loki:3100/",
+        "https://u:p\"q@h/x",
+        "socks5://u:pa\\ss@proxy:1080",
+      ],
     });
     urls(&mut value);
     assert_eq!(
@@ -171,6 +191,14 @@ mod tests {
     assert_eq!(
       value["run"]["command"],
       "curl -s https://*****@ntfy.lan/reseek -d a@b"
+    );
+    assert_eq!(
+      value["whole"],
+      json!([
+        "http://*****@loki:3100/",
+        "https://*****@h/x",
+        "socks5://*****@proxy:1080"
+      ])
     );
   }
 
