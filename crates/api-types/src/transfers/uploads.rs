@@ -43,7 +43,8 @@ pub struct UploadLimits {
 }
 
 /// The figures of one limit window. Succeeded uploads count toward `files` and `bytes` of the
-/// daily and weekly windows, failed ones toward `failures`.
+/// daily and weekly windows. Uploads that timed out, errored or were rejected count toward
+/// `failures`, unless a stop of the daemon ended them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UploadLimitWindow {

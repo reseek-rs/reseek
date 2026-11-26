@@ -83,6 +83,18 @@ pub static ERRORED: Condition = Condition::of(|| {
     )
   })
 });
+/// `Completed` with `TimedOut`, `Errored` or `Rejected`: a transfer whose peer could not be
+/// reached, whose connection failed, or that the peer refused.
+pub static UNDELIVERED: Condition = Condition::of(|| {
+  states(|state| {
+    matches!(
+      state,
+      TransferStates::Completed(
+        TransferOutcome::TimedOut | TransferOutcome::Errored | TransferOutcome::Rejected
+      )
+    )
+  })
+});
 /// `Completed, Cancelled`.
 pub static CANCELLED: Condition =
   Condition::of(|| states(|state| state == TransferStates::Completed(TransferOutcome::Cancelled)));

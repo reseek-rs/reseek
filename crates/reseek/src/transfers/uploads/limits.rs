@@ -1,7 +1,8 @@
 //! What one user may queue and fetch from us: the limits of their group over the global ones,
 //! leaf by leaf, and the user's figures they are held against, from one query over the user's
 //! uploads. Windows are rolling: the last 24 hours and the last 7 days before now, by when an
-//! upload started. A megabyte is 1 000 000 bytes. A refused request is told why in the words
+//! upload started. A failure counts when its peer's side caused it: one canceled here, whose
+//! file is gone here, or that a stop of the daemon ended does not. A megabyte is 1 000 000 bytes. A refused request is told why in the words
 //! other clients know.
 
 use api_types::transfers::TransferDirection;
@@ -11,8 +12,8 @@ use rusqlite::{Connection, params};
 
 use crate::config::{Limit, Limits, Options};
 use crate::db::timestamp;
-use crate::transfers::categories::{FAILED, SUCCESSFUL};
-use crate::transfers::{UPLOADS_COUNTED, direction_text};
+use crate::transfers::categories::{SUCCESSFUL, UNDELIVERED};
+use crate::transfers::{UPLOADS_COUNTED, cleanup, direction_text};
 
 /// What a request over the queued files limit is told; clients ask again later.
 pub const TOO_MANY_FILES: &str = "Too many files";
@@ -29,13 +30,13 @@ pub struct Statistics {
   pub queued_files: u64,
   /// their full sizes
   pub queued_bytes: u64,
-  /// uploads started in the last 7 days that failed
+  /// uploads started in the last 7 days that failed on their peer's side
   pub weekly_failed_files: u64,
   /// uploads started in the last 7 days that succeeded
   pub weekly_succeeded_files: u64,
   /// their sizes
   pub weekly_succeeded_bytes: u64,
-  /// uploads started in the last 24 hours that failed
+  /// uploads started in the last 24 hours that failed on their peer's side
   pub daily_failed_files: u64,
   /// uploads started in the last 24 hours that succeeded
   pub daily_succeeded_files: u64,
@@ -52,15 +53,19 @@ pub fn statistics(
   let week = Duration::from_std(UPLOADS_COUNTED).expect("a week is a chrono duration");
   let week = timestamp(now - week);
   let day = timestamp(now - Duration::days(1));
+  // the two reasons an upload ended by a stop of the daemon is written with
+  let failed = format!(
+    "{UNDELIVERED} AND (Exception IS NULL OR Exception NOT IN (?5, ?6))"
+  );
   conn.query_row(
     &format!(
       "SELECT \
          COUNT(*) FILTER (WHERE EndedAt IS NULL), \
          COALESCE(SUM(Size) FILTER (WHERE EndedAt IS NULL), 0), \
-         COUNT(*) FILTER (WHERE StartedAt >= ?3 AND {FAILED}), \
+         COUNT(*) FILTER (WHERE StartedAt >= ?3 AND {failed}), \
          COUNT(*) FILTER (WHERE StartedAt >= ?3 AND {SUCCESSFUL}), \
          COALESCE(SUM(Size) FILTER (WHERE StartedAt >= ?3 AND {SUCCESSFUL}), 0), \
-         COUNT(*) FILTER (WHERE StartedAt >= ?4 AND {FAILED}), \
+         COUNT(*) FILTER (WHERE StartedAt >= ?4 AND {failed}), \
          COUNT(*) FILTER (WHERE StartedAt >= ?4 AND {SUCCESSFUL}), \
          COALESCE(SUM(Size) FILTER (WHERE StartedAt >= ?4 AND {SUCCESSFUL}), 0) \
        FROM Transfers WHERE Username = ?1 AND Direction = ?2 \
@@ -70,7 +75,9 @@ pub fn statistics(
       username,
       direction_text(TransferDirection::Upload),
       week,
-      day
+      day,
+      cleanup::SHUT_DOWN,
+      super::SHUT_DOWN
     ],
     |row| {
       let n =
@@ -459,6 +466,15 @@ mod tests {
       7,
     );
     removed.removed = true;
+    let errored = |exception: Option<&str>| {
+      let mut row = row(
+        TransferStates::Completed(TransferOutcome::Errored),
+        Some(5),
+        1,
+      );
+      row.exception = exception.map(str::to_string);
+      row
+    };
     let mut download = Row::new(
       "alice",
       TransferDirection::Download,
@@ -485,6 +501,16 @@ mod tests {
         row(
           TransferStates::Completed(TransferOutcome::Rejected),
           Some(100),
+          1,
+        ),
+        errored(Some("connection reset")),
+        // ended by stops of the daemon: count nowhere
+        errored(Some(crate::transfers::cleanup::SHUT_DOWN)),
+        errored(Some(super::super::SHUT_DOWN)),
+        // its file gone here: counts nowhere
+        row(
+          TransferStates::Completed(TransferOutcome::Aborted),
+          Some(4),
           1,
         ),
         row(
