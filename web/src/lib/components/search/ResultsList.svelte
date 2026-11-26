@@ -214,7 +214,7 @@
   framed={false}
   class="tabular-nums"
   onopen={canDownload
-    ? (r) => void (selected.size > 1 ? downloadTicked().then(tell) : downloadNow([r]))
+    ? (r) => void (chosen.length > 1 ? downloadTicked().then(tell) : downloadNow([r]))
     : undefined}
   onmiddleclick={canDownload ? (r) => void downloadNow([r]) : undefined}
   inspect={(r) => inspect(pick(r))}>
