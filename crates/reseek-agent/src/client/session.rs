@@ -1,8 +1,8 @@
 //! One socket to the controller, from its challenge to its close. The agent answers the
 //! challenge with its credential and must hear back within ten seconds; logged in, it uploads
 //! its shares and serves what the controller asks, each request in a task of its own so the
-//! socket is never held up by a file. Both sides ping every 15 seconds and the socket closes
-//! after 30 seconds without a frame.
+//! socket is never held up by a file. Both sides ping every 15 seconds, and the socket closes
+//! after 30 seconds without a frame or when a frame waits 30 seconds to be written.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use api_types::relay::{LoginFailure, RelayErrorCode, RelayMessage};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{Instant, sleep_until};
+use tokio::time::{Instant, sleep_until, timeout};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
@@ -19,7 +19,7 @@ use tracing::{Instrument, debug, info, trace, warn};
 
 use reseek_relay_proto::credential::Purpose;
 use reseek_relay_proto::frames::{
-  self, DEFER_EVERY, LOGIN_WITHIN, MAX_FRAME, PING_EVERY, SILENCE, close,
+  self, CLOSE_WITHIN, DEFER_EVERY, LOGIN_WITHIN, MAX_FRAME, PING_EVERY, SILENCE, close,
 };
 use reseek_shares::{Shares, lock};
 
@@ -209,14 +209,13 @@ impl AgentClient {
           break;
         }
         Some(text) = queued.recv() => {
-          if let Err(e) = socket.send(Message::Text(text.into())).await {
-            debug!(error = %e, "frame not written to the controller");
+          if !write(&mut socket, &link.closing, Message::Text(text.into())).await {
             break;
           }
         }
         _ = defer.tick() => self.defer_while_scanning(),
         _ = ping.tick() => {
-          if socket.send(Message::Ping(Default::default())).await.is_err() {
+          if !write(&mut socket, &link.closing, Message::Ping(Default::default())).await {
             break;
           }
         }
@@ -430,13 +429,36 @@ impl AgentClient {
   }
 }
 
-/// Sends the close frame with `code`.
+/// Writes `message` to the socket; false when the write failed, took longer than [`SILENCE`],
+/// or `closing` was canceled while it waited, after which the socket is given up.
+async fn write(socket: &mut Socket, closing: &CancellationToken, message: Message) -> bool {
+  tokio::select! {
+    // a write the socket takes at once ends before a close is looked at
+    biased;
+    written = timeout(SILENCE, socket.send(message)) => match written {
+      Ok(Ok(())) => true,
+      Ok(Err(e)) => {
+        debug!(error = %e, "frame not written to the controller");
+        false
+      }
+      Err(_) => {
+        warn!("the relay controller stopped taking frames");
+        false
+      }
+    },
+    () = closing.cancelled() => false,
+  }
+}
+
+/// Sends the close frame with `code`, waiting at most [`CLOSE_WITHIN`].
 async fn send_close(socket: &mut Socket, code: u16) {
   let frame = CloseFrame {
     code: CloseCode::from(code),
     reason: "".into(),
   };
-  if let Err(e) = socket.send(Message::Close(Some(frame))).await {
-    debug!(error = %e, "close frame not written to the controller");
+  match timeout(CLOSE_WITHIN, socket.send(Message::Close(Some(frame)))).await {
+    Ok(Ok(())) => {}
+    Ok(Err(e)) => debug!(error = %e, "close frame not written to the controller"),
+    Err(_) => debug!("close frame not written: the controller's socket is not taking frames"),
   }
 }

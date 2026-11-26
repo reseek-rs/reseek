@@ -3,7 +3,8 @@
 //! agent whose configuration or API key no longer admits it is disconnected, a login checked
 //! against a configuration that changed meanwhile is refused, a restarted agent replaces its
 //! session while another device under its name is refused, a share upload cut off partway
-//! leaves no file behind, and a file in flight stops when its agent is kicked.
+//! leaves no file behind, a file in flight stops when its agent is kicked, and a socket the
+//! agent stopped reading is given up.
 
 use soulseek_client::soulseek_proto;
 use std::collections::BTreeMap;
@@ -43,6 +44,8 @@ const DEVICE: Uuid = Uuid::from_u128(0x1a2b3c4d_0000_4000_8000_000000000001);
 struct Fake {
   frames: mpsc::Receiver<Result<Message, axum::Error>>,
   sent: mpsc::Sender<Message>,
+  /// takes no frame while set, as a socket whose agent stopped reading it
+  stalled: Arc<AtomicBool>,
 }
 
 impl Stream for Fake {
@@ -57,6 +60,9 @@ impl Sink<Message> for Fake {
   type Error = axum::Error;
 
   fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), axum::Error>> {
+    if self.stalled.load(Ordering::Relaxed) {
+      return Poll::Pending;
+    }
     Poll::Ready(Ok(()))
   }
 
@@ -126,8 +132,16 @@ async fn log_in_while(
   admitted: Arc<AtomicBool>,
 ) -> Served {
   let schema = Some(Shares::schema_version());
-  let (to_socket, mut from_socket, served) =
-    send_login(controller, address, secret, schema, Some(DEVICE), admitted).await;
+  let (to_socket, mut from_socket, served) = send_login(
+    controller,
+    address,
+    secret,
+    schema,
+    Some(DEVICE),
+    admitted,
+    Arc::default(),
+  )
+  .await;
   assert!(matches!(
     read(&written(&mut from_socket)[0]),
     RelayMessage::LoginOk { .. }
@@ -137,7 +151,8 @@ async fn log_in_while(
 
 /// A socket of `controller`'s from `address`, served on a task of its own, that answered its
 /// challenge as `nas` with `secret`, the share schema `shares_schema` and the device id
-/// `device_id`, opened with a credential that lets the agent in while `admitted` holds.
+/// `device_id`, opened with a credential that lets the agent in while `admitted` holds, and
+/// taking no frame while `stalled` is set.
 async fn send_login(
   controller: &Arc<Controller>,
   address: IpAddr,
@@ -145,6 +160,7 @@ async fn send_login(
   shares_schema: Option<u32>,
   device_id: Option<Uuid>,
   admitted: Arc<AtomicBool>,
+  stalled: Arc<AtomicBool>,
 ) -> Served {
   let (to_socket, frames) = mpsc::channel(64);
   let (sent, mut from_socket) = mpsc::channel(1024);
@@ -157,7 +173,11 @@ async fn send_login(
     })
   });
   let served = tokio::spawn(controller.clone().serve_socket(
-    Fake { frames, sent },
+    Fake {
+      frames,
+      sent,
+      stalled,
+    },
     address,
     recheck,
   ));
@@ -494,6 +514,7 @@ async fn a_login_whose_agent_was_removed_while_it_was_checked_is_refused() {
     key: Key::derive(SECRET, "nas"),
     device: None,
     left: tokio_util::sync::CancellationToken::new(),
+    close: Arc::default(),
   };
   assert_eq!(
     controller.register(registration),
@@ -518,6 +539,7 @@ async fn a_login_on_another_share_schema_is_refused_for_it() {
     other,
     Some(DEVICE),
     admitted.clone(),
+    Arc::default(),
   )
   .await;
   let answered = written(&mut from_socket);
@@ -534,8 +556,16 @@ async fn a_login_on_another_share_schema_is_refused_for_it() {
   served.await.unwrap();
   assert!(controller.agents().is_empty());
 
-  let (_to_socket, mut from_socket, _served) =
-    send_login(&controller, home, SECRET, None, Some(DEVICE), admitted).await;
+  let (_to_socket, mut from_socket, _served) = send_login(
+    &controller,
+    home,
+    SECRET,
+    None,
+    Some(DEVICE),
+    admitted,
+    Arc::default(),
+  )
+  .await;
   assert!(matches!(
     read(&written(&mut from_socket)[0]),
     RelayMessage::LoginOk { .. }
@@ -547,10 +577,68 @@ async fn log_in_from(controller: &Arc<Controller>, device: Option<Uuid>) -> (Ser
   let home: IpAddr = [127, 0, 0, 1].into();
   let admitted = Arc::new(AtomicBool::new(true));
   let schema = Some(Shares::schema_version());
-  let (to_socket, mut from_socket, served) =
-    send_login(controller, home, SECRET, schema, device, admitted).await;
+  let (to_socket, mut from_socket, served) = send_login(
+    controller,
+    home,
+    SECRET,
+    schema,
+    device,
+    admitted,
+    Arc::default(),
+  )
+  .await;
   let answered = written(&mut from_socket);
   ((to_socket, from_socket, served), answered)
+}
+
+/// A socket of `controller`'s logged in as `nas` whose agent then stops reading it and sends a
+/// ping, so the socket's task waits on writing the pong.
+async fn stalled_socket(controller: &Arc<Controller>) -> Served {
+  let stalled = Arc::new(AtomicBool::new(false));
+  let (to_socket, mut from_socket, served) = send_login(
+    controller,
+    [127, 0, 0, 1].into(),
+    SECRET,
+    Some(Shares::schema_version()),
+    Some(DEVICE),
+    Arc::new(AtomicBool::new(true)),
+    stalled.clone(),
+  )
+  .await;
+  assert!(matches!(
+    read(&written(&mut from_socket)[0]),
+    RelayMessage::LoginOk { .. }
+  ));
+  stalled.store(true, Ordering::Relaxed);
+  to_socket.send(text(RelayMessage::Ping {})).await.unwrap();
+  settle().await;
+  assert!(!served.is_finished());
+  (to_socket, from_socket, served)
+}
+
+#[tokio::test]
+async fn a_kicked_agent_that_stopped_reading_its_socket_is_let_go() {
+  let (_app, controller) = controller().await;
+  tokio::time::pause();
+  let (_to_socket, _from_socket, served) = stalled_socket(&controller).await;
+  assert!(controller.kick("nas"));
+  tokio::time::timeout(Duration::from_secs(1), served)
+    .await
+    .expect("the socket's task ends")
+    .unwrap();
+  assert!(controller.agents().is_empty());
+}
+
+#[tokio::test]
+async fn a_socket_that_takes_no_frame_for_its_silence_is_given_up() {
+  let (_app, controller) = controller().await;
+  tokio::time::pause();
+  let (_to_socket, _from_socket, served) = stalled_socket(&controller).await;
+  tokio::time::timeout(frames::SILENCE + Duration::from_secs(1), served)
+    .await
+    .expect("the socket's task ends")
+    .unwrap();
+  assert!(controller.agents().is_empty());
 }
 
 /// The relay's warnings among the lines `logs` was sent since the last look.

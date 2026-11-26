@@ -9,8 +9,13 @@ use uuid::Uuid;
 /// How often each side pings the other.
 pub const PING_EVERY: Duration = Duration::from_secs(15);
 
-/// How long either side waits for any frame before it closes the socket.
+/// How long either side waits for any frame before it closes the socket, and for the socket to
+/// take a frame it writes.
 pub const SILENCE: Duration = Duration::from_secs(30);
+
+/// How long either side waits to write its close frame; a peer whose socket takes nothing for
+/// that long is not reading it.
+pub const CLOSE_WITHIN: Duration = Duration::from_secs(1);
 
 /// How long a login challenge is valid, and how long an agent has from the socket's opening to
 /// its login.

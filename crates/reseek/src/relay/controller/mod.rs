@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use api_types::events::{Event, RelayAgentConnected, RelayAgentDisconnected};
 use api_types::relay::{
@@ -57,23 +57,14 @@ const OUTBOUND: usize = 64;
 /// [`REDIAL_AT_MOST`], so one that missed two dials stopped trying.
 const REFUSED_LISTED: std::time::Duration = REDIAL_AT_MOST.saturating_mul(3);
 
-/// What the controller writes to an agent's socket.
-#[derive(Debug)]
-enum Outbound {
-  /// a text frame
-  Frame(String),
-  /// the close frame, after which the socket ends
-  Close(u16, &'static str),
-}
-
 /// An agent logged in on a socket.
 struct Registration {
   /// the socket it logged in on
   socket: u64,
   /// what the state shows of it
   record: RelayAgentState,
-  /// frames for its socket
-  outbound: mpsc::Sender<Outbound>,
+  /// text frames for its socket
+  outbound: mpsc::Sender<String>,
   /// the address it logged in from
   address: IpAddr,
   /// the secret it logged in with
@@ -83,8 +74,11 @@ struct Registration {
   /// the device id it logged in with, when it gave one
   device: Option<Uuid>,
   /// canceled when the registration ends, which stops the share upload and the files it is
-  /// still sending
+  /// still sending, and closes its socket
   left: CancellationToken,
+  /// the close code and reason its socket closes with when the controller ends it, set before
+  /// `left` is canceled
+  close: Arc<OnceLock<(u16, &'static str)>>,
 }
 
 /// A device refused because another one is connected under the instance name it gave.
@@ -424,17 +418,11 @@ impl Controller {
     }
   }
 
-  /// Asks the socket of the registration in `left` to close with `code`, then does what
-  /// follows its leaving.
+  /// Closes the socket of the registration in `left` with `code`, then does what follows its
+  /// leaving.
   fn closed_on_leaving(&self, name: &str, left: Left, code: u16, reason: &'static str) {
-    // a socket whose queue is full or closed is ending on its own
-    if let Err(e) = left
-      .registration
-      .outbound
-      .try_send(Outbound::Close(code, reason))
-    {
-      debug!(agent = name, error = %e, "close not queued for the agent's socket");
-    }
+    // a registration is taken out of the registry once, so this is its only close
+    let _ = left.registration.close.set((code, reason));
     self.after_leaving(name, left, reason);
   }
 
@@ -545,7 +533,7 @@ impl Controller {
     let Some(outbound) = outbound else {
       return false;
     };
-    match outbound.try_send(Outbound::Frame(frame)) {
+    match outbound.try_send(frame) {
       Ok(()) => true,
       Err(e) => {
         warn!(agent = name, error = %e, "frame for the agent's socket not queued");

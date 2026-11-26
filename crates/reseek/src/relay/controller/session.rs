@@ -2,13 +2,14 @@
 //! challenge as it opens and must log in within the challenge's life; logged in, the agent is
 //! registered and has two minutes to start sending its shares; an agent whose shares are being
 //! scanned renews that by saying so, up to the configured deferral in all. Both sides ping every
-//! 15 seconds and the socket closes after 30 seconds without a frame. The API key or token the
-//! socket was opened with is checked again every 30 seconds, and the socket closed once it no
-//! longer lets the agent in. One task owns the socket: it reads the agent's frames, writes what
-//! the controller queues for it, and keeps the timers.
+//! 15 seconds, and the socket closes after 30 seconds without a frame or when a frame waits 30
+//! seconds to be written. The API key or token the socket was opened with is checked again every
+//! 30 seconds, and the socket closed once it no longer lets the agent in. One task owns the
+//! socket: it reads the agent's frames, writes what the controller queues for it, and keeps the
+//! timers.
 
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use api_types::relay::{
   LoginFailure, RELAY_PROTOCOL, RelayAgentState, RelayErrorCode, RelayMessage, RelayTimeouts,
@@ -17,17 +18,18 @@ use axum::extract::ws::{CloseFrame, Message};
 use chrono::Utc;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio::sync::mpsc;
-use tokio::time::{Instant, sleep_until};
+use tokio::time::{Instant, sleep_until, timeout};
+use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, info_span, trace, warn};
 
 use super::login::{self, Challenge};
-use super::{Controller, OUTBOUND, Outbound, Registration};
+use super::{Controller, OUTBOUND, Registration};
 use crate::crypto::{base62, random_bytes};
 use crate::live::Revalidate;
 use crate::shares::Shares;
 use reseek_relay_proto::credential::Key;
 use reseek_relay_proto::frames::{
-  self, LOGIN_WITHIN, MAX_FRAME, PING_EVERY, SILENCE, SYNC_WITHIN, close, millis,
+  self, CLOSE_WITHIN, LOGIN_WITHIN, MAX_FRAME, PING_EVERY, SILENCE, SYNC_WITHIN, close, millis,
 };
 
 /// Where a socket is in its life.
@@ -107,6 +109,8 @@ impl Controller {
         outbound,
         recheck,
         phase: Phase::Challenged(None),
+        left: self.shutdown.child_token(),
+        close: Arc::default(),
       };
       let ended = session.run(socket, queued).await;
       if let Phase::LoggedIn { name, .. } = &session.phase {
@@ -128,17 +132,23 @@ struct Session {
   id: u64,
   address: IpAddr,
   /// a sender of the socket's queue, handed to the registration
-  outbound: mpsc::Sender<Outbound>,
+  outbound: mpsc::Sender<String>,
   /// whether the credential the socket was opened with still lets the agent in
   recheck: Revalidate,
   phase: Phase,
+  /// canceled when the daemon stops or the controller ends the registration, which closes the
+  /// socket; handed to the registration
+  left: CancellationToken,
+  /// the close code and reason the controller ended the registration with; handed to the
+  /// registration
+  close: Arc<OnceLock<(u16, &'static str)>>,
 }
 
 impl Session {
   async fn run(
     &mut self,
     mut socket: impl AgentSocket,
-    mut queued: mpsc::Receiver<Outbound>,
+    mut queued: mpsc::Receiver<String>,
   ) -> Ended {
     let token = base62(&random_bytes(32));
     let opened = Instant::now();
@@ -154,8 +164,11 @@ impl Session {
       token,
       issued: opened,
     }));
-    if socket.send(Message::Text(challenge.into())).await.is_err() {
-      return LOST;
+    if let Err(ended) = self
+      .write(&mut socket, Message::Text(challenge.into()))
+      .await
+    {
+      return ended;
     }
     let mut heard = opened;
     let mut ping = tokio::time::interval_at(opened + PING_EVERY, PING_EVERY);
@@ -163,25 +176,22 @@ impl Session {
     loop {
       let (deadline, late) = self.deadline(opened, heard);
       tokio::select! {
-        () = self.controller.shutdown.cancelled() => {
-          return closing(&mut socket, close::SHUTTING_DOWN, "shutting down").await;
+        () = self.left.cancelled() => {
+          let (code, reason) = self.ending();
+          return closing(&mut socket, code, reason).await;
         }
         () = sleep_until(deadline) => {
           warn!(reason = late, "agent socket timed out");
           return closing(&mut socket, close::TIMEOUT, late).await;
         }
-        Some(out) = queued.recv() => match out {
-          Outbound::Frame(text) => {
-            if let Err(e) = socket.send(Message::Text(text.into())).await {
-              debug!(error = %e, "frame not written to the agent's socket");
-              return LOST;
-            }
+        Some(text) = queued.recv() => {
+          if let Err(ended) = self.write(&mut socket, Message::Text(text.into())).await {
+            return ended;
           }
-          Outbound::Close(code, reason) => return closing(&mut socket, code, reason).await,
-        },
+        }
         _ = ping.tick() => {
-          if socket.send(Message::Ping(Default::default())).await.is_err() {
-            return LOST;
+          if let Err(ended) = self.write(&mut socket, Message::Ping(Default::default())).await {
+            return ended;
           }
         }
         _ = recheck.tick() => {
@@ -221,6 +231,38 @@ impl Session {
           }
         }
       }
+    }
+  }
+
+  /// The close code and reason the socket ends with once `left` is canceled: the controller's,
+  /// or the daemon stopping.
+  fn ending(&self) -> (u16, &'static str) {
+    self
+      .close
+      .get()
+      .copied()
+      .unwrap_or((close::SHUTTING_DOWN, "shutting down"))
+  }
+
+  /// Writes `message` to the socket; how the socket ended when the write failed, took longer
+  /// than [`SILENCE`], or `left` was canceled while it waited.
+  async fn write(&self, socket: &mut impl AgentSocket, message: Message) -> Result<(), Ended> {
+    tokio::select! {
+      // a write the socket takes at once ends before a close is looked at
+      biased;
+      written = timeout(SILENCE, socket.send(message)) => match written {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => {
+          debug!(error = %e, "frame not written to the agent's socket");
+          Err(LOST)
+        }
+        Err(_) => {
+          warn!(reason = "write_timeout", "agent socket timed out");
+          Err(Ended { code: None, reason: "write_timeout" })
+        }
+      },
+      // the socket is not taking frames, so no close frame is written to it
+      () = self.left.cancelled() => Err(Ended { code: None, reason: self.ending().1 }),
     }
   }
 
@@ -376,7 +418,8 @@ impl Session {
         secret: secret.to_owned(),
         key,
         device: device_id,
-        left: self.controller.shutdown.child_token(),
+        left: self.left.clone(),
+        close: self.close.clone(),
       })
     });
     let counted = match registered {
@@ -393,8 +436,8 @@ impl Session {
     if let Err(reason) = registered {
       log_refusal(&name, &login, reason, cidr, &ours);
       let refusal = frames::encode(None, RelayMessage::LoginFailed { reason });
-      if socket.send(Message::Text(refusal.into())).await.is_err() {
-        return Some(LOST);
+      if let Err(ended) = self.write(socket, Message::Text(refusal.into())).await {
+        return Some(ended);
       }
       return Some(closing(socket, close::UNAUTHORIZED, "unauthorized").await);
     }
@@ -418,8 +461,8 @@ impl Session {
         },
       },
     );
-    if socket.send(Message::Text(accepted.into())).await.is_err() {
-      return Some(LOST);
+    if let Err(ended) = self.write(socket, Message::Text(accepted.into())).await {
+      return Some(ended);
     }
     info!(agent = name, "Agent connection authenticated");
     None
@@ -428,7 +471,7 @@ impl Session {
   /// Queues `frame` for this socket; a full queue drops it, which the socket's own end
   /// follows.
   fn reply(&self, frame: String) {
-    if let Err(e) = self.outbound.try_send(Outbound::Frame(frame)) {
+    if let Err(e) = self.outbound.try_send(frame) {
       warn!(error = %e, "reply to an agent not queued");
     }
   }
@@ -484,14 +527,16 @@ fn log_refusal(
   }
 }
 
-/// Sends the close frame with `code` and ends the socket.
+/// Sends the close frame with `code`, waiting at most [`CLOSE_WITHIN`], and ends the socket.
 async fn closing(socket: &mut impl AgentSocket, code: u16, reason: &'static str) -> Ended {
   let frame = CloseFrame {
     code,
     reason: reason.into(),
   };
-  if let Err(e) = socket.send(Message::Close(Some(frame))).await {
-    debug!(error = %e, "close frame not written to the agent's socket");
+  match timeout(CLOSE_WITHIN, socket.send(Message::Close(Some(frame)))).await {
+    Ok(Ok(())) => {}
+    Ok(Err(e)) => debug!(error = %e, "close frame not written to the agent's socket"),
+    Err(_) => debug!("close frame not written: the agent's socket is not taking frames"),
   }
   Ended {
     code: Some(code),
