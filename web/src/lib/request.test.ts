@@ -27,4 +27,20 @@ describe("call", () => {
     const lost = await call(() => Promise.reject(new TypeError("Failed to fetch")));
     expect(lost).toEqual({ ok: false, error: UNREACHABLE, status: 0 });
   });
+
+  it("takes a plain text body as the message, and never a proxy's HTML page", async () => {
+    const answer = (body: string, type: string) =>
+      call(async () => ({
+        error: body,
+        response: new Response(body, { status: 502, headers: { "Content-Type": type } })
+      }));
+    expect(await answer("upstream went away", "text/plain; charset=utf-8")).toMatchObject({
+      error: "upstream went away"
+    });
+    const page = "<html><head><title>502 Bad Gateway</title></head></html>";
+    expect(await answer(page, "text/html")).toMatchObject({
+      error: "Server error (HTTP 502)",
+      body: page
+    });
+  });
 });

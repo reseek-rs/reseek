@@ -37,5 +37,9 @@ export const call = async <T>(request: () => Promise<Reply<T>>): Promise<Outcome
   const { data, error, response } = reply;
   // a 204 has no body, which openapi-fetch reads as undefined data
   if (response.ok) return { ok: true, data: data as T };
-  return { ok: false, error: reason(response.status, error), status: response.status, body: error };
+  // openapi-fetch hands back a body that is not JSON as its text; only plain text is a message,
+  // an HTML page such as a proxy's 502 leaves the status to say why
+  const plain = response.headers.get("content-type")?.startsWith("text/plain") ?? false;
+  const said = typeof error === "string" && !plain ? undefined : error;
+  return { ok: false, error: reason(response.status, said), status: response.status, body: error };
 };
