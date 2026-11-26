@@ -9,7 +9,7 @@ use crate::edit::FileEditor;
 use crate::{Error, files};
 
 /// Mode of a new file that holds a secret.
-const SECRET_MODE: u32 = 0o600;
+pub(crate) const SECRET_MODE: u32 = 0o600;
 /// Mode of any other new file.
 const PLAIN_MODE: u32 = 0o640;
 /// The mode bits of the group and of others, which a file that holds a secret loses.

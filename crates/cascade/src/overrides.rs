@@ -169,7 +169,7 @@ impl Overrides {
     write::write_atomic(
       path,
       format!("{HEADER}{text}").as_bytes(),
-      Mode::KeepOr(0o600),
+      Mode::KeepOr(write::SECRET_MODE),
     )
   }
 
