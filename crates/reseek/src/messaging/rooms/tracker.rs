@@ -168,7 +168,8 @@ impl Tracker {
 
   /// We joined `data`'s room: its members replace any we knew, then what the server said in the
   /// room while the join was under way is taken in order. Its tickers stay until the server
-  /// sends them again, and for a private room its owner and operators are taken.
+  /// sends them again. For a private room its owner and operators are taken and those in it
+  /// added to its members; a room joined as public has no private record.
   pub fn joined(&mut self, data: &RoomData, us: &str) {
     let mut users: BTreeMap<String, RoomUser> = data
       .users
@@ -194,17 +195,21 @@ impl Tracker {
         hidden: BTreeSet::new(),
       }),
     }
-    if let Some(private) = &data.private {
-      let record = self.private.entry(data.name.clone()).or_default();
-      record.owner = Some(private.owner.clone());
-      record.operators = private.operators.iter().cloned().collect();
-      record.members = data
+    let Some(private) = &data.private else {
+      self.private.remove(&data.name);
+      return;
+    };
+    let record = self.private.entry(data.name.clone()).or_default();
+    record.owner = Some(private.owner.clone());
+    record.operators = private.operators.iter().cloned().collect();
+    // everyone in a private room belongs to it, though not everyone who belongs is in it
+    record.members.extend(
+      data
         .users
         .iter()
         .map(|user| user.username.clone())
-        .filter(|name| *name != private.owner)
-        .collect();
-    }
+        .filter(|name| *name != private.owner),
+    );
   }
 
   /// The server confirmed we are in `name`; false when it is not tracked.
@@ -523,6 +528,36 @@ mod tests {
     assert_eq!(room.operator_count, Some(1));
     assert!(tracker.drop_private("club"));
     assert!(tracker.room("club").is_none());
+  }
+
+  #[test]
+  fn a_join_keeps_the_members_not_in_the_room_and_a_public_join_ends_the_record() {
+    let mut tracker = Tracker::default();
+    // the server's list of members, handled before the join's answer
+    tracker.change_private("club", |p| {
+      p.members = ["me".to_string(), "away".to_string()].into();
+    });
+    let mut data = RoomData {
+      name: "club".into(),
+      users: vec![user("owner"), user("me"), user("here")],
+      private: Some(PrivateRoomData {
+        owner: "owner".into(),
+        operators: Vec::new(),
+      }),
+    };
+    tracker.joined(&data, "me");
+    let room = tracker.room("club").unwrap();
+    assert_eq!(room.members.unwrap(), ["away", "here", "me", "owner"]);
+
+    // given up meanwhile, the room lets us in as a public room
+    tracker.disconnected();
+    data.private = None;
+    tracker.joined(&data, "me");
+    let room = tracker.room("club").unwrap();
+    assert!(!room.is_private);
+    assert_eq!(room.owner, None);
+    assert_eq!(room.members, None);
+    assert_eq!(room.operators, None);
   }
 
   #[test]
