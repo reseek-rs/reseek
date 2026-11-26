@@ -1,7 +1,8 @@
 -- the newest analysis of each file, by the file's absolute path
 CREATE TABLE reports (
   path TEXT PRIMARY KEY,
-  -- "downloads" or "incomplete", and the path under that directory, `/`-separated
+  -- "downloads", "incomplete" or "temporary" (a file uploaded for one analysis), and the path
+  -- under that directory, `/`-separated
   root TEXT NOT NULL,
   relative TEXT NOT NULL,
   -- the file as it was analyzed; a different size or modification time is a different file
