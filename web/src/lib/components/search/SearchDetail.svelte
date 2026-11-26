@@ -257,9 +257,10 @@
     allFiles: fileCount(results.results)
   });
 
+  // a refused search has left the list, so its retry asks for what the refusal kept
   const again = () => {
-    if (!search) return;
-    openSearch(search.searchText, search.scope);
+    if (refused) openSearch(refused.text, refused.scope);
+    else if (search) openSearch(search.searchText, search.scope);
   };
 
   const stop = async () => {
@@ -345,7 +346,7 @@
 
 {#if refused}
   <ErrorSegment
-    caption={`Could not start the search: ${refused}`}
+    caption={`Could not start the search: ${refused.error}`}
     retry={again}
     retryLabel="Try again" />
 {:else if !search}

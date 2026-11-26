@@ -89,8 +89,8 @@ class Searches {
   error = $state("");
   /** searches asked for whose answer hasn't come, so their page waits rather than looks them up */
   starting = new SvelteSet<string>();
-  /** why a search could not start, by its id, for its page to say */
-  refused = new SvelteMap<string, string>();
+  /** why a search could not start and what it asked, by its id, for its page to say and retry */
+  refused = new SvelteMap<string, { error: string; text: string; scope?: SearchScope }>();
   /** searches deleted on screen whose delete waits until it can no longer be undone */
   hidden = new SvelteSet<string>();
 
@@ -127,7 +127,7 @@ class Searches {
       } else {
         this.list.dropRow();
         this.list.remove(id);
-        this.refused.set(id, outcome.error);
+        this.refused.set(id, { error: outcome.error, text, scope });
       }
       return outcome;
     });

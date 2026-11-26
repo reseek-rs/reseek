@@ -1,3 +1,4 @@
+import { goto } from "$app/navigation";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -10,7 +11,7 @@ import { inspectorPrefs } from "#lib/inspector/inspector.svelte.js";
 import { live } from "#lib/live/live.svelte.js";
 import { resultList } from "#lib/search/list.js";
 import { STREAM_MS } from "#lib/search/results.svelte.js";
-import { isDone, searches } from "#lib/search/searches.svelte.js";
+import { isDone, type SearchScope, searches } from "#lib/search/searches.svelte.js";
 import { session } from "#lib/session.svelte.js";
 import { searchOptions } from "#lib/settings.svelte.js";
 import { search, sharedFile, userSummary } from "#lib/testing/fixtures.js";
@@ -20,6 +21,8 @@ import { connected } from "#lib/testing/live.js";
 import { users } from "#lib/users/users.svelte.js";
 
 import SearchDetail from "./SearchDetail.svelte";
+
+vi.mock("$app/navigation", () => ({ goto: vi.fn() }));
 
 const ID = "6f1c9a52-0d1e-4c43-9d55-3a1f0b6e7a10";
 
@@ -66,6 +69,7 @@ describe("search results", () => {
     live.stop();
     searches.clear();
     users.clear();
+    vi.mocked(goto).mockClear();
     vi.useRealTimers();
     vi.unstubAllGlobals();
     document.body.innerHTML = "";
@@ -107,6 +111,25 @@ describe("search results", () => {
     await flushFaked();
     return net;
   };
+
+  it("start a refused search again from its page", async () => {
+    const net = connected((_url, method, body) =>
+      method === "POST" ? { status: 503, body: { error: "not connected" } } : body
+    );
+    const scope: SearchScope = { type: "user", subjects: ["alice"] };
+    const { id, done } = searches.start("aphex twin", scope);
+    await done;
+    component = mount(SearchDetail, { target: document.body, props: { id } });
+    await flushFaked();
+    expect(document.body.textContent).toContain("Could not start the search");
+    [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((b) => b.textContent?.trim() === "Try again")!
+      .click();
+    await flushFaked();
+    const asked = net.requests.filter((r) => r.method === "POST").map((r) => r.body);
+    const sent = expect.objectContaining({ searchText: "aphex twin", scope });
+    expect(asked).toEqual([sent, sent]);
+  });
 
   it("stream in without replacing the lines already shown, also once stored", async () => {
     const stored = [response("alice", 300), response("bob", 200), response("carol", 100)];
