@@ -17,8 +17,8 @@ pub fn values(loaded: &Loaded<Options>) -> Value {
   values
 }
 
-/// `value` with the credentials taken out of every URL in it, at any depth. A URL's
-/// `user:password@` becomes `*****@`.
+/// `value` with the credentials taken out of every URL in it, at any depth, including a URL
+/// inside longer text such as a command. A URL's `user:password@` becomes `*****@`.
 pub fn urls(value: &mut Value) {
   match value {
     Value::String(text) => {
@@ -99,25 +99,51 @@ fn restore(value: &mut Value, path: &str, held: &[(String, &str)]) -> Result<(),
   Ok(())
 }
 
-/// Whether `text` is a URL whose credentials are shown as `*****@`.
+/// Whether `text` has a URL whose credentials are shown as `*****@`.
 fn hides_credentials(text: &str) -> bool {
-  url::Url::parse(text).is_ok_and(|url| url.username() == REDACTED && url.password().is_none())
+  text.contains(&format!("://{REDACTED}@"))
 }
 
-/// `text` with its credentials replaced when it is a URL that has some, else as it is.
+/// `text` with the credentials of every URL in it replaced, else as it is.
 pub fn url(text: &str) -> String {
   without_credentials(text).unwrap_or_else(|| text.to_string())
 }
 
-/// `text` with its credentials replaced, when it is a URL that has some.
+/// `text` with the credentials of every URL in it replaced, when one has some. A URL is found by
+/// its `scheme://`; its credentials are what comes before the last `@` of the authority, which
+/// ends at the first `/`, `?`, `#`, quote or white space. The rest of the text stays as written.
 fn without_credentials(text: &str) -> Option<String> {
-  let mut url = url::Url::parse(text).ok()?;
-  if url.username().is_empty() && url.password().is_none() {
-    return None;
+  let mut out = String::with_capacity(text.len());
+  let mut changed = false;
+  let mut rest = text;
+  while let Some(at) = rest.find("://") {
+    let scheme = &rest[..at];
+    let start = at + "://".len();
+    let has_scheme = scheme
+      .chars()
+      .next_back()
+      .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    let authority = rest[start..]
+      .find(|c: char| c.is_whitespace() || matches!(c, '/' | '?' | '#' | '"' | '\'' | '\\'))
+      .map_or(&rest[start..], |end| &rest[start..start + end]);
+    match authority
+      .rfind('@')
+      .filter(|&userinfo| has_scheme && userinfo > 0)
+    {
+      Some(userinfo) => {
+        out.push_str(&rest[..start]);
+        out.push_str(REDACTED);
+        rest = &rest[start + userinfo..];
+        changed = true;
+      }
+      None => {
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+      }
+    }
   }
-  url.set_password(None).ok()?;
-  url.set_username(REDACTED).ok()?;
-  Some(url.to_string())
+  out.push_str(rest);
+  changed.then_some(out)
 }
 
 #[cfg(test)]
@@ -132,6 +158,7 @@ mod tests {
       "logger": { "loki": "http://loki:3100" },
       "rooms": ["https://user@example.net/x"],
       "soulseek": { "description": "not a url: a:b@c" },
+      "run": { "command": "curl -s https://ntfy:hunter2@ntfy.lan/reseek -d a@b" },
     });
     urls(&mut value);
     assert_eq!(
@@ -141,21 +168,36 @@ mod tests {
     assert_eq!(value["logger"]["loki"], "http://loki:3100");
     assert_eq!(value["rooms"][0], "https://*****@example.net/x");
     assert_eq!(value["soulseek"]["description"], "not a url: a:b@c");
+    assert_eq!(
+      value["run"]["command"],
+      "curl -s https://*****@ntfy.lan/reseek -d a@b"
+    );
   }
 
   #[test]
   fn a_hidden_url_takes_the_one_it_shows_and_one_it_cannot_tell_is_refused() {
     let current = json!({ "hooks": { "urls": [
-      "https://u:p@x.lan/", "https://v:q@y.lan/", "https://w:r@y.lan/", "http://plain.lan/"
+      "https://u:p@x.lan/", "https://v:q@y.lan/", "https://w:r@y.lan/", "http://plain.lan/",
+      "curl https://c:s@z.lan/hook"
     ] } });
     let mut set = BTreeMap::from([(
       "hooks.urls".to_string(),
-      json!(["new", "https://*****@x.lan/", "http://plain.lan/"]),
+      json!([
+        "new",
+        "https://*****@x.lan/",
+        "http://plain.lan/",
+        "curl https://*****@z.lan/hook"
+      ]),
     )]);
     restore_urls(&mut set, &current).unwrap();
     assert_eq!(
       set["hooks.urls"],
-      json!(["new", "https://u:p@x.lan/", "http://plain.lan/"])
+      json!([
+        "new",
+        "https://u:p@x.lan/",
+        "http://plain.lan/",
+        "curl https://c:s@z.lan/hook"
+      ])
     );
     // two URLs with different credentials show as the same text
     let mut either = BTreeMap::from([("hooks.urls".to_string(), json!(["https://*****@y.lan/"]))]);
