@@ -111,19 +111,21 @@ pub fn url(text: &str) -> String {
 
 /// `text` with the credentials of every URL in it replaced, when one has some. Text that is one
 /// URL with credentials is read by the URL parser, as the clients that use it read it, so a
-/// password holding a quote, a backslash or a space is hidden whole.
+/// password holding a quote, a backslash or a space is hidden whole, and the rest of it is then
+/// scanned for further URLs, such as one in its query.
 fn without_credentials(text: &str) -> Option<String> {
   if let Ok(mut url) = url::Url::parse(text)
     && (!url.username().is_empty() || url.password().is_some())
   {
     url.set_password(None).ok()?;
     url.set_username(REDACTED).ok()?;
-    return Some(url.to_string());
+    let shown = url.to_string();
+    return Some(credentials_in_text(&shown).unwrap_or(shown));
   }
   credentials_in_text(text)
 }
 
-/// [`without_credentials`] for text that is not one URL with credentials, such as a command. A
+/// [`without_credentials`] by a scan of the text, for a command or the rest of a parsed URL. A
 /// URL is found by its `scheme://`; its credentials are what comes before the last `@` of the
 /// authority, which ends at the first `/`, `?`, `#`, quote, backslash or white space. The rest of
 /// the text stays as written.
@@ -178,6 +180,7 @@ mod tests {
         "http://grafana:it's secret@loki:3100/",
         "https://u:p\"q@h/x",
         "socks5://u:pa\\ss@proxy:1080",
+        "https://u:p@proxy.lan/fetch?url=https://a:b@c.lan/",
       ],
     });
     urls(&mut value);
@@ -197,7 +200,8 @@ mod tests {
       json!([
         "http://*****@loki:3100/",
         "https://*****@h/x",
-        "socks5://*****@proxy:1080"
+        "socks5://*****@proxy:1080",
+        "https://*****@proxy.lan/fetch?url=https://*****@c.lan/"
       ])
     );
   }
