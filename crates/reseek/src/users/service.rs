@@ -358,6 +358,8 @@ impl Directory {
     if watched.was {
       self.unwatch_forgotten(username).await;
     }
+    // the user is gone whether or not the purge goes through
+    self.removed(username);
     if purge {
       let removed = transfers::remove_all(&self.transfers, username)
         .await
@@ -367,7 +369,6 @@ impl Directory {
         removed, "transfers of a forgotten user removed from the listings"
       );
     }
-    self.removed(username);
     Ok(())
   }
 }
