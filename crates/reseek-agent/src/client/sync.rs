@@ -74,8 +74,10 @@ impl AgentClient {
       self.defer_while_scanning();
       return debug!("the shares are being loaded or scanned; they are uploaded when that ends");
     }
-    if self.syncing.swap(true, Ordering::AcqRel) {
-      self.again.store(true, Ordering::Release);
+    // set before `syncing` is taken, so an upload ending meanwhile sees it; SeqCst so both
+    // sides agree on which came first
+    self.again.store(true, Ordering::SeqCst);
+    if self.syncing.swap(true, Ordering::SeqCst) {
       return;
     }
     let agent = self.this();
@@ -120,9 +122,9 @@ impl AgentClient {
       if self.again.load(Ordering::Acquire) {
         continue;
       }
-      self.syncing.store(false, Ordering::Release);
+      self.syncing.store(false, Ordering::SeqCst);
       // asked for between the check and the release, and nobody else took it
-      if !self.again.load(Ordering::Acquire) || self.syncing.swap(true, Ordering::AcqRel) {
+      if !self.again.load(Ordering::SeqCst) || self.syncing.swap(true, Ordering::SeqCst) {
         return;
       }
     }
