@@ -248,11 +248,12 @@ impl Daemon {
 }
 
 impl Process {
-  /// Starts `command` with its standard output read as it is written.
+  /// Starts `command` with its standard output read as it is written. Its standard error goes to
+  /// the test's own, where the test runner keeps it with the test's output.
   pub fn spawn(command: &mut Command) -> Self {
     let mut child = command
       .stdout(Stdio::piped())
-      .stderr(Stdio::piped())
+      .stderr(Stdio::inherit())
       .spawn()
       .unwrap();
     let printed = Arc::new(Printed::default());
