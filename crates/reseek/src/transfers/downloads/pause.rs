@@ -37,6 +37,7 @@ impl Downloads {
 
   /// The download records `ids`, each or why it cannot be had.
   async fn records(&self, ids: Vec<Uuid>) -> Vec<Result<Record, BulkFailure>> {
+    let asked = ids.clone();
     let read = self
       .db
       .read(move |conn| {
@@ -55,7 +56,13 @@ impl Downloads {
             .ok_or_else(|| failure(id, format!("no download {id}")))
         })
         .collect(),
-      Err(e) => vec![Err(failure(Uuid::nil(), e.to_string()))],
+      Err(e) => {
+        warn!(downloads = asked.len(), error = %e, "downloads not read");
+        asked
+          .into_iter()
+          .map(|id| Err(failure(id, "the download was not read")))
+          .collect()
+      }
     }
   }
 
