@@ -17,13 +17,14 @@ pub struct Client {
   pub host: Option<String>,
   /// the host the request was sent to as the client wrote it, with any port
   pub authority: Option<String>,
-  /// whether the client spoke HTTPS, to us or to the proxy in front
+  /// whether the client spoke HTTPS, to the daemon or to the proxy in front
   pub https: bool,
 }
 
-/// The client of a request that reached us from `peer`. `X-Forwarded-For`,
-/// `X-Forwarded-Proto` and `X-Forwarded-Host` are believed only when the peer is one of
-/// `proxies`. The client is then the rightmost address of `X-Forwarded-For`, read across all
+/// The client of a request that came from `peer`.
+///
+/// `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host` are believed only when the
+/// peer is one of `proxies`. The client is then the rightmost address of `X-Forwarded-For`, read across all
 /// its header lines, that is not a trusted proxy; a hop that is not an address stops the walk
 /// at the trusted address to its right.
 pub fn resolve(peer: &Peer, uri: &Uri, headers: &HeaderMap, proxies: &[IpRange]) -> Client {

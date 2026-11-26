@@ -35,7 +35,7 @@ const HEADER_READ: Duration = Duration::from_secs(30);
 /// How often an HTTP/2 connection is pinged, so one whose client is gone is closed.
 const H2_PING: Duration = Duration::from_secs(60);
 
-/// How a connection reached us.
+/// How a connection reached the daemon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Transport {
   /// plain HTTP over TCP

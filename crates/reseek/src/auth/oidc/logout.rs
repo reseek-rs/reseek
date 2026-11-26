@@ -1,6 +1,6 @@
-//! Logging out with an OpenID Connect provider: the provider ending our sessions through a
-//! signed logout token it posts to us, and our logout sending the browser on to the provider's
-//! own logout page.
+//! Logging out with an OpenID Connect provider: the provider ending the daemon's sessions
+//! through a signed logout token it posts, and a logout here sending the browser on to the
+//! provider's own logout page.
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;

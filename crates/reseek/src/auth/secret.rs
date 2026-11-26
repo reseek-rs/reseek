@@ -32,7 +32,7 @@ pub struct Secret {
   mac_key: [u8; 32],
   /// signs the tokens that let a link load a file
   link_key: [u8; 32],
-  /// seals what the browser carries for us
+  /// seals what the browser carries for the daemon
   sealer: Aes256Gcm,
 }
 
