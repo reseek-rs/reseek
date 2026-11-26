@@ -1,4 +1,5 @@
 import { api } from "#lib/api/client.js";
+import { toast } from "#lib/feedback/toast.svelte.js";
 import { live } from "#lib/live/live.svelte.js";
 import { call } from "#lib/request.js";
 
@@ -109,12 +110,13 @@ class Jobs {
     return this.list.find((j) => names(target, j));
   }
 
+  /** Takes a file off the queue, or stops its analysis, saying so when the daemon refuses */
   async cancel(id: string) {
     const outcome = await call(() =>
       api.DELETE("/api/v0/analysis/jobs/{id}", { params: { path: { id } } })
     );
     void this.refresh();
-    return outcome;
+    if (!outcome.ok) toast(`Could not cancel the analysis: ${outcome.error}`, "error");
   }
 
   /** Takes every waiting file off the queue, with the backlog; the running ones go on */

@@ -16,10 +16,6 @@
   const SHOWN = 50;
   const write = $derived(session.can("ReadWrite"));
   const name = (path: string) => path.split(/[/\\]/).pop() ?? path;
-  const cancel = async (id: string) => {
-    const outcome = await jobs.cancel(id);
-    if (!outcome.ok) toast(`Could not cancel the analysis: ${outcome.error}`, "error");
-  };
   const waiting = $derived(jobs.list.filter((j) => j.state !== "running").length + jobs.backlog);
   const shown = $derived(jobs.list.slice(0, SHOWN));
   const cancelWaiting = async () => {
@@ -62,7 +58,7 @@
                   variant="ghost"
                   size="icon-sm"
                   aria-label={`Cancel analysis of ${name(job.path)}`}
-                  onclick={() => void cancel(job.id)}><XIcon /></Button>
+                  onclick={() => void jobs.cancel(job.id)}><XIcon /></Button>
               {/snippet}
             </Tooltip>
           {/if}
