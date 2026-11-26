@@ -1,5 +1,5 @@
 //! Whether a room message mentions us: a word of it is our username in any case, or it starts
-//! with `username:` or `@username`. Words are split on whitespace and on punctuation other than
+//! with `username:` or with `@username` not followed by a letter, digit or `_`. Words are split on whitespace and on punctuation other than
 //! `_`, `-`, `.`, `[` and `]`, which usernames often hold; a username with a space in it is also
 //! found anywhere in the text. A message holding one of the words we watch for, in any case and
 //! not as part of a longer word, mentions us too.
@@ -23,13 +23,23 @@ fn names(text: &str, us: &str) -> bool {
     return false;
   }
   let us_folded = us.to_lowercase();
-  if text.starts_with(&format!("{us_folded}:")) || text.starts_with(&format!("@{us_folded}")) {
+  if text.starts_with(&format!("{us_folded}:")) {
+    return true;
+  }
+  if let Some(rest) = text.strip_prefix(&format!("@{us_folded}"))
+    && !joins(rest.chars().next())
+  {
     return true;
   }
   if us.chars().any(char::is_whitespace) && text.contains(&us_folded) {
     return true;
   }
   text.split(separates).any(|word| word == us_folded)
+}
+
+/// Whether `c`, the character next to a name or word, makes it part of a longer one.
+fn joins(c: Option<char>) -> bool {
+  c.is_some_and(|c| c.is_alphanumeric() || c == '_')
 }
 
 /// Whether the lower-cased `text` holds `word` in any case, with no letter, digit or `_` right
@@ -39,7 +49,6 @@ fn holds_word(text: &str, word: &str) -> bool {
   if word.is_empty() {
     return false;
   }
-  let joins = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
   text.match_indices(&word).any(|(at, found)| {
     !joins(text[..at].chars().next_back()) && !joins(text[at + found.len()..].chars().next())
   })
@@ -66,6 +75,11 @@ mod tests {
       "a name with punctuation at the start"
     );
     assert!(mentions("@bob! hi", "bob!", &[]));
+    assert!(mentions("@bob, hi", "bob", &[]));
+    assert!(
+      !mentions("@bobby are you there", "bob", &[]),
+      "a longer name"
+    );
     assert!(
       mentions("is the big cheese here?", "Big Cheese", &[]),
       "a name with a space"
