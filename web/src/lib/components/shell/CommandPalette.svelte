@@ -7,6 +7,7 @@
   import { app } from "#lib/app.svelte.js";
   import { chat } from "#lib/chat/chat.svelte.js";
   import Scrim from "#lib/components/ui/Scrim.svelte";
+  import Username from "#lib/components/users/Username.svelte";
   import { BLOCKING, sections } from "#lib/config/sections.js";
   import {
     href,
@@ -35,6 +36,8 @@
     /** the heading it is listed under */
     group: string;
     label: string;
+    /** the username the entry is, drawn as names are in place of the label */
+    user?: string;
     /** muted text after the label */
     hint?: string;
     /** the keys that do the same, shown after the label */
@@ -147,6 +150,7 @@
         id: `user:${name}`,
         group: "Users",
         label: name,
+        user: name,
         hint: USER_ACTIONS.profile.label,
         run: () => goto(userHref(name))
       });
@@ -247,7 +251,11 @@
                       ]}
                       onSelect={() => run(entry)}
                       class="flex h-9 items-center gap-2 rounded-control px-2.5 text-sm data-selected:bg-hover">
-                      <span class="truncate">{entry.label}</span>
+                      {#if entry.user}
+                        <Username plain name={entry.user} />
+                      {:else}
+                        <span class="truncate">{entry.label}</span>
+                      {/if}
                       {#if entry.keys}
                         <!-- drawn as signs, read as words -->
                         <span class="ml-auto shrink-0 text-xs text-fg-muted" aria-hidden="true"
