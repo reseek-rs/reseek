@@ -39,9 +39,10 @@ pub fn man(schema: &Schema) -> String {
   page.push_str(
     ".SH DESCRIPTION\nreseek connects to the Soulseek network, shares the directories it is \
      given, and serves an HTTP API and a web UI for searching, browsing, transfers and chat.\n\
-     .PP\nEvery option is read from an environment variable, from the configuration file and \
-     from a flag, in that order of precedence from lowest to highest. The configuration \
-     reloads when its file changes and on SIGHUP.\n",
+     .PP\nAn option's value comes from its environment variable, the configuration files or its \
+     flag, in that order of precedence from lowest to highest. OPTIONS and ENVIRONMENT list \
+     the flags and variables that exist. The configuration reloads when its file changes and \
+     on SIGHUP.\n",
   );
   page.push_str(&format!(
     ".SH COMMANDS\n.TP\n.B {HASH_PASSWORD}\nReads a password, without echo from a terminal or \
