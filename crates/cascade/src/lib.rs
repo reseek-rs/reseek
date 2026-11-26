@@ -61,6 +61,8 @@
 //!   given, then `env`. On a struct, `env_alias_prefix(from = "A_", to = "B_")` gives every
 //!   field under it named `A_...` the alias `B_...`.
 //! - `cli = "--name"` or `cli = "-n|--name"`: the command-line flag that sets the field.
+//! - `negated`: the flag turns the boolean off, given alone it sets `false`. Needs `cli`, on a
+//!   boolean field.
 //! - `apply = "live" | "reconnect" | "restart"`: when a change takes effect, `live` when not
 //!   given. On a section it is the default for every field inside.
 //! - `secret`: shown as `*****`, never logged. On a section, every field inside.
