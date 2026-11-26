@@ -219,7 +219,7 @@ pub enum SortOrder {
 }
 
 /// Which transfers a page of the flat listing holds and in what order. Ties are broken by
-/// `requestedAt`, then id.
+/// `requestedAt`, then by the order the transfers were recorded in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, IntoParams)]
 #[serde(rename_all = "camelCase")]
 #[into_params(parameter_in = Query)]
