@@ -115,11 +115,14 @@ fn routes() -> OpenApiRouter<AppState> {
 }
 
 /// The API's routes for `state`, the diagnostic ones the document leaves out included, each
-/// request authenticated first.
+/// request authenticated first. A method a route does not take is answered 405 with an error
+/// body and axum's `Allow` header.
 pub fn router(state: AppState) -> Router {
   let (router, _) = routes().split_for_parts();
   router
     .nest("/api/v0", application::hidden())
+    // set after every route is added, since axum gives it only to the routes it has
+    .method_not_allowed_fallback(|| async { error::ApiError::method_not_allowed() })
     .layer(middleware::from_fn_with_state(
       state.clone(),
       crate::auth::authenticate,

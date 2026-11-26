@@ -107,6 +107,15 @@ impl ApiError {
     Self::new(StatusCode::REQUEST_TIMEOUT, error, None)
   }
 
+  /// A 405: the route does not take the request's method.
+  pub fn method_not_allowed() -> Self {
+    Self::new(
+      StatusCode::METHOD_NOT_ALLOWED,
+      "The route does not take this method",
+      None,
+    )
+  }
+
   /// A 429: the principal holds as many of something as it may.
   pub fn too_many(error: impl Into<String>) -> Self {
     Self::new(StatusCode::TOO_MANY_REQUESTS, error, None)

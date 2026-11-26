@@ -3,7 +3,9 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// What went wrong, sent with every 4xx and 5xx status.
+/// What went wrong, sent with every 4xx and 5xx status a route answers.
+///
+/// A path under `/api` that no route takes is answered 404 with no body.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorBody {
