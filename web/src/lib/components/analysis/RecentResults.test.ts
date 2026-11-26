@@ -28,10 +28,8 @@ describe("the recent results", () => {
   it("show the latest read when an earlier one answers after it", async () => {
     const answers: ((names: string[]) => void)[] = [];
     fakeNetwork((url) => {
-      if (url.pathname.endsWith("/api/v0/analysis") && !url.searchParams.has("since")) {
-        return new Promise((done) =>
-          answers.push((names) => done(names.map((n) => report(n))))
-        );
+      if (url.pathname.endsWith("/api/v0/analysis") && !url.searchParams.has("offset")) {
+        return new Promise((done) => answers.push((names) => done(names.map((n) => report(n)))));
       }
       return url.pathname.endsWith("/jobs") ? { jobs: [], backlog: 0 } : [];
     });

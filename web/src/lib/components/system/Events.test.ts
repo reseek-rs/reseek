@@ -127,7 +127,7 @@ describe("the event log", () => {
 
   it("reads a raised event in only once a press on the list ends", async () => {
     let log = [event("b", 2), event("a", 1)];
-    const net = fakeNetwork(() => log);
+    const net = fakeNetwork((url) => log.slice(0, Number(url.searchParams.get("limit"))));
     live.start();
     component = mount(Events, {
       target: document.body,

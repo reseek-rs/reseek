@@ -2,6 +2,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { Report } from "#lib/analysis/analysis.js";
+import { session } from "#lib/session.svelte.js";
 import { box } from "#lib/testing/state.svelte.js";
 
 import Judgment from "./Judgment.svelte";
@@ -13,10 +14,12 @@ describe("the judgment form", () => {
   afterEach(() => {
     if (component) unmount(component);
     component = null;
+    session.principal = null;
     document.body.innerHTML = "";
   });
 
   it("keeps an edit through a report read again and takes a judgment kept since", () => {
+    session.principal = { name: "me", role: "ReadWrite" } as never;
     const shown = box(report(null));
     component = mount(Judgment, {
       target: document.body,
