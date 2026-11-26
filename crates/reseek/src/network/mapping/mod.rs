@@ -2,7 +2,7 @@
 //! us. While the option is on and we are logged in, each way of asking is tried in turn (UPnP,
 //! then NAT-PMP or PCP at the default gateway) until one router forwards the port; the mapping
 //! is renewed at half its lease, asked for again when the port or the listening address
-//! changes, and removed when we log out, when the option is turned off and at an orderly stop.
+//! changes or the router moves it to another port, and removed when we log out, when the option is turned off and at an orderly stop.
 //! Where it stands is `State.server.listen.portMapping`.
 
 mod natpmp;
@@ -259,23 +259,34 @@ impl Mapping {
     self.failed = Some(reason);
   }
 
-  /// Renews the mapping held; one the router will not renew is asked for anew.
+  /// Renews the mapping held; one the router will not renew, or renews on another outside
+  /// port, is asked for anew.
   async fn renew(&mut self) {
-    let Some((index, _, target)) = self.held.take() else {
+    let Some((index, held, target)) = self.held.take() else {
       return;
     };
-    match asking(self.gateways[index].renew()).await {
-      Ok(mapped) => {
+    let reason = match asking(self.gateways[index].renew()).await {
+      Ok(mapped) if mapped.external_port == held.external_port => {
         debug!(lifetime = ?mapped.lifetime, "port mapping renewed");
         self.publish(mapped_state(&mapped));
         self.held = Some((index, mapped, target));
+        return;
       }
-      Err(reason) => {
-        debug!(reason, "port mapping not renewed; asked for anew");
-        self.reachability.start_over("the port mapping changed");
-        self.map(target).await;
+      // other users are told our port, so another one is no use
+      Ok(moved) => {
+        if let Err(reason) = asking(self.gateways[index].unmap()).await {
+          debug!(reason, "the moved port mapping was not removed");
+        }
+        format!(
+          "the router moved the mapping to port {}",
+          moved.external_port
+        )
       }
-    }
+      Err(reason) => reason,
+    };
+    debug!(reason, "port mapping not renewed; asked for anew");
+    self.reachability.start_over("the port mapping changed");
+    self.map(target).await;
   }
 
   /// Removes the mapping held.

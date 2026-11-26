@@ -109,7 +109,14 @@ impl Gateway for NatPmp {
       .renew()
       .await
       .map_err(|e| format!("the router did not renew the mapping: {e}"))?;
+    // the router may answer a renewal with another outside port, and PCP with another address
+    let external_address = match mapping.mapping_type() {
+      PortMappingType::Pcp { external_ip, .. } => Some(external_ip),
+      PortMappingType::NatPmp => made.external_address,
+    };
     let renewed = Mapped {
+      external_address,
+      external_port: mapping.external_port().get(),
       lifetime: Some(Duration::from_secs(mapping.lifetime().into())),
       ..made
     };

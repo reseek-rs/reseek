@@ -13,6 +13,8 @@ struct Fake {
   answer: Result<Mapped, String>,
   /// whether renewals are refused
   renewals_refused: bool,
+  /// the outside port renewals answer with, the mapped one when `None`
+  renewed_port: Option<u16>,
   asked: Arc<Mutex<Vec<String>>>,
 }
 
@@ -31,7 +33,10 @@ impl Gateway for Fake {
     if self.renewals_refused {
       return Err("lease lost".into());
     }
-    self.answer.clone()
+    self.answer.clone().map(|mapped| Mapped {
+      external_port: self.renewed_port.unwrap_or(mapped.external_port),
+      ..mapped
+    })
   }
 
   async fn unmap(&self) -> Result<(), String> {
@@ -94,6 +99,7 @@ fn router(name: &'static str, answer: Result<Mapped, String>) -> Fake {
     name,
     answer,
     renewals_refused: false,
+    renewed_port: None,
     asked: Arc::default(),
   }
 }
@@ -252,6 +258,31 @@ async fn a_renewal_refused_asks_for_the_mapping_anew() {
     ["pcp map 50300", "pcp renew", "pcp map 50300"]
   );
   assert_eq!(mapping(&state).state, PortMappingStatus::Mapped);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_renewal_on_another_port_gives_it_back_and_asks_anew() {
+  let Rig {
+    mapper,
+    state,
+    requests,
+    ..
+  } = rig(vec![Fake {
+    renewed_port: Some(50301),
+    ..router("pcp", Ok(mapped(600)))
+  }]);
+  mapper.logged_in(true);
+  settle().await;
+  tokio::time::sleep(Duration::from_secs(301)).await;
+  assert_eq!(
+    asked(&requests),
+    ["pcp map 50300", "pcp renew", "pcp unmap", "pcp map 50300"]
+  );
+  let held = mapping(&state);
+  assert_eq!(
+    (held.state, held.external_port),
+    (PortMappingStatus::Mapped, Some(50300))
+  );
 }
 
 #[tokio::test(start_paused = true)]
