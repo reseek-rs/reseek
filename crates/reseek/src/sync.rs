@@ -1,5 +1,4 @@
-//! Taking a lock whose last holder panicked, and holding one of something at a time per
-//! principal.
+//! One slot per principal at a time.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};

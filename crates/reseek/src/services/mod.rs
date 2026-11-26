@@ -1,9 +1,8 @@
 //! The engines behind the API, one trait per domain. A handler checks its request, calls its
-//! domain's service and turns the result into a response; what a call does is the service's
-//! business.
+//! domain's service and turns the result into a response; the service does the work.
 //!
-//! Every method has a body that answers `503 soulseek_unavailable` with `"<domain> not
-//! implemented yet"`, so [`Unavailable`] implements every trait without a line of its own and
+//! Every method has a body that answers `503 soulseek_unavailable` with `"<domain> is not
+//! implemented"`, so [`Unavailable`] implements every trait without a line of its own and
 //! an engine overrides the methods it does. [`Services::unavailable`] installs it for every
 //! domain; an engine replaces its domain's entry.
 

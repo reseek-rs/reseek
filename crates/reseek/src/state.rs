@@ -61,8 +61,8 @@ impl StateOwner {
   }
 
   /// Takes the outcome of a configuration load: its reload error, what waits for a restart and
-  /// the upload limit. What waits for a reconnect is the network's to say, since it depends on
-  /// the connection.
+  /// the upload limit. The network sets what waits for a reconnect, since that depends on the
+  /// connection.
   pub fn configured(&self, loaded: &Loaded<Options>) {
     self.update(|state| {
       state.configuration = configuration(loaded);

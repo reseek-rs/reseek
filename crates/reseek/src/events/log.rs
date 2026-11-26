@@ -1,5 +1,6 @@
 //! The event log: every raised event is written to `events.db` by a subscriber of the bus,
-//! read back for the events API, and trimmed by age and by count every five minutes.
+//! read back for the events API, and trimmed by age and by count by the cleanup job
+//! (`schedules.cleanup`).
 //!
 //! The writer is a bus subscriber, so a raise never waits for the disk; when the writer falls
 //! behind the bus's backlog, the oldest events not yet written are the ones lost.
