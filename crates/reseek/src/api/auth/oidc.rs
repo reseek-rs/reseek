@@ -130,14 +130,6 @@ async fn callback(
       reason,
     }));
   };
-  if let Some(error) = &query.error {
-    let text = query
-      .error_description
-      .clone()
-      .unwrap_or_else(|| error.clone());
-    failed(format!("the identity provider refused the login: {error}"));
-    return Ok(to_login_page(&app, &text, clear));
-  }
   let login = match (
     cookies::find(&headers, &cookie_name),
     query.state.as_deref(),
@@ -146,13 +138,24 @@ async fn callback(
     _ => None,
   };
   let Some(login) = login else {
-    failed("the login expired or its state did not match".to_string());
+    // not counted: any site can send a browser here, and without a login this daemon sealed for
+    // the browser there is nothing to try
+    attempt.forgive();
+    debug!(provider = name, ip = %client.ip, "callback without a matching login");
     let mut response = ApiError::bad_request("The login expired. Try again.")
       .logged()
       .into_response();
     response.headers_mut().append(header::SET_COOKIE, clear);
     return Ok(response);
   };
+  if let Some(error) = &query.error {
+    let text = query
+      .error_description
+      .clone()
+      .unwrap_or_else(|| error.clone());
+    failed(format!("the identity provider refused the login: {error}"));
+    return Ok(to_login_page(&app, &text, clear));
+  }
   let Some(code) = query.code else {
     failed("the identity provider sent no code".to_string());
     return Ok(to_login_page(
@@ -538,6 +541,42 @@ mod tests {
       .await
   }
 
+  /// A callback for a started login that the provider turned down.
+  async fn denied(app: &TestApp) -> Answer {
+    let started = start(app, "/").await;
+    let state = &started.params["state"];
+    app
+      .send_from(
+        OUTSIDE,
+        with(
+          request(
+            "GET",
+            &format!(
+              "/api/v0/auth/oidc/home/callback?error=access_denied&error_description=No&state={state}"
+            ),
+            None,
+          ),
+          "cookie",
+          &started.cookie,
+        ),
+      )
+      .await
+  }
+
+  /// A callback without a login cookie, as another site's page can make.
+  async fn cross_site(app: &TestApp) -> Answer {
+    app
+      .send_from(
+        OUTSIDE,
+        request(
+          "GET",
+          "/api/v0/auth/oidc/home/callback?code=x&state=y&error=x&error_description=Hi",
+          None,
+        ),
+      )
+      .await
+  }
+
   async fn me(app: &TestApp, cookie: &str) -> Answer {
     app
       .send_from(
@@ -748,17 +787,12 @@ mod tests {
     );
     assert!(set_cookie(&injected.headers, "reseek_session").is_none());
 
-    let refused = app
-      .send_from(
-        OUTSIDE,
-        request(
-          "GET",
-          "/api/v0/auth/oidc/home/callback?error=access_denied&error_description=No",
-          None,
-        ),
-      )
-      .await;
-    assert_eq!(refused.headers["location"], "/#/login?error=No");
+    assert_eq!(denied(&app).await.headers["location"], "/#/login?error=No");
+    assert_eq!(
+      cross_site(&app).await.status,
+      400,
+      "a provider error is shown only for a login this browser started"
+    );
     let away = app
       .send_from(
         OUTSIDE,
@@ -798,20 +832,16 @@ mod tests {
       let signed_in = back(&app, &started, &code).await;
       assert!(set_cookie(&signed_in.headers, "reseek_session").is_some());
     }
-    let expired = || {
-      app.send_from(
-        OUTSIDE,
-        request(
-          "GET",
-          "/api/v0/auth/oidc/home/callback?code=x&state=y",
-          None,
-        ),
-      )
-    };
-    for _ in 0..5 {
-      assert_eq!(expired().await.status, 400);
+    for _ in 0..6 {
+      assert_eq!(cross_site(&app).await.status, 400);
     }
-    assert_eq!(expired().await.status, 429);
+    let refused = async || back(&app, &start(&app, "/").await, "ungranted").await;
+    for _ in 0..5 {
+      let answer = refused().await;
+      assert_eq!(answer.status, 302);
+      assert!(set_cookie(&answer.headers, "reseek_session").is_none());
+    }
+    assert_eq!(refused().await.status, 429);
   }
 
   #[tokio::test]
@@ -848,20 +878,10 @@ mod tests {
           "The identity provider is unavailable"
         );
       }
-      let expired = || {
-        app.send_from(
-          OUTSIDE,
-          request(
-            "GET",
-            "/api/v0/auth/oidc/home/callback?code=x&state=y",
-            None,
-          ),
-        )
-      };
       for _ in 0..5 {
-        assert_eq!(expired().await.status, 400, "{endpoint} {broken}");
+        assert_eq!(denied(&app).await.status, 302, "{endpoint} {broken}");
       }
-      assert_eq!(expired().await.status, 429, "{endpoint} {broken}");
+      assert_eq!(denied(&app).await.status, 429, "{endpoint} {broken}");
     }
   }
 
