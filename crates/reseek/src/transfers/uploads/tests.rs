@@ -139,7 +139,7 @@ async fn every_refusal_a_peer_can_be_told_and_what_triggers_it() {
   let mut failed = Row::new(
     "dave",
     TransferDirection::Upload,
-    TransferStates::Completed(TransferOutcome::Cancelled),
+    TransferStates::Completed(TransferOutcome::TimedOut),
   );
   failed.started_at = Some(chrono::Utc::now());
   failed.ended_at = failed.started_at;
