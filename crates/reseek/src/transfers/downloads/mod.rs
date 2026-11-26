@@ -432,6 +432,17 @@ impl Downloads {
   /// its task included completing it meanwhile, or its file arrived and is being moved. 404
   /// when there is no such download.
   pub async fn cancel(&self, username: &str, id: Uuid, remove: bool) -> Result<bool, ApiError> {
+    self.end_canceled(username, id, remove, None).await
+  }
+
+  /// [`Downloads::cancel`], noting `reason` on the download in place of the cancel's own.
+  async fn end_canceled(
+    &self,
+    username: &str,
+    id: Uuid,
+    remove: bool,
+    reason: Option<&'static str>,
+  ) -> Result<bool, ApiError> {
     let read = super::listing::record(&self.db, TransferDirection::Download, username, id).await;
     let record = match read {
       Ok(Some(record)) => record,
@@ -450,30 +461,37 @@ impl Downloads {
       }
       Err(e) => return Err(internal(e)),
     };
-    match self.cancel_running(id, remove, None) {
+    match self.cancel_running(id, remove, reason) {
       Running::Stopped => Ok(true),
       Running::Arrived => Ok(remove),
       Running::No => {
-        let canceled = self.cancel_unrun(record, remove).await?;
+        let canceled = self
+          .cancel_unrun(record, remove, reason.unwrap_or(CANCELED))
+          .await?;
         // a resume that started its task after the check above saved its record before the
         // cancel's write, which ended it, so that task is stopped here
         if canceled {
-          self.cancel_running(id, remove, None);
+          self.cancel_running(id, remove, reason);
         }
         Ok(canceled)
       }
     }
   }
 
-  /// Ends canceled the download of `record`, read before it was found to have no task, as
-  /// [`Downloads::cancel`] answers. A task that ended it since it was read keeps how it ended.
-  /// The removal is in the same write, so a removed download is left out of its job when that
-  /// write ends the job.
-  async fn cancel_unrun(&self, mut record: Record, remove: bool) -> Result<bool, ApiError> {
+  /// Ends canceled for `reason` the download of `record`, read before it was found to have no
+  /// task, as [`Downloads::cancel`] answers. A task that ended it since it was read keeps how it
+  /// ended. The removal is in the same write, so a removed download is left out of its job when
+  /// that write ends the job.
+  async fn cancel_unrun(
+    &self,
+    mut record: Record,
+    remove: bool,
+    reason: &'static str,
+  ) -> Result<bool, ApiError> {
     let id = record.id;
     let canceled = TransferStates::Completed(TransferOutcome::Cancelled);
     let unfinished = record
-      .complete(TransferOutcome::Cancelled, Some(CANCELED.to_string()))
+      .complete(TransferOutcome::Cancelled, Some(reason.to_string()))
       .is_ok();
     // as the end writes it: a download ended is no longer paused
     record.paused = false;
@@ -487,7 +505,7 @@ impl Downloads {
       .db
       .write(move |conn| {
         let tx = conn.transaction()?;
-        let ended = unfinished && store::end_unless_ended(&tx, id, canceled, at, CANCELED)?;
+        let ended = unfinished && store::end_unless_ended(&tx, id, canceled, at, reason)?;
         if ended {
           store::entered(&tx, id, canceled, at)?;
         }
@@ -575,7 +593,7 @@ impl Downloads {
   }
 
   /// Cancels every unfinished download from `username`, who was just blocked, when `scopes`
-  /// include downloads.
+  /// include downloads, paused ones included, each noting the block as its reason.
   pub async fn blocked(&self, username: &str, scopes: &[api_types::users::blocking::BlockScope]) {
     if !scopes.contains(&api_types::users::blocking::BlockScope::Downloads) {
       return;
@@ -587,8 +605,13 @@ impl Downloads {
     };
     let mut canceled = 0;
     for id in ids {
-      if self.cancel_running(id, false, Some(BLOCKED)) == Running::Stopped {
-        canceled += 1;
+      match self.end_canceled(username, id, false, Some(BLOCKED)).await {
+        Ok(true) => canceled += 1,
+        Ok(false) => {}
+        Err(e) => {
+          let error = e.reason().unwrap_or(e.message());
+          warn!(%id, username, error, "download from a blocked user not canceled");
+        }
       }
     }
     info!(username, canceled, "downloads from a blocked user canceled");

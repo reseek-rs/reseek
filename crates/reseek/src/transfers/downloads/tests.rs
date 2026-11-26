@@ -184,7 +184,7 @@ async fn a_cancel_that_loses_the_race_to_completion_says_the_download_completed(
   let canceled = app
     .state
     .downloads
-    .cancel_unrun(stale, false)
+    .cancel_unrun(stale, false, super::CANCELED)
     .await
     .unwrap();
   assert!(!canceled);
@@ -2543,6 +2543,28 @@ async fn a_paused_download_canceled_is_pushed_as_no_longer_paused() {
     (&json!("Completed, Cancelled"), &json!(false))
   );
   assert!(!read(&app, paused.id).await.paused);
+}
+
+#[tokio::test]
+async fn blocking_a_user_from_downloads_ends_their_paused_download_canceled() {
+  let app = app(TRUSTED, &[]).await;
+  let mut paused = Record::download("alice", "@@a\\1.flac", 10);
+  paused.paused = true;
+  insert(&app, &paused).await;
+  let block = json!({ "scopes": ["downloads"], "cancelTransfers": true });
+  let (status, body) = app
+    .call("PUT", "/api/v0/users/alice/block", Some(block))
+    .await;
+  assert_eq!(status, 200, "{body}");
+  let ended = read(&app, paused.id).await;
+  assert_eq!(
+    (ended.state.kind(), ended.exception.as_deref(), ended.paused),
+    (
+      TransferStates::Completed(TransferOutcome::Cancelled),
+      Some("Blocked"),
+      false
+    )
+  );
 }
 
 /// A download moves no faster than the global download limit: 1 KiB/s lets 102 bytes through
