@@ -131,8 +131,12 @@ export class LineMenu<L> {
 
   #released = () => clearTimeout(this.#press);
 
-  /** A touch held on a line opens its menu, a touch having no right-click */
+  /**
+   * A touch held on a line opens its menu, a touch having no right-click. A second finger ends
+   * the first one's press
+   */
   #pointerdown = (e: PointerEvent) => {
+    this.#released();
     this.#pressed = false;
     const line = this.#lineOf(e.target);
     if (!this.#spec.enabled() || e.pointerType !== "touch" || inControl(e) || !line) return;
