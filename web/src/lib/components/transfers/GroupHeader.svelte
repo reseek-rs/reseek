@@ -16,7 +16,14 @@
   import { groupProgress } from "#lib/transfers/grid/progress.js";
   import type { Group } from "#lib/transfers/grid/view.js";
   import { type GroupHandlers, groupActions } from "#lib/transfers/groupActions.js";
-  import { type Direction, isEnded, isQueued, isRetryable } from "#lib/transfers/states.js";
+  import {
+    type Direction,
+    isCanceled,
+    isFailed,
+    isQueued,
+    isSucceeded,
+    type TransferState
+  } from "#lib/transfers/states.js";
   import type { Transfers } from "#lib/transfers/transfers.svelte.js";
   import { quota, waits } from "#lib/transfers/why.svelte.js";
   import type { Expansion } from "#lib/tree/expansion.svelte.js";
@@ -40,8 +47,19 @@
 
   const list = $derived(group.transfers);
   const bytes = $derived(list.reduce((n, t) => n + t.size, 0));
-  const done = $derived(list.filter((t) => isEnded(t.state)).length);
-  const failed = $derived(list.filter((t) => isRetryable(t.state)).length);
+  /** how the job's transfers ended: those done, then failed and canceled ones when there are any */
+  const ended = $derived.by(() => {
+    const count = (is: (state: TransferState) => boolean) => list.filter((t) => is(t.state)).length;
+    const failed = count(isFailed);
+    const canceled = count(isCanceled);
+    return [
+      `${formatCount(count(isSucceeded))} done`,
+      failed ? `${formatCount(failed)} failed` : "",
+      canceled ? `${formatCount(canceled)} canceled` : ""
+    ]
+      .filter(Boolean)
+      .join(", ");
+  });
   const progress = $derived(groupProgress(list));
   const folded = $derived(!expansion.isOpen(group.key));
   // a user's quota, from why the first of their queued uploads waits
@@ -108,7 +126,7 @@
     <span class="text-xs text-fg-muted"
       ><span
         >{plural(list.length, "file", "files")} · {formatBytes(bytes)}{group.kind === "job"
-          ? ` · ${formatCount(done)} done, ${formatCount(failed)} failed`
+          ? ` · ${ended}`
           : ""}</span
       ></span>
   </div>
