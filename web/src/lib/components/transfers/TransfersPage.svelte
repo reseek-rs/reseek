@@ -410,7 +410,7 @@
     {onkey} />
 {/if}
 
-{#if selected.size}
+{#if chosen.length}
   <div
     class="selection-bar"
     role="toolbar"

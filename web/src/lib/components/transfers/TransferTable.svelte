@@ -151,11 +151,8 @@
     if (!session.can("ReadWrite") && writes.some((b) => isPressed(b, e))) return false;
     if (isPressed(TRANSFERS.remove, e)) {
       // the selection when the focused row is in it, else the focused row alone
-      onremove(
-        selected.size > 1 && selected.has(t.id)
-          ? store.list.rows.filter((r) => selected.has(r.id))
-          : [t]
-      );
+      const picked = store.list.rows.filter((r) => selected.has(r.id));
+      onremove(picked.length > 1 && selected.has(t.id) ? picked : [t]);
     } else if (isPressed(TRANSFERS.retry, e)) onkey("retry", t);
     else if (isPressed(TRANSFERS.cancel, e)) onkey("cancel", t);
     else if (isPressed(TRANSFERS.open, e)) onkey("open", t);
