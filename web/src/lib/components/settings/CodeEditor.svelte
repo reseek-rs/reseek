@@ -2,7 +2,7 @@
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
   import { StreamLanguage } from "@codemirror/language";
   import { toml } from "@codemirror/legacy-modes/mode/toml";
-  import { EditorState } from "@codemirror/state";
+  import { Compartment, EditorState } from "@codemirror/state";
   import { EditorView, keymap, lineNumbers } from "@codemirror/view";
   import { untrack } from "svelte";
 
@@ -26,6 +26,13 @@
   }: Props = $props();
 
   let view: EditorView | null = null;
+  /** holds what follows the props after the editor is made: the read-only state and the label */
+  const access = new Compartment();
+  const accessOf = (locked: boolean, name: string) => [
+    EditorState.readOnly.of(locked),
+    EditorView.editable.of(!locked),
+    EditorView.contentAttributes.of({ "aria-label": name })
+  ];
 
   // colors from the page's tokens, so the editor follows the light and dark themes
   const theme = EditorView.theme({
@@ -64,15 +71,18 @@
           keymap.of([...defaultKeymap, ...historyKeymap]),
           StreamLanguage.define(toml),
           theme,
-          EditorState.readOnly.of(readonly),
-          EditorView.editable.of(!readonly),
-          EditorView.contentAttributes.of({ "aria-label": label }),
+          access.of(accessOf(readonly, label)),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) onchange?.(update.state.doc.toString());
           })
         ]
       })
     });
+
+  $effect(() => {
+    const extensions = accessOf(readonly, label);
+    view?.dispatch({ effects: access.reconfigure(extensions) });
+  });
 
   // a new value from outside replaces the text, unless it is the text already shown
   $effect(() => {
