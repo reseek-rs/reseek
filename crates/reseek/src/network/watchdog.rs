@@ -118,17 +118,16 @@ impl Turns {
   }
 
   /// Counts the failed attempt of the turn `token` belongs to, an unanswered login when
-  /// `unanswered`. A turn whose token was canceled counts nothing: a restart canceled it and
-  /// cleared the counts, which its failure must not bring back.
-  fn count(&mut self, token: &CancellationToken, unanswered: bool) -> bool {
+  /// `unanswered`, and returns the unanswered logins in a row: a failure of another kind ends
+  /// the row. A turn whose token was canceled counts nothing and gives `None`: a restart
+  /// canceled it and cleared the counts, which its failure must not bring back.
+  fn count(&mut self, token: &CancellationToken, unanswered: bool) -> Option<u32> {
     if token.is_cancelled() {
-      return false;
+      return None;
     }
     self.failures += 1;
-    if unanswered {
-      self.unanswered += 1;
-    }
-    true
+    self.unanswered = if unanswered { self.unanswered + 1 } else { 0 };
+    Some(self.unanswered)
   }
 
   /// A login succeeded `at`: the server answered it.
@@ -439,14 +438,9 @@ impl Watchdog {
         self.stop(&attempt);
         return;
       }
+      // the attempt that went unanswered logged the wait
       let wait = match unanswered_wait(unanswered) {
-        Some(wait) => {
-          error!(
-            minutes = wait.as_secs() / 60,
-            "the server did not answer the login; the account may be banned. Trying again later"
-          );
-          Some(wait)
-        }
+        Some(wait) => Some(wait),
         None if failed > 0 => {
           let wait = backoff::wait(failed, backoff::AT_ONCE, BACKOFF_MAX);
           info!(
@@ -479,12 +473,24 @@ impl Watchdog {
           self.stop(&attempt);
           return;
         }
-        ended @ (Attempt::Unanswered | Attempt::Failed) => {
-          let unanswered = matches!(ended, Attempt::Unanswered);
-          if !lock(&inner.turns).count(&attempt, unanswered) {
+        Attempt::Failed => {
+          if lock(&inner.turns).count(&attempt, false).is_none() {
             debug!("failed attempt of a canceled turn not counted");
           }
         }
+        Attempt::Unanswered(error) => match lock(&inner.turns).count(&attempt, true) {
+          None => debug!(%error, "unanswered login of a canceled turn not counted"),
+          Some(row) => {
+            let wait = unanswered_wait(row).expect("an unanswered login is a row of one or more");
+            let minutes = wait.as_secs() / 60;
+            error!(
+              %error,
+              minutes,
+              "Failed to reconnect: the server did not answer the login; the account may be \
+               banned. Trying again later"
+            );
+          }
+        },
       }
     }
   }
@@ -532,13 +538,7 @@ impl Watchdog {
         debug!("Reconnection attempt canceled");
         Attempt::Canceled
       }
-      ErrorKind::LoginNoResponse => {
-        error!(
-          %error,
-          "Failed to reconnect: the server did not answer the login"
-        );
-        Attempt::Unanswered
-      }
+      ErrorKind::LoginNoResponse => Attempt::Unanswered(error),
       // the disconnect handler logs why; nothing retries a refused login until asked to
       ErrorKind::LoginRejected => {
         debug!(reason = error.reason(), "login refused; not trying again");
@@ -595,7 +595,7 @@ enum Attempt {
   /// refuses
   Stop,
   /// the login was written and never answered
-  Unanswered,
+  Unanswered(ClientError),
   /// anything else, retried after the back-off
   Failed,
 }
@@ -608,13 +608,13 @@ mod tests {
   fn a_turn_canceled_by_a_restart_counts_nothing() {
     let mut turns = Turns::default();
     let (first, _, _) = turns.begin(CancellationToken::new());
-    assert!(turns.count(&first, true));
+    assert_eq!(turns.count(&first, true), Some(1));
     let (second, failed, unanswered) = turns.begin(CancellationToken::new());
     assert_eq!((failed, unanswered), (1, 1));
     // a restart clears and cancels before the second turn's unanswered login is counted
     turns.clear();
     turns.cancel();
-    assert!(!turns.count(&second, true));
+    assert_eq!(turns.count(&second, true), None);
     let (_, failed, unanswered) = turns.begin(CancellationToken::new());
     assert_eq!((failed, unanswered), (0, 0), "the next turn starts at once");
   }
@@ -638,6 +638,22 @@ mod tests {
     turns.logged_in(start);
     turns.lost(start + SETTLED);
     assert_eq!(turns.begin(token).1, 0);
+  }
+
+  #[test]
+  fn another_failure_ends_a_row_of_unanswered_logins() {
+    let mut turns = Turns::default();
+    let token = CancellationToken::new();
+    assert_eq!(turns.count(&token, true), Some(1));
+    assert_eq!(turns.count(&token, true), Some(2));
+    assert_eq!(turns.count(&token, false), Some(0));
+    let (_, failed, unanswered) = turns.begin(token.clone());
+    assert_eq!(
+      (failed, unanswered),
+      (3, 0),
+      "the refused connection sets the wait"
+    );
+    assert_eq!(turns.count(&token, true), Some(1));
   }
 
   #[tokio::test]
