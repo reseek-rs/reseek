@@ -375,11 +375,16 @@ pub fn open_parts(conn: &Connection, job: Uuid) -> rusqlite::Result<(u32, u32)> 
     .query_row([job.to_string()], |row| Ok((row.get(0)?, row.get(1)?)))
 }
 
-/// Deletes the jobs `ids` with their parts, returning those that were there.
+/// Deletes the jobs `ids` with their parts, and takes them off the schedules whose last run
+/// they were, returning those that were there.
 pub fn remove(conn: &Connection, ids: &[Uuid]) -> rusqlite::Result<Vec<Uuid>> {
   let mut removed = Vec::new();
   for id in ids {
     conn.execute("DELETE FROM job_parts WHERE job_id = ?1", [id.to_string()])?;
+    conn.execute(
+      "UPDATE schedules SET job_id = NULL WHERE job_id = ?1",
+      [id.to_string()],
+    )?;
     if conn.execute("DELETE FROM jobs WHERE id = ?1", [id.to_string()])? > 0 {
       removed.push(*id);
     }

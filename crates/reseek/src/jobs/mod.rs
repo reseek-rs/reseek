@@ -561,7 +561,7 @@ impl Jobs {
     Ok(removed.len())
   }
 
-  /// Pushes that `ids` left the list.
+  /// Pushes that `ids` left the list, and the schedules, whose last run may have been one.
   async fn removed(&self, ids: &[Uuid]) {
     if ids.is_empty() {
       return;
@@ -569,6 +569,7 @@ impl Jobs {
     self
       .live
       .publish(LiveFrame::JobsRemoved(JobsRemoved { ids: ids.to_vec() }));
+    self.schedules_changed.notify_one();
     self.summarize().await;
   }
 

@@ -319,6 +319,10 @@ async fn history_keeps_the_newest_ended_jobs_within_its_age_and_count() {
     ))
     .await
     .unwrap();
+  let last = ended[0];
+  jobs
+    .update_last_run(ScheduleName::Cleanup, move |run| run.job_id = Some(last))
+    .await;
   // the first two ended an hour ago
   for id in &ended[..2] {
     let at = crate::db::timestamp(Utc::now() - chrono::Duration::hours(1));
@@ -346,6 +350,11 @@ async fn history_keeps_the_newest_ended_jobs_within_its_age_and_count() {
       .unwrap(),
     2,
     "the two past the age"
+  );
+  assert_eq!(
+    jobs.last_runs().await.unwrap()["cleanup"].job_id,
+    None,
+    "a schedule's last run no longer points at its removed job"
   );
   assert_eq!(
     jobs.prune(None, Some(1)).await.unwrap(),
