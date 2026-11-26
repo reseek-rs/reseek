@@ -262,7 +262,7 @@ async fn remove_completed(
   Ok(StatusCode::NO_CONTENT)
 }
 
-/// Cancels, removes or retries several uploads in one call.
+/// Cancels or removes several uploads in one call; the other actions are refused per upload.
 #[utoipa::path(
   operation_id = "bulk_uploads",
   post, path = "/transfers/uploads/bulk", tag = "transfers", request_body = BulkRequest,

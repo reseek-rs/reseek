@@ -13349,7 +13349,7 @@
         "tags": [
           "transfers"
         ],
-        "summary": "Cancels, removes or retries several uploads in one call.",
+        "summary": "Cancels or removes several uploads in one call; the other actions are refused per upload.",
         "operationId": "bulk_uploads",
         "requestBody": {
           "content": {

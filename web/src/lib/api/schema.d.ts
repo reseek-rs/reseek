@@ -2845,7 +2845,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Cancels, removes or retries several uploads in one call. */
+        /** Cancels or removes several uploads in one call; the other actions are refused per upload. */
         post: operations["bulk_uploads"];
         delete?: never;
         options?: never;
