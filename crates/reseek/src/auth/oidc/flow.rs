@@ -1,6 +1,7 @@
 //! Signing in with an OpenID Connect provider: the Authorization Code flow with PKCE. The
-//! `state`, the `nonce` and the PKCE verifier go to the browser only sealed in a cookie, so the
-//! callback can check each against what it sent and the browser cannot change them.
+//! login's `state`, `nonce` and PKCE verifier are kept in a sealed cookie until the callback,
+//! which checks each against what the provider returns; the verifier reaches the browser in no
+//! other form.
 
 use std::time::Duration;
 
