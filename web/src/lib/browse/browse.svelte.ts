@@ -2,6 +2,7 @@ import { SvelteSet } from "svelte/reactivity";
 
 import { api, byUser, type Schemas } from "#lib/api/client.js";
 import { toast } from "#lib/feedback/toast.svelte.js";
+import { formatCount } from "#lib/format.js";
 import { live } from "#lib/live/live.svelte.js";
 import { call } from "#lib/request.js";
 import { fields } from "#lib/stored.svelte.js";
@@ -164,7 +165,7 @@ class Browse {
     if (on) {
       const added = filenames.filter((f) => !this.selected.has(f)).length;
       if (this.selected.size + added > MAX_SELECTED_FILES) {
-        toast("At most 5,000 files can be selected", "error");
+        toast(`At most ${formatCount(MAX_SELECTED_FILES)} files can be selected`, "error");
         return false;
       }
     }
