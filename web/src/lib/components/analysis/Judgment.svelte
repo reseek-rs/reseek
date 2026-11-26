@@ -32,18 +32,23 @@
   let note = $state("");
   let saving = $state(false);
   let saved = $state(false);
-  // the form follows the judgment kept; the tick goes when another file is shown
+  const file = $derived(targetKey(target));
+  const keptChoice = $derived(report.override?.verdict ?? null);
+  const keptNote = $derived(report.override?.note ?? "");
+  const keptAt = $derived(report.override?.at);
+  // the form follows the judgment kept and the file shown, so a report read again with the same
+  // judgment keeps an edit in progress; the tick goes when another file is shown
   $effect(() => {
-    choice = report.override?.verdict ?? null;
-    note = report.override?.note ?? "";
+    void file;
+    void keptAt;
+    choice = keptChoice;
+    note = keptNote;
   });
   $effect(() => {
-    void targetKey(target);
+    void file;
     saved = false;
   });
-  const changed = $derived(
-    choice !== (report.override?.verdict ?? null) || note.trim() !== (report.override?.note ?? "")
-  );
+  const changed = $derived(choice !== keptChoice || note.trim() !== keptNote);
   const write = $derived(session.can("ReadWrite"));
 
   const save = async () => {
