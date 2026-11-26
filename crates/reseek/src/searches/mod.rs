@@ -92,9 +92,31 @@ fn not_found(id: Uuid) -> ApiError {
 
 /// `query` as it is sent: a term of one character matches too much to be sent, so it is left
 /// out.
-pub fn sendable(mut query: SearchQuery) -> SearchQuery {
+fn sendable(mut query: SearchQuery) -> SearchQuery {
   query.terms.retain(|term| term.chars().count() > 1);
   query
+}
+
+/// Refuses a search `text` with nothing to send: no text, only excluded terms, or only terms of
+/// one character.
+pub fn searchable(text: &str) -> Result<(), ApiError> {
+  if text.trim().is_empty() {
+    return Err(ApiError::bad_request(
+      "The field SearchText cannot be null, empty or only whitespace",
+    ));
+  }
+  let query = SearchQuery::parse(text);
+  if query.terms.is_empty() {
+    return Err(ApiError::bad_request(
+      "Search query must contain at least one non-exclusion term",
+    ));
+  }
+  if sendable(query).terms.is_empty() {
+    return Err(ApiError::bad_request(
+      "Search query must contain at least one non-exclusion term with length greater than 1",
+    ));
+  }
+  Ok(())
 }
 
 /// The text a search for `text` sends: the terms in order, then the exclusions.
@@ -861,6 +883,21 @@ mod tests {
       "the client keeps a queue as long as its bound"
     );
     assert_eq!(bound(None), u32::MAX);
+  }
+
+  #[test]
+  fn a_search_needs_a_term_that_is_not_excluded() {
+    let message = |text: &str| format!("{:?}", searchable(text).unwrap_err());
+    assert!(searchable("pink floyd -live").is_ok());
+    assert!(searchable("a pink").is_ok(), "one long term is enough");
+    assert!(searchable("\u{e9}t\u{e9}").is_ok(), "characters, not bytes");
+    assert!(message("   ").contains("cannot be null"));
+    assert!(message("-live --remix").contains("non-exclusion term\""));
+    assert!(
+      message("- a b -live").contains("length greater than 1"),
+      "a lone dash is short"
+    );
+    assert!(message("\u{e9} x").contains("length greater than 1"));
   }
 
   #[test]

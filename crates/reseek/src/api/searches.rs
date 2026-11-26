@@ -2,7 +2,6 @@
 //! stopping and deleting it, and the wishlist. Reading takes the ReadOnly role, the rest
 //! ReadWrite.
 
-use soulseek_client::soulseek_proto;
 use std::time::Duration;
 
 use api_types::search::{
@@ -11,7 +10,6 @@ use api_types::search::{
 };
 use axum::extract::State;
 use axum::http::StatusCode;
-use soulseek_proto::SearchQuery;
 use tracing::info;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -127,26 +125,11 @@ fn timeout(timeout: &SearchTimeout) -> Result<Duration, ApiError> {
   Ok(duration)
 }
 
-/// Refuses a search with no text, with only excluded terms, with only terms of one character,
-/// or with a scope that names the wrong number of users or rooms. Whom a rooms or buddies scope
-/// reaches is the search engine's to work out.
+/// Refuses a search with text [`searches::searchable`] refuses, or with a scope that names the
+/// wrong number of users or rooms. Whom a rooms or buddies scope reaches is the search engine's
+/// to work out.
 fn search_request(request: &SearchRequest) -> Result<(), ApiError> {
-  if request.search_text.trim().is_empty() {
-    return Err(ApiError::bad_request(
-      "The field SearchText cannot be null, empty or only whitespace",
-    ));
-  }
-  let query = SearchQuery::parse(&request.search_text);
-  if query.terms.is_empty() {
-    return Err(ApiError::bad_request(
-      "Search query must contain at least one non-exclusion term",
-    ));
-  }
-  if searches::sendable(query).terms.is_empty() {
-    return Err(ApiError::bad_request(
-      "Search query must contain at least one non-exclusion term with length greater than 1",
-    ));
-  }
+  searches::searchable(&request.search_text)?;
   let subjects = request.scope.subjects.len();
   match request.scope.scope_type {
     SearchScopeType::User if subjects == 0 => Err(ApiError::bad_request(
@@ -300,27 +283,14 @@ mod tests {
   }
 
   #[test]
-  fn a_search_needs_a_term_that_is_not_excluded() {
+  fn a_room_search_names_one_room() {
     let request = |text: &str| -> SearchRequest {
       serde_json::from_value(serde_json::json!({ "searchText": text })).unwrap()
     };
-    let message = |text: &str| format!("{:?}", search_request(&request(text)).unwrap_err());
-    assert!(search_request(&request("pink floyd -live")).is_ok());
     assert!(
-      search_request(&request("a pink")).is_ok(),
-      "one long term is enough"
+      search_request(&request("-live")).is_err(),
+      "the text is checked"
     );
-    assert!(
-      search_request(&request("\u{e9}t\u{e9}")).is_ok(),
-      "characters, not bytes"
-    );
-    assert!(message("   ").contains("cannot be null"));
-    assert!(message("-live --remix").contains("non-exclusion term\""));
-    assert!(
-      message("- a b -live").contains("length greater than 1"),
-      "a lone dash is short"
-    );
-    assert!(message("\u{e9} x").contains("length greater than 1"));
     let mut room = request("animals");
     room.scope.scope_type = SearchScopeType::Room;
     assert!(search_request(&room).is_err());

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use api_types::jobs::JobEnding;
 use api_types::live::LiveFrame;
-use api_types::search::{SearchRequest, WishlistFound, WishlistItem};
+use api_types::search::{SearchOutcome, SearchRequest, SearchState, WishlistFound, WishlistItem};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use tracing::{debug, info, warn};
@@ -141,12 +141,10 @@ impl Searches {
   }
 
   /// Adds `text` to the wishlist, trimmed; an item already there with the same text, ignoring
-  /// case, is answered instead.
+  /// case, is answered instead. Text a search would refuse is refused.
   pub async fn add_wish(&self, text: &str) -> Result<WishlistItem, ApiError> {
     let text = text.trim().to_string();
-    if text.is_empty() {
-      return Err(ApiError::bad_request("The search text is empty"));
-    }
+    super::searchable(&text)?;
     if text.chars().count() > LONGEST {
       return Err(ApiError::bad_request(format!(
         "The search text is longer than {LONGEST} characters"
@@ -256,10 +254,23 @@ impl Searches {
       .running()
       .get(&search.id)
       .map(|running| running.ended.subscribe());
-    if let Some(mut ended) = ended
-      && ended.wait_for(Option::is_some).await.is_err()
-    {
-      warn!(id = %search.id, "a wishlist search ended without saying");
+    let ended = match ended {
+      Some(mut ended) => match ended.wait_for(Option::is_some).await {
+        Ok(state) => *state,
+        Err(_) => {
+          warn!(id = %search.id, "a wishlist search ended without saying");
+          None
+        }
+      },
+      // gone from the running searches, so its end is written
+      None => match self.get(search.id, false).await {
+        Ok(stored) => Some(stored.state),
+        Err(e) => return failed(e.message().to_string()),
+      },
+    };
+    // a failed search found nothing, so the item is not marked searched
+    if ended == Some(SearchState::Completed(SearchOutcome::Errored)) {
+      return failed(format!("The search for \"{}\" failed", item.search_text));
     }
     let responses = match self.responses(search.id).await {
       Ok(responses) => responses,
@@ -391,5 +402,33 @@ mod tests {
       .await
       .unwrap();
     assert_eq!(rows, 4, "and keeps no files for it");
+  }
+
+  #[tokio::test]
+  async fn text_with_nothing_to_send_is_refused_and_a_failed_turn_leaves_its_item_unsearched() {
+    use crate::testing::soulseek::{self, Server};
+
+    let app = soulseek::app("").await;
+    let searches = app.state.searches.clone();
+    assert!(searches.add_wish("-live").await.is_err());
+    assert!(searches.add_wish("a b").await.is_err());
+    let server = Server::silent().await;
+    server.login(&app).await;
+    // an item the client refuses to search, written past the check
+    let at = timestamp(Utc::now());
+    searches
+      .db
+      .write(move |conn| {
+        conn.execute(
+          "INSERT INTO wishlist (id, search_text, added_at) VALUES (?1, 'a b', ?2)",
+          params![Uuid::new_v4().to_string(), at],
+        )
+      })
+      .await
+      .unwrap();
+    let outcome = searches.wishlist_turn().await;
+    assert_eq!(outcome.ending, JobEnding::Failed);
+    let items = searches.wishlist().await.unwrap();
+    assert_eq!(items[0].last_searched_at, None);
   }
 }
