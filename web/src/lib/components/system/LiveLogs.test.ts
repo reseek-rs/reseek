@@ -117,6 +117,28 @@ describe("the live log", () => {
     expect(messages()).toEqual(["three", "two", "one"]);
   });
 
+  it("keeps a waiting record the reopened stream's snapshot no longer carries", async () => {
+    const net = fakeNetwork(() => [record("one", 1), record("two", 2)]);
+    live.start();
+    component = mount(LiveLogs, { target: document.body });
+    await flush();
+    [...document.querySelectorAll("button")].find((b) => b.textContent?.includes("Pause"))!.click();
+    flushSync();
+    net.frame("logs.record", record("three", 3));
+    await flush();
+    // the daemon's buffer has moved past "three" by the time the stream reopens
+    net.frame("logs.buffer", [record("four", 4), record("five", 5)] as never);
+    await flush();
+    expect(messages()).toEqual(["two", "one"]);
+    const resume = [...document.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Resume")
+    )!;
+    expect(resume.textContent).toContain("3 new");
+    resume.click();
+    flushSync();
+    expect(messages()).toEqual(["five", "four", "three", "two", "one"]);
+  });
+
   it("shows once a record that a read brought and a resumed stream replays", async () => {
     const net = fakeNetwork(() => [record("one", 1), record("two", 2)]);
     live.start();

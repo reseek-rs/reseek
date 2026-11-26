@@ -42,14 +42,14 @@
   const cap = () => (freeze.frozen ? undefined : MAX);
 
   // the snapshot a reopened stream sends replaces the list, keeping the rows of the records
-  // already shown. While paused the list stays, and the snapshot's records not in it wait
+  // already shown. While paused the list stays, and the snapshot's records not held yet join the
+  // waiting ones, which can be older than the daemon's buffer
   const take = (records: Schemas["LogRecord"][]) => {
     if (paused) {
-      const held = new Set([...lines, ...cleared].map((l) => l.seq));
-      waiting = numbered(records, [...waiting, ...lines, ...cleared])
-        .filter((l) => !held.has(l.seq))
-        .toReversed()
-        .slice(0, MAX);
+      const known = [...waiting, ...lines, ...cleared];
+      const held = new Set(known.map((l) => l.seq));
+      const fresh = numbered(records, known).filter((l) => !held.has(l.seq));
+      waiting = [...fresh.toReversed(), ...waiting].slice(0, MAX);
       return;
     }
     lines = numbered(records, [...waiting, ...lines])
