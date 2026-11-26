@@ -53,13 +53,22 @@ pub(crate) fn picture_tag(picture: &[u8]) -> String {
 }
 
 /// `picture` as the whole response: its type from its first bytes, `cache_control`, and its
-/// [`picture_tag`] as its ETag.
+/// [`picture_tag`] as its ETag. A peer chooses the bytes of theirs, so the browser is kept from
+/// guessing another type and runs nothing in them.
 pub(crate) fn picture_response(picture: Vec<u8>, cache_control: &'static str) -> Response {
   let tag = picture_tag(&picture);
   let content_type = picture_type(&picture);
   let mut response = picture.into_response();
   let headers = response.headers_mut();
   headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+  headers.insert(
+    header::X_CONTENT_TYPE_OPTIONS,
+    HeaderValue::from_static("nosniff"),
+  );
+  headers.insert(
+    header::CONTENT_SECURITY_POLICY,
+    HeaderValue::from_static("sandbox"),
+  );
   headers.insert(
     header::CACHE_CONTROL,
     HeaderValue::from_static(cache_control),

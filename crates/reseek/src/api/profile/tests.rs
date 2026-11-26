@@ -138,6 +138,8 @@ async fn a_new_picture_is_fetched_from_a_new_url() {
   let stored = app.state.paths.data.join("profile/picture.jpg");
   assert_eq!(fetched.body, std::fs::read(&stored).unwrap());
   assert_eq!(fetched.headers["cache-control"], "private, max-age=86400");
+  assert_eq!(fetched.headers["x-content-type-options"], "nosniff");
+  assert_eq!(fetched.headers["content-security-policy"], "sandbox");
 }
 
 #[tokio::test]
