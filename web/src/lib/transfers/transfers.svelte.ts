@@ -49,6 +49,8 @@ export class Transfers {
   #orderWrites = 0;
   /** counts the reads of the queue order begun, so only the last one's answer is taken */
   #orderReads = 0;
+  /** the last read of the queue order failed, so one outage toasts once */
+  #orderFailed = false;
   /**
    * Each transfer by `fileKey`, the newest when a file was transferred more than once, leaving
    * out those removed on screen. Made again only when a transfer comes, goes or is hidden: a
@@ -121,8 +123,13 @@ export class Transfers {
     const writes = this.#orderWrites;
     const order = await call(() => api.GET("/api/v0/transfers/downloads/queue"));
     if (read !== this.#orderReads) return;
-    if (!order.ok) toast(`Could not load the queue order: ${order.error}`, "error");
-    else if (writes === this.#orderWrites) this.#ordered(order.data.ids);
+    if (!order.ok) {
+      if (!this.#orderFailed) toast(`Could not load the queue order: ${order.error}`, "error");
+      this.#orderFailed = true;
+      return;
+    }
+    this.#orderFailed = false;
+    if (writes === this.#orderWrites) this.#ordered(order.data.ids);
   };
 
   load = async () => {

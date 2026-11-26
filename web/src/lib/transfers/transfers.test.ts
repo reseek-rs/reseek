@@ -149,6 +149,29 @@ describe("the transfers store", () => {
     await vi.waitFor(() => expect(downloads.places.get("a")).toBe(1));
   });
 
+  it("says once that the queue order can't be read, until a read succeeds", async () => {
+    let up = false;
+    fakeNetwork((url) => {
+      if (url.pathname.endsWith("/queue")) {
+        return up ? { ids: [] } : { status: 503, body: { error: "unreachable" } };
+      }
+      return url.pathname.endsWith("/transfers/downloads") ? [] : undefined;
+    });
+    const downloads = new Transfers("download");
+    const said = () => toasts.filter((t) => t.text.includes("queue order")).length;
+    await downloads.load();
+    await downloads.load();
+    await flush();
+    expect(said()).toBe(1);
+    up = true;
+    await downloads.load();
+    await flush();
+    up = false;
+    await downloads.load();
+    await flush();
+    expect(said()).toBe(2);
+  });
+
   it("takes no move's answer over a frame that came while it was on its way", async () => {
     let answerMove: ((order: unknown) => void) | undefined;
     const net = connected((url, method) =>
