@@ -100,12 +100,13 @@ impl IncomingSearches {
   /// A place among the waiting requests, shown in `depth`, unless `limit` or more wait already.
   fn wait<'a>(&'a self, limit: u32, depth: &'a Gauge) -> Option<Waiting<'a>> {
     let limit = limit as usize;
-    self
+    let before = self
       .waiting
       .try_update(Ordering::AcqRel, Ordering::Acquire, |waiting| {
         (waiting < limit).then_some(waiting + 1)
       })
       .ok()?;
+    depth.set((before + 1) as f64);
     Some(Waiting {
       searches: self,
       depth,
@@ -626,8 +627,9 @@ mod tests {
       0.0,
       "the hundredth request waits"
     );
-    assert_eq!(search(&edges, "alice", 100, &query).await, None);
     let metrics = &app.state.telemetry.metrics().search;
+    assert_eq!(metrics.request_queue_depth.get(), 100.0);
+    assert_eq!(search(&edges, "alice", 100, &query).await, None);
     assert_eq!(metrics.requests_dropped.get(), 1.0);
     assert_eq!(metrics.request_drop_rate.current(), 1);
     assert_eq!(metrics.requests_received.get(), 101.0);
