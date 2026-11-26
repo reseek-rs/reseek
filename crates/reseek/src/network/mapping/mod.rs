@@ -2,7 +2,9 @@
 //! us. While the option is on and we are logged in, each way of asking is tried in turn (UPnP,
 //! then NAT-PMP or PCP at the default gateway) until one router forwards the port; the mapping
 //! is renewed at half its lease, asked for again when the port or the listening address
-//! changes or the router moves it to another port, and removed when we log out, when the option is turned off and at an orderly stop.
+//! changes or the router moves it to another port, asked for again after a back-off while no
+//! router forwards it, and removed when we log out, when the option is turned off and at an
+//! orderly stop.
 //! Where it stands is `State.server.listen.portMapping`.
 
 mod natpmp;
@@ -14,7 +16,7 @@ use std::time::Duration;
 
 use api_types::state::{PortMappingMethod, PortMappingState, PortMappingStatus};
 use async_trait::async_trait;
-use reseek_shares::lock;
+use reseek_shares::{backoff, lock};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -34,6 +36,12 @@ const STOPPING: Duration = Duration::from_secs(5);
 
 /// The shortest wait before a renewal, whatever lease the router gave.
 const SHORTEST_RENEWAL: Duration = Duration::from_secs(30);
+
+/// The wait before the first retry of a mapping no router made, doubling up to [`LONGEST_RETRY`].
+const FIRST_RETRY: Duration = Duration::from_secs(30);
+
+/// The longest wait between two retries of a mapping no router made.
+const LONGEST_RETRY: Duration = Duration::from_secs(15 * 60);
 
 /// What the mappings on the routers are named.
 const DESCRIPTION: &str = "reseek";
@@ -122,6 +130,7 @@ impl PortMapper {
         reachability,
         held: None,
         failed: None,
+        failures: 0,
       }
       .run(self.wanted.subscribe(), self.stop.clone())
       .instrument(info_span!("port_mapping")),
@@ -179,6 +188,9 @@ struct Mapping {
   held: Option<(usize, Mapped, (IpAddr, u16))>,
   /// the reason the last attempt failed, so the same reason is not warned of again
   failed: Option<String>,
+  /// attempts in a row no router answered with a mapping, which the wait before the next is
+  /// read from
+  failures: u32,
 }
 
 impl Mapping {
@@ -195,12 +207,18 @@ impl Mapping {
       match target {
         Some(target) if self.held.is_none() => self.map(target).await,
         Some(_) => {}
-        None => self.publish(off()),
+        None => {
+          self.failures = 0;
+          self.publish(off());
+        }
       }
       let renewal = self.held.as_ref().and_then(|(_, mapped, _)| {
         let lifetime = mapped.lifetime?;
         Some((lifetime / 2).max(SHORTEST_RENEWAL))
       });
+      // the next turn of the loop asks again
+      let retry = (target.is_some() && self.held.is_none())
+        .then(|| backoff::wait(self.failures, backoff::doubling(FIRST_RETRY), LONGEST_RETRY));
       tokio::select! {
         () = stop.cancelled() => {
           if self.held.is_some() {
@@ -212,6 +230,7 @@ impl Mapping {
         () = tokio::time::sleep(renewal.unwrap_or_default()), if renewal.is_some() => {
           self.renew().await;
         }
+        () = tokio::time::sleep(retry.unwrap_or_default()), if retry.is_some() => {}
       }
     }
   }
@@ -234,6 +253,7 @@ impl Mapping {
             "Port forwarded by the router"
           );
           self.failed = None;
+          self.failures = 0;
           self.publish(mapped_state(&mapped));
           self.held = Some((index, mapped, (ip, port)));
           self.reachability.start_over("the port mapping changed");
@@ -257,6 +277,7 @@ impl Mapping {
       ..off()
     });
     self.failed = Some(reason);
+    self.failures += 1;
   }
 
   /// Renews the mapping held; one the router will not renew, or renews on another outside

@@ -15,13 +15,23 @@ struct Fake {
   renewals_refused: bool,
   /// the outside port renewals answer with, the mapped one when `None`
   renewed_port: Option<u16>,
+  /// how many of the first requests to map are refused
+  refused_maps: usize,
   asked: Arc<Mutex<Vec<String>>>,
 }
 
 #[async_trait]
 impl Gateway for Fake {
   async fn map(&self, _: IpAddr, port: u16) -> Result<Mapped, String> {
-    lock(&self.asked).push(format!("{} map {port}", self.name));
+    let asked = {
+      let mut asked = lock(&self.asked);
+      let request = format!("{} map {port}", self.name);
+      asked.push(request.clone());
+      asked.iter().filter(|seen| **seen == request).count()
+    };
+    if asked <= self.refused_maps {
+      return Err("not ready".into());
+    }
     self.answer.clone().map(|mapped| Mapped {
       external_port: port,
       ..mapped
@@ -100,6 +110,7 @@ fn router(name: &'static str, answer: Result<Mapped, String>) -> Fake {
     answer,
     renewals_refused: false,
     renewed_port: None,
+    refused_maps: 0,
     asked: Arc::default(),
   }
 }
@@ -283,6 +294,27 @@ async fn a_renewal_on_another_port_gives_it_back_and_asks_anew() {
     (held.state, held.external_port),
     (PortMappingStatus::Mapped, Some(50300))
   );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_mapping_no_router_made_is_asked_for_again_later() {
+  let Rig {
+    mapper,
+    state,
+    requests,
+    ..
+  } = rig(vec![Fake {
+    refused_maps: 1,
+    ..router("pcp", Ok(mapped(3600)))
+  }]);
+  mapper.logged_in(true);
+  settle().await;
+  assert_eq!(mapping(&state).state, PortMappingStatus::Failed);
+  tokio::time::sleep(Duration::from_secs(29)).await;
+  assert_eq!(asked(&requests).len(), 1, "not asked again at once");
+  tokio::time::sleep(Duration::from_secs(2)).await;
+  assert_eq!(asked(&requests), ["pcp map 50300", "pcp map 50300"]);
+  assert_eq!(mapping(&state).state, PortMappingStatus::Mapped);
 }
 
 #[tokio::test(start_paused = true)]
