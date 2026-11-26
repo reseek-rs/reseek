@@ -23,13 +23,14 @@ fn word_char(c: char) -> bool {
 }
 
 /// A term or exclusion as an index phrase: the characters that could end the phrase or start
-/// a column filter made spaces, then quoted. `None` when it holds no word, so as a phrase it
+/// a column filter made spaces, NUL among them since the index reads the expression as a C
+/// string, then quoted. `None` when it holds no word, so as a phrase it
 /// would match nothing.
 fn phrase(text: &str) -> Option<String> {
   let cleaned: String = text
     .chars()
     .map(|c| {
-      if matches!(c, '/' | '\\' | ':' | '"') {
+      if matches!(c, '/' | '\\' | ':' | '"' | '\0') {
         ' '
       } else {
         c
@@ -138,6 +139,10 @@ mod tests {
       expression(&query(&["a\"b", "x:y"], &["c/d", "..."])).as_deref(),
       Some("(\"a b\" AND \"x y\") NOT (\"c d\")"),
       "an exclusion without words leaves the index expression"
+    );
+    assert_eq!(
+      expression(&query(&["abbey\0x"], &[])).as_deref(),
+      Some("(\"abbey x\")")
     );
   }
 
