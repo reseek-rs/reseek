@@ -23,14 +23,17 @@ rec {
     lib.filter (share: !(lib.any (parent: inside parent share) writable)) (sharePaths directories);
 
   # the name a drop-in file is laid in config.d under: its own, without the hash of a file in the
-  # store. An attribute name cannot hold the path's store reference, which `source` keeps
+  # store, ending in `.toml` as the services read only those. An attribute name cannot hold the
+  # path's store reference, which `source` keeps
   dropInName =
     file:
     let
       path = toString file;
       base = builtins.unsafeDiscardStringContext (baseNameOf path);
+      name =
+        if lib.isStorePath path then builtins.substring 33 (builtins.stringLength base) base else base;
     in
-    if lib.isStorePath path then builtins.substring 33 (builtins.stringLength base) base else base;
+    if lib.hasSuffix ".toml" name then name else "${name}.toml";
 
   # the /etc entries of a service's configuration: `config.toml` from `configFile`, then each of
   # `extraConfigFiles` in config.d, in order

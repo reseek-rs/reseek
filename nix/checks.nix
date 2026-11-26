@@ -7,8 +7,27 @@
 }:
 let
   fs = lib.fileset;
+  moduleLib = import ./module-lib.nix { inherit lib; };
+  # the module helpers whose output the daemon parses
+  moduleLibFailures = lib.runTests {
+    testDropInNameAddsToml = {
+      expr = moduleLib.dropInName "/run/agenix/reseek-oidc";
+      expected = "reseek-oidc.toml";
+    };
+    testDropInNameKeepsToml = {
+      expr = moduleLib.dropInName "/run/secrets/oidc.toml";
+      expected = "oidc.toml";
+    };
+  };
 in
 {
+  module-lib = runCommand "reseek-module-lib" { } (
+    if moduleLibFailures == [ ] then
+      "touch $out"
+    else
+      "echo ${lib.escapeShellArg (builtins.toJSON moduleLibFailures)} >&2; exit 1"
+  );
+
   fmt =
     runCommand "reseek-fmt"
       {
