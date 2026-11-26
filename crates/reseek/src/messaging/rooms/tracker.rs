@@ -229,6 +229,11 @@ impl Tracker {
     self.leaves.get(name).copied().unwrap_or(0)
   }
 
+  /// How many times each room was left so far in this run, as [`Tracker::leaves`] counts.
+  pub fn leave_counts(&self) -> BTreeMap<String, u64> {
+    self.leaves.clone()
+  }
+
   /// Keeps `name` among the rooms, not joined, after a join of it after a login failed, unless
   /// it was left since `leaves` was read; says whether it was added.
   pub fn keep(&mut self, name: &str, leaves: u64) -> bool {

@@ -176,15 +176,18 @@ impl Messaging {
   /// server that has us in the room although we do not know it, which it says by not answering,
   /// is made to forget it by leaving, and the room is joined again once. A join someone `asked`
   /// for through the UI or the API is remembered, so the room is joined again after a start
-  /// until it is left. Joins of one room go one at a time.
+  /// until it is left. `leaves` is the room's leave count when the join was decided on: a leave
+  /// since then, before the join or while it is under way, wins. Joins of one room go one at a
+  /// time.
   async fn join_now(
     &self,
     name: &str,
     private: bool,
     asked: bool,
+    leaves: u64,
   ) -> Result<Option<Room>, NotJoined> {
     self
-      .join_room(name, private, asked)
+      .join_room(name, private, asked, leaves)
       .instrument(info_span!("room", room = name))
       .await
   }
@@ -194,9 +197,10 @@ impl Messaging {
     name: &str,
     private: bool,
     asked: bool,
+    leaves: u64,
   ) -> Result<Option<Room>, NotJoined> {
     let _turn = self.rooms.joins.take(name).await;
-    self.join_in_turn(name, private, asked).await
+    self.join_in_turn(name, private, asked, leaves).await
   }
 
   /// [`Messaging::join_room`] for a caller holding the room's turn.
@@ -205,6 +209,7 @@ impl Messaging {
     name: &str,
     private: bool,
     asked: bool,
+    leaves: u64,
   ) -> Result<Option<Room>, NotJoined> {
     if self
       .rooms
@@ -214,10 +219,12 @@ impl Messaging {
     {
       return Ok(None);
     }
+    if self.rooms.tracker().leaves(name) != leaves {
+      return Err(NotJoined::Left);
+    }
     let client = self.client();
     // the session's name marks us among the members; taken before the join is sent
     let us = own_username(client, &format!("join chat room {name}"))?;
-    let leaves = self.rooms.tracker().leaves(name);
     let private = private || self.joined_private(name).await;
     let data = match self.ask_to_join(name, private).await {
       Ok(data) => data,
@@ -393,6 +400,8 @@ impl Messaging {
       .iter()
       .map(|room| room.name.clone())
       .collect();
+    // a room left from here on is not joined by this login
+    let leaves = self.rooms.tracker().leave_counts();
     let session = lock(&self.session_ends).clone();
     let this = self.this();
     self.tasks.spawn(async move {
@@ -403,10 +412,11 @@ impl Messaging {
           Vec::new()
         }
       };
-      let mut rooms = configured;
-      for room in tracked.into_iter().chain(remembered) {
-        if !rooms.contains(&room) {
-          rooms.push(room);
+      let mut rooms: Vec<(String, u64)> = Vec::new();
+      for room in configured.into_iter().chain(tracked).chain(remembered) {
+        if !rooms.iter().any(|(listed, _)| *listed == room) {
+          let left = leaves.get(&room).copied().unwrap_or(0);
+          rooms.push((room, left));
         }
       }
       let refused = this.rejoin_rooms(rooms, &session).await;
@@ -424,7 +434,7 @@ impl Messaging {
     &self,
     mut refused: Vec<(String, NotJoined)>,
     session: &CancellationToken,
-    mut again: impl FnMut(Vec<String>) -> F,
+    mut again: impl FnMut(Vec<(String, u64)>) -> F,
   ) where
     F: Future<Output = Vec<(String, NotJoined)>>,
   {
@@ -444,11 +454,17 @@ impl Messaging {
         () = tokio::time::sleep(wait) => {}
       }
       // a room left or joined meanwhile is not tried again
-      refused.retain(|(room, _)| {
+      let rooms = {
         let tracker = self.rooms.tracker();
-        tracker.get(room).is_some_and(|tracked| !tracked.joined)
-      });
-      let rooms = refused.into_iter().map(|(room, _)| room).collect();
+        refused
+          .into_iter()
+          .filter(|(room, _)| tracker.get(room).is_some_and(|tracked| !tracked.joined))
+          .map(|(room, _)| {
+            let leaves = tracker.leaves(&room);
+            (room, leaves)
+          })
+          .collect()
+      };
       refused = again(rooms).await;
     }
     let mut marked = false;
@@ -474,18 +490,19 @@ impl Messaging {
     session.is_cancelled() || !self.logged_in_now()
   }
 
-  /// Joins `rooms` in turn after a login and returns those not joined, each with why and kept
-  /// among the rooms, not joined. Stops once `session` ended, as the next login joins them.
+  /// Joins `rooms` in turn after a login, each with its leave count when the list was made, and
+  /// returns those not joined, each with why and kept among the rooms, not joined. A room left
+  /// since its count was read is skipped. Stops once `session` ended, as the next login joins
+  /// them.
   async fn rejoin_rooms(
     &self,
-    rooms: Vec<String>,
+    rooms: Vec<(String, u64)>,
     session: &CancellationToken,
   ) -> Vec<(String, NotJoined)> {
     let mut refused = Vec::new();
     let mut kept = false;
-    for room in rooms {
-      let leaves = self.rooms.tracker().leaves(&room);
-      match self.join_now(&room, false, false).await {
+    for (room, leaves) in rooms {
+      match self.join_now(&room, false, false, leaves).await {
         Ok(Some(_)) => info!(room, "room joined"),
         Ok(None) => debug!(room, "room joined already"),
         Err(NotJoined::Left) => debug!(room, "room left while it was being joined"),
@@ -544,14 +561,13 @@ impl Messaging {
   /// short by the end of `session` is left to the next login.
   async fn join_again(&self, name: &str, session: &CancellationToken) {
     let _turn = self.rooms.joins.take(name).await;
-    if !self
-      .rooms
-      .tracker()
-      .get(name)
-      .is_some_and(|room| room.joined)
-    {
-      return;
-    }
+    let leaves = {
+      let tracker = self.rooms.tracker();
+      if !tracker.get(name).is_some_and(|room| room.joined) {
+        return;
+      }
+      tracker.leaves(name)
+    };
     match self.client().rooms().leave(name).await {
       // the server answers nothing for a room it does not have us in, so we are out either way
       Ok(()) => {}
@@ -563,7 +579,7 @@ impl Messaging {
     if !self.rooms.tracker().out_of(name) {
       return debug!(room = name, "room left while it was joined again");
     }
-    match self.join_in_turn(name, false, false).await {
+    match self.join_in_turn(name, false, false, leaves).await {
       Ok(_) => debug!(
         room = name,
         "room joined again after client events were lost"
@@ -603,10 +619,20 @@ impl Messaging {
     if !self.logged_in_now() {
       return debug!("not logged in; the rooms added are joined at the next login");
     }
+    let added: Vec<(String, u64)> = {
+      let tracker = self.rooms.tracker();
+      added
+        .into_iter()
+        .map(|room| {
+          let leaves = tracker.leaves(&room);
+          (room, leaves)
+        })
+        .collect()
+    };
     let this = self.this();
     self.tasks.spawn(async move {
-      for room in added {
-        match this.join_now(&room, false, false).await {
+      for (room, leaves) in added {
+        match this.join_now(&room, false, false, leaves).await {
           Ok(Some(_)) => info!(room, "room joined"),
           Ok(None) => debug!(room, "room joined already"),
           Err(NotJoined::Left) => debug!(room, "room left while it was being joined"),
@@ -619,9 +645,15 @@ impl Messaging {
   /// Joins the room `request` names for the API. The join runs to its end on the engine's task
   /// set, so a request dropped while the server is asked leaves no join half done.
   pub(super) async fn join(&self, request: JoinRoom) -> Result<Joined, ApiError> {
+    let leaves = self.rooms.tracker().leaves(&request.name);
     let this = self.this();
     let joining = self.tasks.spawn(
-      async move { this.join_now(&request.name, request.private, true).await }.in_current_span(),
+      async move {
+        this
+          .join_now(&request.name, request.private, true, leaves)
+          .await
+      }
+      .in_current_span(),
     );
     let room = joining
       .await
@@ -1031,9 +1063,9 @@ mod tests {
       let refusal = |room| (room, NotJoined::LoggedOut("refused".into()));
       rooms.into_iter().map(refusal).collect()
     };
-    let again = |rooms| {
+    let again = |rooms: Vec<(String, u64)>| {
       tries.push(started.elapsed());
-      std::future::ready(refused(rooms))
+      std::future::ready(refused(rooms.into_iter().map(|(room, _)| room).collect()))
     };
     let first = refused(vec!["lobby".to_string()]);
     messaging.try_again(first, &session, again).await;
@@ -1361,6 +1393,29 @@ mod tests {
     let b = |request: &ServerRequest| joins("b")(request).or(leaves("b")(request)).is_some();
     let touched_b = server.receives(Duration::from_secs(1), b).await;
     assert!(!touched_b, "the first reading went on to b");
+  }
+
+  #[tokio::test]
+  async fn a_room_left_while_the_logins_joins_wait_is_not_joined_by_them() {
+    let (app, mut server, script) = in_rooms(&["a", "b"]).await;
+    script.lock().unwrap().joins_held.push("a");
+    server.drop_session(&app).await;
+    server.login(&app).await;
+    server.received(joins("a")).await;
+    let (status, _) = app.call("DELETE", "/api/v0/rooms/joined/b", None).await;
+    assert_eq!(status, 204);
+    let answer = JoinRoomRequest {
+      room: "a".into(),
+      room_type: RoomType::Public,
+    };
+    server.send(vec![let_in(&answer)]);
+    let joined_b = server
+      .receives(Duration::from_secs(1), |request| {
+        joins("b")(request).is_some()
+      })
+      .await;
+    assert!(!joined_b, "the login joined the room left meanwhile");
+    assert_eq!(listed(&app).await, ["a"]);
   }
 
   #[tokio::test]
