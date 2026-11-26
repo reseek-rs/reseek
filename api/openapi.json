@@ -4953,7 +4953,7 @@
           {
             "name": "topics",
             "in": "query",
-            "description": "the topics to follow, comma-separated: `application`, `logs`, `metrics`, `search`,\n`search:<id>`, `transfers`, `jobs`, `conversations`, `rooms`, `users`, `events`, `activity`;\n`application` when left out",
+            "description": "the topics to follow, comma-separated: `application`, `logs`, `metrics`, `search`,\n`search:<id>`, `transfers`, `jobs`, `conversations`, `rooms`, `public_rooms`, `users`, `events`,\n`activity`; `application` when left out",
             "required": false,
             "schema": {
               "type": "string"
@@ -19135,7 +19135,7 @@
       },
       "ErrorBody": {
         "type": "object",
-        "description": "What went wrong, sent with every 4xx and 5xx status.",
+        "description": "What went wrong, sent with every 4xx and 5xx status a route answers.\n\nA path under `/api` that no route takes is answered 404 with no body.",
         "required": [
           "error"
         ],

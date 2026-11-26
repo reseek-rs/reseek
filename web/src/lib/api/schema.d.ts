@@ -4893,7 +4893,11 @@ export interface components {
             /** @description whether the value is shown as `*****` */
             secret: boolean;
         };
-        /** @description What went wrong, sent with every 4xx and 5xx status. */
+        /**
+         * @description What went wrong, sent with every 4xx and 5xx status a route answers.
+         *
+         *     A path under `/api` that no route takes is answered 404 with no body.
+         */
         ErrorBody: {
             /** @description a longer explanation, null when the message says it all */
             detail?: string | null;
@@ -13159,8 +13163,8 @@ export interface operations {
             query?: {
                 /**
                  * @description the topics to follow, comma-separated: `application`, `logs`, `metrics`, `search`,
-                 *     `search:<id>`, `transfers`, `jobs`, `conversations`, `rooms`, `users`, `events`, `activity`;
-                 *     `application` when left out
+                 *     `search:<id>`, `transfers`, `jobs`, `conversations`, `rooms`, `public_rooms`, `users`, `events`,
+                 *     `activity`; `application` when left out
                  * @example application,transfers
                  */
                 topics?: string;
