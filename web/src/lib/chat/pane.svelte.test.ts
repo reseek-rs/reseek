@@ -506,6 +506,18 @@ describe("a room's pane at the newest messages", () => {
     expect(ids(pane)).toEqual(Array.from({ length: 351 }, (_, n) => n + 51));
   });
 
+  it("stays empty on a reload after the view is emptied, and shows what comes after", async () => {
+    const held = stored(150);
+    const pane = new MessagePane(room, () => "me");
+    await pane.load();
+    pane.clearView();
+    await pane.load();
+    expect(ids(pane)).toEqual([]);
+    held.total = 152;
+    await pane.load();
+    expect(ids(pane)).toEqual([151, 152]);
+  });
+
   it("keeps a message being sent when a read brings an older one with its text", async () => {
     const said = (localId: number) =>
       localId === 1

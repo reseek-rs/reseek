@@ -158,15 +158,18 @@ export class MessagePane {
   /**
    * Reads the newest page, or the pages around the message the pane opened at until they have
    * come; the first time it also finds where the unread messages start. A pane that holds
-   * messages reads on from the newest it holds instead. A pane still short of the newest messages
-   * reads nothing here: they come as the list scrolls down to them
+   * messages, or whose view was emptied, reads on from the newest it holds or held instead. A pane
+   * still short of the newest messages reads nothing here: they come as the list scrolls down to
+   * them
    */
   load = async () => {
     // a room's read marker comes with the joined rooms, which a pane opened by a link or a
     // reload can be quicker than; its first unread message is placed from that marker
     if (!this.loaded && this.target.kind === "room") await chat.ready();
     if (this.loaded && this.hasNewer) return;
-    if (this.loaded && this.ordered.some((m) => m.localId > 0)) return this.#reachedNewest();
+    if (this.loaded && (this.#emptiedAt !== null || this.ordered.some((m) => m.localId > 0))) {
+      return this.#reachedNewest();
+    }
     const view = this.#view;
     const at = this.loaded ? null : this.at;
     const page: Outcome<Page & { hasNewer?: boolean }> =
@@ -191,7 +194,7 @@ export class MessagePane {
    */
   async #reachedNewest() {
     const view = this.#view;
-    const newest = this.ordered.findLast((m) => m.localId > 0)?.localId ?? 0;
+    const newest = this.ordered.findLast((m) => m.localId > 0)?.localId ?? this.#emptiedAt ?? 0;
     const page = await this.#page({ after: newest });
     if (view !== this.#view) return;
     if (!page.ok) return void (this.error = page.error);
@@ -288,6 +291,9 @@ export class MessagePane {
    */
   clearView = () => {
     this.#view += 1;
+    // what was stored when the view was emptied stays out of it; before the first page nothing
+    // says where that ends
+    if (this.loaded) this.#emptiedAt = this.#newestStored;
     for (const m of this.messages.rows.filter((m) => m.localId > 0)) {
       this.messages.remove(String(m.localId));
     }
@@ -349,6 +355,8 @@ export class MessagePane {
   #unechoed = new Set<number>();
   /** the newest stored message the pane has held */
   #newestStored = 0;
+  /** the newest stored message when the view was last emptied, null when it never was */
+  #emptiedAt: number | null = null;
   /**
    * for each message being sent, the newest stored message held when it was sent: only a stored
    * one newer than that can be it
