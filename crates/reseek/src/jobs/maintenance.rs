@@ -119,10 +119,11 @@ impl<'a> Run<'a> {
     }
   }
 
-  /// Ends the run, its summary made by `summary` from the counts of the steps that succeeded,
-  /// and the steps never run because of a cancel listed as canceled from `remaining`.
-  async fn end(self, summary: Option<String>, remaining: &[&str]) -> RunOutcome {
-    let canceled = self.cancel.is_cancelled();
+  /// Ends the run of `steps`, its summary made by `summary` from the counts of the steps that
+  /// succeeded. It ends canceled only when a cancel kept steps from running, which are listed
+  /// as canceled.
+  async fn end(self, summary: Option<String>, steps: &[&str]) -> RunOutcome {
+    let canceled = self.cancel.is_cancelled() && self.done.len() < steps.len();
     let mut parts: Vec<NewPart> = self
       .done
       .iter()
@@ -139,7 +140,7 @@ impl<'a> Run<'a> {
       })
       .collect();
     if canceled {
-      parts.extend(remaining.iter().skip(self.done.len()).map(|name| NewPart {
+      parts.extend(steps.iter().skip(self.done.len()).map(|name| NewPart {
         name: (*name).to_string(),
         state: JobPartState::Canceled,
         error: None,
@@ -389,8 +390,8 @@ pub async fn vacuum(app: &AppState, starter: JobStarter, listed: bool) -> RunOut
   let freed: u64 = run.done.iter().filter_map(|d| d.result.as_ref().ok()).sum();
   let summary = format!("Freed {}", ByteSize(freed));
   let names: Vec<String> = names.iter().map(|name| format!("{name}.db")).collect();
-  let remaining: Vec<&str> = names.iter().map(String::as_str).collect();
-  run.end(Some(summary), &remaining).await
+  let steps: Vec<&str> = names.iter().map(String::as_str).collect();
+  run.end(Some(summary), &steps).await
 }
 
 /// Vacuums the database `name` as a job of its own started by the user, answering once it
@@ -410,8 +411,9 @@ pub async fn vacuum_one(app: &AppState, name: &str) -> Result<(), ApiError> {
   )
   .await;
   let mut failure = None;
+  let step = format!("{name}.db");
   run
-    .step(&format!("{name}.db"), 1, async {
+    .step(&step, 1, async {
       app.databases.vacuum(name).await.map_err(|e| {
         let message = e.message().to_string();
         failure = Some(e);
@@ -421,7 +423,7 @@ pub async fn vacuum_one(app: &AppState, name: &str) -> Result<(), ApiError> {
     .await;
   let freed: u64 = run.done.iter().filter_map(|d| d.result.as_ref().ok()).sum();
   run
-    .end(Some(format!("Freed {}", ByteSize(freed))), &[])
+    .end(Some(format!("Freed {}", ByteSize(freed))), &[&step])
     .await;
   match failure {
     Some(e) => Err(e),
@@ -533,6 +535,49 @@ mod tests {
       asked.job_id.is_some(),
       "a run the user asked for is always listed"
     );
+  }
+
+  #[tokio::test]
+  async fn a_run_ends_canceled_only_when_the_cancel_kept_steps_from_running() {
+    let app = app(TRUSTED, &[]).await;
+    let state = &app.state;
+    let started = || {
+      Run::start(
+        state,
+        "Run".to_string(),
+        MaintenanceRun::Cleanup,
+        JobStarter::you(),
+        true,
+      )
+    };
+
+    // canceled during its last step: every step ran
+    let mut run = started().await;
+    let id = run.listed.unwrap();
+    run
+      .step("one", 1, async {
+        assert!(state.jobs.cancel_held(id));
+        Ok(3)
+      })
+      .await;
+    let outcome = run.end(None, &["one"]).await;
+    assert_eq!(outcome.ending, JobEnding::Succeeded);
+
+    // canceled during its first of two steps: the second never ran
+    let mut run = started().await;
+    let id = run.listed.unwrap();
+    run
+      .step("one", 2, async {
+        assert!(state.jobs.cancel_held(id));
+        Ok(3)
+      })
+      .await;
+    run.step("two", 2, async { Ok(1) }).await;
+    let outcome = run.end(None, &["one", "two"]).await;
+    assert_eq!(outcome.ending, JobEnding::Canceled);
+    let detail = state.jobs.detail(id).await.unwrap().unwrap();
+    let parts: Vec<_> = detail.parts.iter().map(|p| p.state).collect();
+    assert_eq!(parts, [JobPartState::Succeeded, JobPartState::Canceled]);
   }
 
   #[test]
