@@ -15,7 +15,7 @@ use rusqlite::OptionalExtension;
 use soulseek_proto::UserPresence;
 use tokio::sync::Notify;
 use tokio::time::{Instant, sleep_until};
-use tracing::{debug, info, warn};
+use tracing::{Instrument, debug, info, warn};
 
 use super::Messaging;
 use crate::api::error::ApiError;
@@ -185,12 +185,15 @@ impl Messaging {
   /// not held up.
   pub(super) fn auto_reply(&self, username: &str, reply: String) {
     let (this, username) = (self.this(), username.to_string());
-    self.tasks.spawn(async move {
-      match this.send(&username, reply, true).await {
-        Ok(()) => info!(username, "away reply sent"),
-        Err(e) => warn!(username, error = ?e, "away reply not sent"),
+    self.tasks.spawn(
+      async move {
+        match this.send(&username, reply, true).await {
+          Ok(()) => info!(username, "away reply sent"),
+          Err(e) => warn!(username, error = ?e, "away reply not sent"),
+        }
       }
-    });
+      .in_current_span(),
+    );
   }
 
   /// Sets us away once nobody has had the UI open for `chat.auto_away`, and back online when

@@ -17,7 +17,7 @@ use axum::response::Response;
 use chrono::{DateTime, Utc};
 use reseek_shares::lock;
 use soulseek_client::{Error as ClientError, ErrorKind};
-use tracing::{debug, info, trace, warn};
+use tracing::{Instrument, debug, info, trace, warn};
 
 use super::{Messaging, export};
 use crate::api::error::ApiError;
@@ -207,7 +207,7 @@ impl Messaging {
     );
     self
       .tasks
-      .spawn(async move { users.watch(&client, &username).await });
+      .spawn(async move { users.watch(&client, &username).await }.in_current_span());
   }
 
   /// After a login: the peers of the open conversations are watched.
@@ -706,7 +706,9 @@ mod tests {
     let messaging = &app.state.messaging;
     let stored = tokio::time::timeout(std::time::Duration::from_secs(5), async {
       loop {
-        let read = messaging.database().read(|conn| super::store::exists(conn, "alice"));
+        let read = messaging
+          .database()
+          .read(|conn| super::store::exists(conn, "alice"));
         if read.await.unwrap() {
           return;
         }

@@ -9,7 +9,7 @@ use api_types::messaging::rooms::{HistoryGap, HistoryGapReason, RoomHistoryGap};
 use chrono::{DateTime, Utc};
 use reseek_shares::lock;
 use rusqlite::{Connection, Row, params};
-use tracing::{debug, warn};
+use tracing::{Instrument, debug, warn};
 
 use super::Messaging;
 use super::rooms::history;
@@ -123,7 +123,9 @@ impl Messaging {
     self.rejoin();
     self.watch_conversations();
     let this = self.this();
-    self.tasks.spawn(async move { this.feed_at_login().await });
+    self
+      .tasks
+      .spawn(async move { this.feed_at_login().await }.in_current_span());
   }
 
   /// The session ended at `now`, with the daemon stopping or with the connection.

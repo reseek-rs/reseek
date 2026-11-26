@@ -404,26 +404,29 @@ impl Messaging {
     let leaves = self.rooms.tracker().leave_counts();
     let session = lock(&self.session_ends).clone();
     let this = self.this();
-    self.tasks.spawn(async move {
-      let remembered = match this.db.read(history::remembered).await {
-        Ok(remembered) => remembered,
-        Err(e) => {
-          warn!(error = %e, "the rooms joined before the last stop not read; not joined again");
-          Vec::new()
+    self.tasks.spawn(
+      async move {
+        let remembered = match this.db.read(history::remembered).await {
+          Ok(remembered) => remembered,
+          Err(e) => {
+            warn!(error = %e, "the rooms joined before the last stop not read; not joined again");
+            Vec::new()
+          }
+        };
+        let mut rooms: Vec<(String, u64)> = Vec::new();
+        for room in configured.into_iter().chain(tracked).chain(remembered) {
+          if !rooms.iter().any(|(listed, _)| *listed == room) {
+            let left = leaves.get(&room).copied().unwrap_or(0);
+            rooms.push((room, left));
+          }
         }
-      };
-      let mut rooms: Vec<(String, u64)> = Vec::new();
-      for room in configured.into_iter().chain(tracked).chain(remembered) {
-        if !rooms.iter().any(|(listed, _)| *listed == room) {
-          let left = leaves.get(&room).copied().unwrap_or(0);
-          rooms.push((room, left));
-        }
+        let refused = this.rejoin_rooms(rooms, &session).await;
+        this.push_gap().await;
+        let again = |rooms| this.rejoin_rooms(rooms, &session);
+        this.try_again(refused, &session, again).await;
       }
-      let refused = this.rejoin_rooms(rooms, &session).await;
-      this.push_gap().await;
-      let again = |rooms| this.rejoin_rooms(rooms, &session);
-      this.try_again(refused, &session, again).await;
-    });
+      .in_current_span(),
+    );
   }
 
   /// The tries after a login's first for the rooms it left `refused`: after each of the waits,
@@ -630,16 +633,19 @@ impl Messaging {
         .collect()
     };
     let this = self.this();
-    self.tasks.spawn(async move {
-      for (room, leaves) in added {
-        match this.join_now(&room, false, false, leaves).await {
-          Ok(Some(_)) => info!(room, "room joined"),
-          Ok(None) => debug!(room, "room joined already"),
-          Err(NotJoined::Left) => debug!(room, "room left while it was being joined"),
-          Err(e) => warn!(room, error = %e, "room not joined"),
+    self.tasks.spawn(
+      async move {
+        for (room, leaves) in added {
+          match this.join_now(&room, false, false, leaves).await {
+            Ok(Some(_)) => info!(room, "room joined"),
+            Ok(None) => debug!(room, "room joined already"),
+            Err(NotJoined::Left) => debug!(room, "room left while it was being joined"),
+            Err(e) => warn!(room, error = %e, "room not joined"),
+          }
         }
       }
-    });
+      .in_current_span(),
+    );
   }
 
   /// Joins the room `request` names for the API. The join runs to its end, so a request
