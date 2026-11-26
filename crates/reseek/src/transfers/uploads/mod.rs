@@ -36,7 +36,7 @@ use uuid::Uuid;
 use super::{BLOCKED, Record, STOPPING, removal, store};
 use crate::api::error::ApiError;
 use crate::config::Options;
-use crate::db::Database;
+use crate::db::{Database, DbError};
 use crate::events::EventBus;
 use crate::live::Live;
 use crate::network::Network;
@@ -53,6 +53,11 @@ use queue::UploadQueue;
 
 /// Why an upload fails once the client is gone, as the daemon stops.
 const SHUT_DOWN: &str = "the client has been shut down";
+
+/// The answer to a call for the upload `id` to `username` when there is none.
+fn not_found(username: &str, id: Uuid) -> ApiError {
+  ApiError::not_found(format!("No upload {id} to {username}"))
+}
 
 /// What is kept for an upload whose task runs.
 struct InFlight {
@@ -273,15 +278,31 @@ impl Uploads {
     super::listing::record(&self.db, TransferDirection::Upload, username, id)
       .await
       .map_err(ApiError::internal)?
-      .ok_or_else(|| ApiError::not_found(format!("No upload {id} to {username}")))
+      .ok_or_else(|| not_found(username, id))
   }
 
   /// Cancels the upload `id` to `username`: a running one stops wherever it is and ends
   /// canceled; one that has not ended though no task runs it is ended canceled here. With
-  /// `remove` it leaves the listings, once it has ended when it still runs. 404 when there is
-  /// no such upload.
+  /// `remove` it leaves the listings, once it has ended when it still runs, and so does one
+  /// whose row cannot be read. 404 when there is no such upload.
   pub async fn cancel(&self, username: &str, id: Uuid, remove: bool) -> Result<(), ApiError> {
-    let record = self.record_of(username, id).await?;
+    let direction = TransferDirection::Upload;
+    let read = super::listing::record(&self.db, direction, username, id).await;
+    let record = match read {
+      Ok(Some(record)) => record,
+      Ok(None) => return Err(not_found(username, id)),
+      Err(DbError::Sqlite(e)) if remove && super::unreadable(&e) => {
+        let removed = removal::remove_unreadable(&self.db, direction, username, id, &e)
+          .await
+          .map_err(ApiError::internal)?;
+        if removed.is_empty() {
+          return Err(not_found(username, id));
+        }
+        removal::push(&self.live, direction, &removed);
+        return Ok(());
+      }
+      Err(e) => return Err(ApiError::internal(e)),
+    };
     if self.cancel_running(id, remove, None) {
       return Ok(());
     }

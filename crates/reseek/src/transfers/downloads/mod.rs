@@ -450,13 +450,12 @@ impl Downloads {
       Ok(None) => return Err(not_found(username, id)),
       Err(DbError::Sqlite(e)) if remove && super::unreadable(&e) => {
         let direction = TransferDirection::Download;
-        let removed = removal::remove_unreadable(&self.db, direction, username, id)
+        let removed = removal::remove_unreadable(&self.db, direction, username, id, &e)
           .await
           .map_err(internal)?;
         if removed.is_empty() {
           return Err(not_found(username, id));
         }
-        info!(%id, username, error = %e, "download that cannot be read removed");
         self.taken_out(&removed).await;
         return Ok(true);
       }

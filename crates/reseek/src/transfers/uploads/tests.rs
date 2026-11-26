@@ -1081,3 +1081,53 @@ async fn an_uploads_chunks_are_held_to_the_global_limit_as_well_as_its_groups() 
   let granted = pace.chunk(50_000, &CancellationToken::new()).await;
   assert_eq!(granted, 102);
 }
+
+/// An upload whose row cannot be read fails only itself in a bulk call, and a cancel that
+/// removes it takes it out of the listings.
+#[tokio::test]
+async fn an_upload_whose_row_cannot_be_read_is_taken_out_by_a_cancel_that_removes_it() {
+  let (_files, app) = shared_app("").await;
+  let ended = || {
+    let state = TransferStates::Completed(TransferOutcome::Succeeded);
+    let mut row = Row::new("alice", TransferDirection::Upload, state);
+    row.ended_at = Some(chrono::Utc::now());
+    row
+  };
+  let (known, odd) = (ended(), ended());
+  let (known, odd) = {
+    let ids = (known.id, odd.id);
+    insert(&app.state.transfers, vec![known, odd]).await;
+    ids
+  };
+  let row = odd.to_string();
+  app
+    .state
+    .transfers
+    .write(move |conn| conn.execute("UPDATE Transfers SET State = 2 WHERE Id = ?1", [row]))
+    .await
+    .unwrap();
+
+  let bulk = json!({ "ids": [known, odd], "action": "remove" });
+  let (status, body) = app
+    .call("POST", "/api/v0/transfers/uploads/bulk", Some(bulk))
+    .await;
+  assert_eq!(status, 200, "{body}");
+  assert_eq!(body["ok"], json!([known]), "{body}");
+  assert_eq!(body["failed"][0]["id"], json!(odd), "{body}");
+
+  let uri = format!("/api/v0/transfers/uploads/alice/{odd}?remove=true");
+  let (status, body) = app.call("DELETE", &uri, None).await;
+  assert_eq!(status, 204, "{body}");
+  let id = odd.to_string();
+  let removed: bool = app
+    .state
+    .transfers
+    .read(move |conn| {
+      conn.query_row("SELECT Removed FROM Transfers WHERE Id = ?1", [id], |row| {
+        row.get(0)
+      })
+    })
+    .await
+    .unwrap();
+  assert!(removed);
+}

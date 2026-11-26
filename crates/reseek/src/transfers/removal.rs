@@ -7,6 +7,7 @@ use api_types::live::LiveFrame;
 use api_types::transfers::{TransferDirection, TransferRemoved};
 use chrono::Utc;
 use rusqlite::{Connection, params};
+use tracing::info;
 use uuid::Uuid;
 
 use super::categories::COMPLETED;
@@ -84,16 +85,20 @@ pub async fn remove(
   db.write(move |conn| remove_one(conn, direction, id)).await
 }
 
-/// Removes the transfer `id` of `direction` and `username` whose row cannot be read, whatever
-/// state it holds: no task runs one, since a task reads its record before anything else.
+/// Removes the transfer `id` of `direction` and `username` whose row cannot be read, as `error`
+/// says, whatever state it holds, for a cancel with removal of it: no task runs one, since a
+/// task's record is read or written before anything else. Returns none when there is no such
+/// row.
 pub async fn remove_unreadable(
   db: &Database,
   direction: TransferDirection,
   username: &str,
   id: Uuid,
+  error: &rusqlite::Error,
 ) -> Result<Vec<Removed>, DbError> {
   let name = username.to_string();
-  db.write(move |conn| {
+  let removed = db
+    .write(move |conn| {
     returned(
       conn,
       &format!(
@@ -108,7 +113,11 @@ pub async fn remove_unreadable(
       ],
     )
   })
-  .await
+  .await?;
+  if !removed.is_empty() {
+    info!(%id, username, ?direction, %error, "transfer that cannot be read removed");
+  }
+  Ok(removed)
 }
 
 /// Removes every completed transfer of `direction` with `username` that is not removed already.

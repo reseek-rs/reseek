@@ -18,7 +18,7 @@ use super::queue::Bumped;
 use crate::api::error::ApiError;
 use crate::services::TransferService;
 use crate::transfers::listing::{self, Range};
-use crate::transfers::{removal, store};
+use crate::transfers::{removal, store, unreadable};
 
 const UPLOAD: TransferDirection = TransferDirection::Upload;
 
@@ -65,7 +65,7 @@ impl TransferService for Uploads {
     listing::one(&self.db, UPLOAD, username, id, include_history)
       .await
       .map_err(internal)?
-      .ok_or_else(|| ApiError::not_found(format!("No upload {id} to {username}")))
+      .ok_or_else(|| super::not_found(username, id))
   }
 
   async fn cancel_upload(&self, username: &str, id: Uuid, remove: bool) -> Result<(), ApiError> {
@@ -87,7 +87,12 @@ impl TransferService for Uploads {
       .read(move |conn| {
         ids
           .into_iter()
-          .map(|id| store::get(conn, id).map(|record| (id, record)))
+          .map(|id| match store::get(conn, id) {
+            Ok(record) => Ok((id, Ok(record))),
+            // one row that cannot be read fails only itself
+            Err(e) if unreadable(&e) => Ok((id, Err(e.to_string()))),
+            Err(e) => Err(e),
+          })
           .collect::<rusqlite::Result<Vec<_>>>()
       })
       .await
@@ -101,9 +106,17 @@ impl TransferService for Uploads {
       error: error.to_string(),
     };
     for (id, record) in found {
-      let Some(record) = record.filter(|r| r.direction == UPLOAD) else {
-        result.failed.push(failed(id, &format!("no upload {id}")));
-        continue;
+      let record = match record {
+        Ok(Some(record)) if record.direction == UPLOAD => record,
+        Ok(_) => {
+          result.failed.push(failed(id, &format!("no upload {id}")));
+          continue;
+        }
+        Err(error) => {
+          let error = format!("the upload cannot be read: {error}");
+          result.failed.push(failed(id, &error));
+          continue;
+        }
       };
       let outcome = match request.action {
         BulkAction::Retry => Err(failed(
