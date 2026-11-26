@@ -561,4 +561,27 @@ describe("a settings section", () => {
     expect(asked[1].body).toMatchObject({ set: { "analysis.max_full_minutes": 20 } });
     vi.unstubAllGlobals();
   });
+
+  it("keeps a wide table's row open while it is typed in", async () => {
+    const v = structuredClone(view);
+    (v.values as { web: { authentication: { oidc: unknown } } }).web.authentication.oidc = {
+      home: { issuer: "https://id.example", client_id: "reseek" }
+    };
+    const auth = render(
+      sections.find((s) => s.id === "authentication")!,
+      v
+    );
+    const input = () =>
+      auth.querySelector<HTMLInputElement>('input[aria-label="Client ID of home"]')!;
+    const details = input().closest("details")!;
+    expect(details.open).toBe(false);
+    details.open = true;
+    await flush();
+    for (const text of ["reseek2", "reseek23"]) {
+      input().value = text;
+      input().dispatchEvent(new Event("input", { bubbles: true }));
+      flushSync();
+      expect(details.open).toBe(true);
+    }
+  });
 });
