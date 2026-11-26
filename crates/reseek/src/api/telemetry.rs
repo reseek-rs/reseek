@@ -29,7 +29,7 @@ use crate::auth::{AnyRole, Authorized};
 use crate::db;
 use crate::telemetry::reports::{GENESIS, Width, genesis};
 
-/// The most buckets a histogram has.
+/// The most buckets the `buckets` parameter takes.
 const BUCKETS_MAX: u32 = 1000;
 
 /// The buckets a histogram has when neither `buckets` nor `interval` is given.
@@ -184,7 +184,8 @@ async fn summary(
 /// Completed transfers by time bucket, direction and outcome, every bucket listed and keyed by
 /// its start, which is a multiple of the bucket's length since the Unix epoch. The window is
 /// the last 7 days unless given, in 100 buckets unless `buckets` or `interval` (minutes) says
-/// otherwise. A bucket's `averageSpeed` is its bytes over its transfers' time.
+/// otherwise. An `interval` that cuts the window into more than 100,000 buckets is refused. A
+/// bucket's `averageSpeed` is its bytes over its transfers' time.
 #[utoipa::path(
   get, path = "/telemetry/reports/transfers/histogram", tag = "telemetry", params(HistogramQuery),
   responses(

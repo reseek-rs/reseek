@@ -1073,7 +1073,8 @@ export interface paths {
          * Starts a job that did not succeed again, as a new job; the old one stays in the list. A
          *     download job queues its failed and canceled files again, an analysis job analyzes its failed
          *     files again, a scan or maintenance run runs again. The new job's id is given when it is
-         *     known at once; a scan's and a maintenance run's show in the list as they start.
+         *     known at once; a scan's and a maintenance run's show in the list as they start. 409 while a
+         *     scan, a cleanup or a vacuum of every database already runs.
          */
         post: operations["run_job_again"];
         delete?: never;
@@ -2335,7 +2336,8 @@ export interface paths {
          * Completed transfers by time bucket, direction and outcome, every bucket listed and keyed by
          *     its start, which is a multiple of the bucket's length since the Unix epoch. The window is
          *     the last 7 days unless given, in 100 buckets unless `buckets` or `interval` (minutes) says
-         *     otherwise. A bucket's `averageSpeed` is its bytes over its transfers' time.
+         *     otherwise. An `interval` that cuts the window into more than 100,000 buckets is refused. A
+         *     bucket's `averageSpeed` is its bytes over its transfers' time.
          */
         get: operations["histogram"];
         put?: never;
@@ -5574,7 +5576,7 @@ export interface components {
              * @example Album from alice
              */
             name: string;
-            /** @description whether it can be paused: a running download or analysis job */
+            /** @description whether it can be paused or resumed: a download or analysis job that has not ended */
             pausable: boolean;
             /**
              * Format: double
@@ -17490,7 +17492,10 @@ export interface operations {
                  *     `interval` is given
                  */
                 buckets?: number;
-                /** @description the width of a bucket in minutes, at least 1 */
+                /**
+                 * @description the width of a bucket in minutes, at least 1; refused when it cuts the window into more
+                 *     than 100,000 buckets
+                 */
                 interval?: number;
                 /** @description only this direction, `Download` or `Upload` in any case; both when left out */
                 direction?: components["schemas"]["TransferDirection"];

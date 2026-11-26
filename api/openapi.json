@@ -4879,7 +4879,7 @@
         "tags": [
           "jobs"
         ],
-        "summary": "Starts a job that did not succeed again, as a new job; the old one stays in the list. A\ndownload job queues its failed and canceled files again, an analysis job analyzes its failed\nfiles again, a scan or maintenance run runs again. The new job's id is given when it is\nknown at once; a scan's and a maintenance run's show in the list as they start.",
+        "summary": "Starts a job that did not succeed again, as a new job; the old one stays in the list. A\ndownload job queues its failed and canceled files again, an analysis job analyzes its failed\nfiles again, a scan or maintenance run runs again. The new job's id is given when it is\nknown at once; a scan's and a maintenance run's show in the list as they start. 409 while a\nscan, a cleanup or a vacuum of every database already runs.",
         "operationId": "run_job_again",
         "parameters": [
           {
@@ -10455,7 +10455,7 @@
         "tags": [
           "telemetry"
         ],
-        "summary": "Completed transfers by time bucket, direction and outcome, every bucket listed and keyed by\nits start, which is a multiple of the bucket's length since the Unix epoch. The window is\nthe last 7 days unless given, in 100 buckets unless `buckets` or `interval` (minutes) says\notherwise. A bucket's `averageSpeed` is its bytes over its transfers' time.",
+        "summary": "Completed transfers by time bucket, direction and outcome, every bucket listed and keyed by\nits start, which is a multiple of the bucket's length since the Unix epoch. The window is\nthe last 7 days unless given, in 100 buckets unless `buckets` or `interval` (minutes) says\notherwise. An `interval` that cuts the window into more than 100,000 buckets is refused. A\nbucket's `averageSpeed` is its bytes over its transfers' time.",
         "operationId": "histogram",
         "parameters": [
           {
@@ -10493,7 +10493,7 @@
           {
             "name": "interval",
             "in": "query",
-            "description": "the width of a bucket in minutes, at least 1",
+            "description": "the width of a bucket in minutes, at least 1; refused when it cuts the window into more\nthan 100,000 buckets",
             "required": false,
             "schema": {
               "type": "integer",
@@ -20719,7 +20719,7 @@
           },
           "pausable": {
             "type": "boolean",
-            "description": "whether it can be paused: a running download or analysis job"
+            "description": "whether it can be paused or resumed: a download or analysis job that has not ended"
           },
           "progress": {
             "type": [

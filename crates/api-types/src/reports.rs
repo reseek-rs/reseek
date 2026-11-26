@@ -291,7 +291,8 @@ pub struct HistogramQuery {
   #[serde(default)]
   #[param(minimum = 1, maximum = 1000)]
   pub buckets: Option<u32>,
-  /// the width of a bucket in minutes, at least 1
+  /// the width of a bucket in minutes, at least 1; refused when it cuts the window into more
+  /// than 100,000 buckets
   #[serde(default)]
   #[param(minimum = 1)]
   pub interval: Option<u32>,
