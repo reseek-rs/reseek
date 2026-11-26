@@ -21,9 +21,14 @@ pub fn server_config(https: &Https, addresses: &[IpAddr]) -> Result<ServerConfig
     .map_err(|e| e.to_string())?
     .with_no_client_auth()
     .with_single_cert(chain, key)
-    .map_err(|e| format!("Invalid HTTPs certificate: {e}"))?;
+    .map_err(invalid)?;
   config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
   Ok(config)
+}
+
+/// The start-up error for a certificate that cannot be read or used.
+fn invalid(e: impl std::fmt::Display) -> String {
+  format!("the HTTPS certificate is invalid: {e}")
 }
 
 type Pair = (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>);
@@ -31,7 +36,6 @@ type Pair = (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>);
 fn certificate(https: &Https, addresses: &[IpAddr]) -> Result<Pair, String> {
   let configured = &https.certificate;
   if let (Some(cert), Some(key)) = (&configured.cert, &configured.key) {
-    let invalid = |e: rustls::pki_types::pem::Error| format!("Invalid HTTPs certificate: {e}");
     let chain = CertificateDer::pem_file_iter(cert)
       .map_err(invalid)?
       .collect::<Result<Vec<_>, _>>()
@@ -41,8 +45,7 @@ fn certificate(https: &Https, addresses: &[IpAddr]) -> Result<Pair, String> {
     return Ok((chain, key));
   }
   if let Some(pfx) = &configured.pfx {
-    let pair = pkcs12(pfx, configured.password.as_deref().unwrap_or(""))
-      .map_err(|e| format!("Invalid HTTPs certificate: {e}"))?;
+    let pair = pkcs12(pfx, configured.password.as_deref().unwrap_or("")).map_err(invalid)?;
     info!(path = %pfx.display(), "Using certificate from file");
     return Ok(pair);
   }
