@@ -311,7 +311,7 @@ impl Schema {
 
 fn redact_fields(fields: &[Field], values: &mut Value) {
   for field in fields {
-    if let Some(value) = get_mut(values, &field.key) {
+    if let Some(value) = tree::get_mut(values, &field.key) {
       redact_field(field, value);
     }
   }
@@ -397,7 +397,7 @@ fn kept_in_entry(
   current: Option<&Value>,
 ) -> Result<(), String> {
   for inner in &field.entries {
-    if let Some(value) = get_mut(entry, &inner.key) {
+    if let Some(value) = tree::get_mut(entry, &inner.key) {
       let kept = current.and_then(|entry| tree::get(entry, &inner.key));
       kept_in(inner, &format!("{path}.{}", inner.key), value, kept)?;
     }
@@ -413,12 +413,6 @@ fn hide(value: &mut Value) {
     Value::Object(entries) => entries.values_mut().for_each(hide),
     _ => *value = Value::String(REDACTED.to_string()),
   }
-}
-
-fn get_mut<'a>(tree: &'a mut Value, key: &str) -> Option<&'a mut Value> {
-  key
-    .split('.')
-    .try_fold(tree, |node, part| node.as_object_mut()?.get_mut(part))
 }
 
 #[cfg(test)]
