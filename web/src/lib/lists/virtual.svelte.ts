@@ -259,8 +259,7 @@ export class ListWindow<L> {
 
   /** Whether the line at `index` is drawn now */
   isDrawn(index: number) {
-    const items = this.#items;
-    return items.length > 0 && index >= items[0].index && index <= items.at(-1)!.index;
+    return this.#items.some((item) => item.index === index);
   }
 
   /** Where the line at `index` starts in the box, from the sizes known so far */
