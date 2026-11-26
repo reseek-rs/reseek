@@ -241,7 +241,17 @@ fn unread_reason(error: Error) -> Result<String, Done> {
 async fn run(analysis: Arc<Analysis>, running: Running) {
   let started = Instant::now();
   info!("analysis of a file started");
-  let done = finish(&analysis, &running, started).await;
+  // on a task of its own, so a panic in it still frees the worker and ends the part
+  let finished = tokio::spawn({
+    let analysis = analysis.clone();
+    let running = running.clone();
+    async move { finish(&analysis, &running, started).await }.in_current_span()
+  })
+  .await;
+  let done = finished.unwrap_or_else(|e| {
+    error!(error = %e, "analysis of a file stopped");
+    Done::Failed(format!("The analysis stopped: {e}"))
+  });
   lock(&analysis.running).retain(|r| r.part != running.part);
   if !(matches!(done, Done::Canceled) && analysis.shutdown.is_cancelled()) {
     analysis.part_done(running.job, running.part, done).await;
