@@ -70,12 +70,13 @@ fn doc(text: &mut String, field: &Field) {
   }
 }
 
-/// A default as TOML; a key with no default is left without a value to fill in.
+/// A default as TOML, tables inline; a key with no default is left without a value to fill in.
 fn toml_value(value: &Value) -> String {
   match value {
     Value::Null => String::new(),
-    Value::Object(_) => "{}".to_string(),
-    other => other.to_string(),
+    other => toml::Value::try_from(other)
+      .expect("an option's default is a TOML value")
+      .to_string(),
   }
 }
 
@@ -102,5 +103,20 @@ mod tests {
       unique.len(),
       "a table header is written twice"
     );
+    // every header and every key with a default, uncommented, is TOML
+    let key = |l: &str| {
+      l.split_once(" = ").is_some_and(|(k, v)| {
+        !v.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+      })
+    };
+    let uncommented: String = text
+      .lines()
+      .filter_map(|l| l.strip_prefix("# "))
+      .filter(|l| l.starts_with('[') || key(l))
+      .map(|l| format!("{}\n", l.replace("<name>", "example")))
+      .collect();
+    uncommented
+      .parse::<toml::Table>()
+      .unwrap_or_else(|e| panic!("{e}\n{uncommented}"));
   }
 }
