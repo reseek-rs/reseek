@@ -26,9 +26,19 @@ test("a conversation held at the top by its scrollbar reads page after page to t
     const older = url.searchParams.get("before");
     if (older !== null) asked.push(older);
     size = Number(url.searchParams.get("limit"));
+    const at = (id: number) => new Date(Date.UTC(2026, 9, 27, 0, 0, id)).toISOString();
+    const after = url.searchParams.get("after");
+    if (after !== null) {
+      const from = Number(after) + 1;
+      const count = Math.min(size, Math.max(0, total - from + 1));
+      return route.fulfill({
+        json: Array.from({ length: count }, (_, n) =>
+          privateMessage(from + n, at(from + n), "alice", "In", `line ${from + n}`)
+        )
+      });
+    }
     const before = Number(url.searchParams.get("before") ?? total + 1);
     const first = Math.max(1, before - size);
-    const at = (id: number) => new Date(Date.UTC(2026, 9, 27, 0, 0, id)).toISOString();
     return route.fulfill({
       json: Array.from({ length: before - first }, (_, n) =>
         privateMessage(before - 1 - n, at(before - 1 - n), "alice", "In", `line ${before - 1 - n}`)
