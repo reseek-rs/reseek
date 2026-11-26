@@ -106,6 +106,7 @@ export class Keyed<T extends object> {
       this.#rows.delete(key);
       return;
     }
+    if (this.removed.has(key)) return;
     this.removed.add(key);
     this.freeze.whenThawed(() => {
       if (!this.removed.has(key)) return;
