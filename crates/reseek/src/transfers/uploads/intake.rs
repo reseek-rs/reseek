@@ -86,6 +86,8 @@ const DECIDING: usize = 10;
 static DROPPED: LogLimiter = LogLimiter::new();
 /// Requests refused, which a peer can repeat at any rate.
 static REFUSED: LogLimiter = LogLimiter::new();
+/// Requests refused for a queue that takes no new user, which one host can repeat at any rate.
+static FULL: LogLimiter = LogLimiter::new();
 /// Shared files missing or changed on disk, which every request for them finds again.
 static DRIFTED: LogLimiter = LogLimiter::new();
 
@@ -263,7 +265,7 @@ impl Uploads {
       return false;
     }
     self.telemetry.metrics().enqueue.requests_rejected.inc();
-    if let Some(suppressed) = REFUSED.allow() {
+    if let Some(suppressed) = FULL.allow() {
       warn!(
         username,
         %from,
