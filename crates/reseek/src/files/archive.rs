@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use axum::body::Bytes;
-use chrono::{DateTime, Datelike, Timelike, Utc};
+use chrono::{Datelike, Timelike};
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -138,7 +138,7 @@ fn classic(value: u64, limit: u64) -> u32 {
 
 /// A time as the zip format writes it, in its two DOS fields; before 1980 is 1980.
 fn dos(at: Option<SystemTime>) -> (u16, u16) {
-  let at: DateTime<Utc> = at.map(DateTime::from).unwrap_or_default();
+  let at = super::listing::time(at);
   if at.year() < 1980 {
     return (0, (1 << 5) | 1);
   }
@@ -369,6 +369,7 @@ pub(super) async fn send(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use chrono::{DateTime, Utc};
   use std::io::Read;
 
   fn archive(writer: &mut Writer, files: &[(&str, &[u8])]) -> Vec<u8> {

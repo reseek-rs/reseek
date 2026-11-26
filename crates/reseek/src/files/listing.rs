@@ -5,10 +5,10 @@
 use std::fs::Metadata;
 use std::io;
 use std::path::Path;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use api_types::files::{FilesystemAttributes, FilesystemDirectory, FilesystemFile};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use tracing::{debug, warn};
 
 use super::roots::{Refused, locate};
@@ -262,9 +262,21 @@ fn created(metadata: &Metadata) -> DateTime<Utc> {
   time(metadata.modified().ok())
 }
 
-/// A system time as a UTC time, the epoch when the system gives none.
+/// A system time as a UTC time, the epoch when the system gives none or one outside the
+/// years a UTC time holds.
 pub(super) fn time(at: Option<SystemTime>) -> DateTime<Utc> {
-  at.map(DateTime::<Utc>::from).unwrap_or_default()
+  at.and_then(utc).unwrap_or_default()
+}
+
+/// A system time as a UTC time, `None` outside the years a UTC time holds, which a file's
+/// times can be on some filesystems.
+pub(crate) fn utc(at: SystemTime) -> Option<DateTime<Utc>> {
+  match at.duration_since(UNIX_EPOCH) {
+    Ok(after) => DateTime::UNIX_EPOCH.checked_add_signed(TimeDelta::from_std(after).ok()?),
+    Err(before) => {
+      DateTime::UNIX_EPOCH.checked_sub_signed(TimeDelta::from_std(before.duration()).ok()?)
+    }
+  }
 }
 
 #[cfg(test)]
@@ -329,5 +341,23 @@ mod tests {
     assert_eq!(list(&root, "z.txt", false).unwrap_err().status(), 404);
     #[cfg(unix)]
     assert_eq!(list(&root, "link", false).unwrap_err().status(), 403);
+  }
+
+  #[test]
+  fn a_time_past_the_years_a_utc_time_holds_lists_as_the_epoch() {
+    let far = std::time::Duration::from_secs(9_000_000_000_000);
+    assert_eq!(time(Some(UNIX_EPOCH + far)), DateTime::<Utc>::default());
+    assert_eq!(time(Some(UNIX_EPOCH - far)), DateTime::<Utc>::default());
+    let before = UNIX_EPOCH - std::time::Duration::from_millis(1_500);
+    assert_eq!(
+      utc(before).unwrap().to_rfc3339(),
+      "1969-12-31T23:59:58.500+00:00"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = std::fs::File::create(dir.path().join("far.flac")).unwrap();
+    file.set_modified(UNIX_EPOCH + far).unwrap();
+    let listed = list(dir.path(), "", false).unwrap();
+    assert_eq!(listed.files.unwrap().len(), 1);
   }
 }

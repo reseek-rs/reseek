@@ -2,7 +2,7 @@
 //! and its spectrogram and waveform are found by. The analyzer's own types become the API's
 //! here and nowhere else.
 
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use api_types::analysis::{
   AnalysisFlag, AnalysisMeasures, AnalysisVerdict, AnalysisWindow, AudioAnalysis, ClaimedFormat,
@@ -17,11 +17,21 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use sha2::{Digest, Sha256};
 
 use super::tiles::{TILE_SECONDS, tile_count};
-use crate::files::LocalFile;
+use crate::files::{LocalFile, utc};
 
-/// When a file last changed, as stored and hashed.
+/// When a file last changed, as stored and hashed. A time outside the years a UTC time holds
+/// is written as its seconds and nanoseconds from the epoch.
 pub(super) fn modified_text(time: SystemTime) -> String {
-  DateTime::<Utc>::from(time).to_rfc3339_opts(SecondsFormat::Nanos, true)
+  if let Some(at) = utc(time) {
+    return at.to_rfc3339_opts(SecondsFormat::Nanos, true);
+  }
+  match time.duration_since(UNIX_EPOCH) {
+    Ok(after) => format!("{}.{:09}", after.as_secs(), after.subsec_nanos()),
+    Err(before) => {
+      let before = before.duration();
+      format!("-{}.{:09}", before.as_secs(), before.subsec_nanos())
+    }
+  }
 }
 
 /// The name a file's spectrogram and waveform are kept under: the SHA-256 of its path, size and
@@ -303,5 +313,16 @@ mod tests {
     for (hz, label) in ENCODER_GUIDES {
       assert!(profiles.iter().any(|profile| profile.hz == hz), "{label}");
     }
+  }
+
+  #[test]
+  fn a_modification_time_past_the_years_a_utc_time_holds_is_written_as_seconds() {
+    let far = std::time::Duration::new(9_000_000_000_000, 5);
+    assert_eq!(modified_text(UNIX_EPOCH + far), "9000000000000.000000005");
+    assert_eq!(modified_text(UNIX_EPOCH - far), "-9000000000000.000000005");
+    assert_eq!(
+      modified_text(UNIX_EPOCH + std::time::Duration::new(1, 5)),
+      "1970-01-01T00:00:01.000000005Z"
+    );
   }
 }
