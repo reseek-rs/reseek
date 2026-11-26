@@ -343,8 +343,7 @@ impl From<soulseek_proto::peer::File> for File {
 }
 
 /// A hint that a file's size is too small for its duration and declared format, such as a
-/// "320 kbps" MP3 whose size works out to 128 kbps. It is a reason to look twice, not a
-/// verdict.
+/// "320 kbps" MP3 whose size works out to 128 kbps. A reason to look twice at the file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SuspectHint {

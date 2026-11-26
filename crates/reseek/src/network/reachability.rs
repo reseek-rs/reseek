@@ -1,9 +1,9 @@
-//! Whether other users can connect to us, judged from what happens rather than asked of anyone:
-//! a peer that connects to our listener shows they can, whether it came by itself or to answer
-//! a connection request we had the server relay (nothing else gets a peer to our port); ten
-//! minutes logged in, or five of our searches sent to everyone drawing responses, with every peer
-//! connection one we opened ourselves, shows they cannot. The judgment starts over at every login
-//! and whenever the listening port or its mapping on the router changes; it is
+//! Whether other users can connect to us, judged from the connections peers open to our
+//! listener. A peer that connects shows they can, whether it came by itself or to answer a
+//! connection request we had the server relay (nothing else gets a peer to our port); ten
+//! minutes logged in, or five of our searches sent to everyone drawing responses, with every
+//! peer connection one we opened ourselves, shows they cannot. The judgment starts over at every
+//! login and whenever the listening port or its mapping on the router changes; it is
 //! `State.server.listen.reachable`.
 
 use std::collections::HashSet;

@@ -28,8 +28,8 @@ const HEADERS: u32 = 40;
 /// The probes a distributed connection's keep-alive sends before it gives up.
 const DISTRIBUTED_PROBES: u32 = 3;
 
-/// The client settings `options` call for, without the handler, which is the daemon's own and
-/// never changes. Fails only for options that did not pass validation.
+/// The client settings `options` call for. The handler is set once in `Network::new`. Fails only
+/// for options that did not pass validation.
 pub fn settings(options: &Options) -> Result<Settings, String> {
   let soulseek = &options.soulseek;
   let listen_address: IpAddr = soulseek

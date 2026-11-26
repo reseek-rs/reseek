@@ -1,7 +1,7 @@
 //! The hint on a search result whose size does not fit its duration and declared format, such
-//! as a "320 kbps" MP3 whose size works out to 128 kbps. It is a reason to look twice, never a
-//! verdict: tags, cover art, silence, mono recordings and unusual encoders all move the
-//! numbers, so nothing is hidden or refused for it.
+//! as a "320 kbps" MP3 whose size works out to 128 kbps: a reason to look twice at the file.
+//! Tags, cover art, silence, mono recordings and unusual encoders all move the numbers, so
+//! nothing is hidden or refused for it.
 
 use api_types::search::{File, SuspectHint, SuspectReason};
 

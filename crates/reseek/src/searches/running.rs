@@ -58,7 +58,7 @@ impl std::fmt::Display for NotRun {
 pub(super) struct Running {
   /// stops the search
   pub cancel: CancellationToken,
-  /// the search was stopped by a cancel or a delete, not by a lost connection
+  /// a cancel or a delete stopped the search
   pub canceled: AtomicBool,
   /// how the search ended, once the client returned it
   pub ended: watch::Sender<Option<SearchState>>,

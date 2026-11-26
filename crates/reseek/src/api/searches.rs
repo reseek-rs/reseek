@@ -126,8 +126,8 @@ fn timeout(timeout: &SearchTimeout) -> Result<Duration, ApiError> {
 }
 
 /// Refuses a search with text [`searches::searchable`] refuses, or with a scope that names the
-/// wrong number of users or rooms. Whom a rooms or buddies scope reaches is the search engine's
-/// to work out.
+/// wrong number of users or rooms. `Searches::reached` works out whom a rooms or buddies scope
+/// reaches.
 fn search_request(request: &SearchRequest) -> Result<(), ApiError> {
   searches::searchable(&request.search_text)?;
   let subjects = request.scope.subjects.len();
