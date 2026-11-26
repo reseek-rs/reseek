@@ -5,7 +5,8 @@
 //! a boolean flag takes no following value, so `--debug` is true and `--debug=false` false.
 //! Short boolean flags may be grouped (`-nx`), and the last one may take a value attached with
 //! `=` (`-nd=false`). A list flag is repeated for each element. A flag no option has is passed
-//! on with its attached value, if any, so the configuration warns about it.
+//! on when it stands alone or has its value attached, so the configuration warns about it; one
+//! followed by a separate word is refused.
 
 mod commands;
 mod completions;
@@ -224,10 +225,13 @@ pub fn parse(
   }
   let mut invocation = Invocation::default();
   let mut seen: Vec<(Bootstrap, Option<String>)> = Vec::new();
+  // the flag the previous token ended with, when no option has it and no value was attached
+  let mut unknown: Option<String> = None;
   let mut i = 0;
   while i < args.len() {
     let token = &args[i];
     i += 1;
+    let after_unknown = unknown.take();
     if token == "--" {
       if let Some(operand) = args.get(i) {
         return Err(UsageError(format!("unexpected argument `{operand}`")));
@@ -246,9 +250,14 @@ pub fn parse(
           i += usize::from(consumed);
           record(flag, &name, value, &mut invocation, &mut seen);
         }
-        None => invocation
-          .flags
-          .push((name, attached.unwrap_or_else(|| "true".to_string()))),
+        None => {
+          if attached.is_none() {
+            unknown = Some(name.clone());
+          }
+          invocation
+            .flags
+            .push((name, attached.unwrap_or_else(|| "true".to_string())));
+        }
       }
       continue;
     }
@@ -258,6 +267,9 @@ pub fn parse(
         let display = format!("-{c}");
         let rest = &shorts[at + c.len_utf8()..];
         let Some(flag) = lookup_short(c, schema) else {
+          if rest.is_empty() {
+            unknown = Some(display.clone());
+          }
           invocation.flags.push((display, "true".to_string()));
           continue;
         };
@@ -288,6 +300,9 @@ pub fn parse(
         break;
       }
       continue;
+    }
+    if let Some(flag) = after_unknown {
+      return Err(UsageError(format!("unknown flag `{flag}`")));
     }
     return Err(UsageError(format!(
       "unexpected argument `{token}`; a boolean flag takes its value attached, as in \
@@ -594,7 +609,17 @@ mod tests {
       run(&["--http-port"]).unwrap_err(),
       UsageError("`--http-port` needs a value".into())
     );
-  }
+    // the word after an unknown flag is its value, which may be a secret, so only the flag is named
+    for (args, flag) in [
+      (&["--htp-port", "5030"][..], "--htp-port"),
+      (&["--slsk-pasword", "hunter2"], "--slsk-pasword"),
+      (&["-q", "x"], "-q"),
+    ] {
+      assert_eq!(
+        run(args).unwrap_err(),
+        UsageError(format!("unknown flag `{flag}`"))
+      );
+    }
   }
 
   #[test]
