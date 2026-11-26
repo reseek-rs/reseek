@@ -12,7 +12,7 @@ use rusqlite::{Connection, params};
 use crate::config::{Limit, Limits, Options};
 use crate::db::timestamp;
 use crate::transfers::categories::{FAILED, SUCCESSFUL};
-use crate::transfers::direction_text;
+use crate::transfers::{UPLOADS_COUNTED, direction_text};
 
 /// What a request over the queued files limit is told; clients ask again later.
 pub const TOO_MANY_FILES: &str = "Too many files";
@@ -49,7 +49,8 @@ pub fn statistics(
   username: &str,
   now: DateTime<Utc>,
 ) -> rusqlite::Result<Statistics> {
-  let week = timestamp(now - Duration::days(7));
+  let week = Duration::from_std(UPLOADS_COUNTED).expect("a week is a chrono duration");
+  let week = timestamp(now - week);
   let day = timestamp(now - Duration::days(1));
   conn.query_row(
     &format!(

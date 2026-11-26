@@ -58,6 +58,10 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 /// of the file unasked is refused meanwhile, and the purge of removed transfers keeps its row.
 pub const CANCEL_REMEMBERED: Duration = Duration::from_secs(24 * 3600);
 
+/// How far back the upload limits count a user's uploads, by when each started: the longest of
+/// their windows. The purge of removed transfers keeps the uploads started since.
+pub const UPLOADS_COUNTED: Duration = Duration::from_secs(7 * 24 * 3600);
+
 /// Opens `transfers.db` in `location`.
 pub async fn open(location: &Location) -> Result<Database, DbError> {
   Database::open(&SCHEMA, location).await

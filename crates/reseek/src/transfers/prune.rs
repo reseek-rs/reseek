@@ -1,6 +1,7 @@
 //! The retention sweep: completed transfers past the age their outcome is kept for are removed
 //! from the listings, uploads first, then downloads, and, when set, transfers removed long
-//! enough ago are deleted for good with their state history.
+//! enough ago are deleted for good with their state history, but for the canceled downloads and
+//! the uploads that users' requests are still checked against.
 
 use std::time::Duration;
 
@@ -11,7 +12,7 @@ use tracing::debug;
 
 use super::categories::{CANCELLED, Condition, ERRORED, FAILED, SUCCESSFUL};
 use super::removal::{self, Removed};
-use super::{CANCEL_REMEMBERED, direction_text};
+use super::{CANCEL_REMEMBERED, UPLOADS_COUNTED, direction_text};
 use crate::config::{TransferRetention, TransfersRetention};
 use crate::db::{Database, DbError, shifted, timestamp};
 use crate::live::Live;
@@ -121,27 +122,32 @@ async fn expire(
 
 /// Deletes the transfers removed more than `after` ago with their state history, but for a
 /// download canceled within [`CANCEL_REMEMBERED`], which its user's offer of the file unasked
-/// is checked against; returns how many were deleted.
+/// is checked against, and an upload started within [`UPLOADS_COUNTED`], which the upload
+/// limits count; returns how many were deleted.
 async fn purge(db: &Database, after: Duration) -> Result<usize, DbError> {
   let cutoff = before_now(after);
   let canceled_since = before_now(CANCEL_REMEMBERED);
+  let counted_since = before_now(UPLOADS_COUNTED);
   db.write(move |conn| {
     let tx = conn.transaction()?;
     let removed_long_ago = format!(
       "Removed = 1 AND RemovedAt IS NOT NULL AND RemovedAt < ?1 \
-       AND NOT (Direction = ?3 AND {CANCELLED} AND EndedAt > ?2)"
+       AND NOT (Direction = ?3 AND {CANCELLED} AND EndedAt > ?2) \
+       AND NOT (Direction = ?4 AND StartedAt IS NOT NULL AND StartedAt >= ?5)"
     );
     let download = direction_text(TransferDirection::Download);
+    let upload = direction_text(TransferDirection::Upload);
+    let bound = params![cutoff, canceled_since, download, upload, counted_since];
     tx.execute(
       &format!(
         "DELETE FROM transfers_state_history WHERE transfer_id IN \
          (SELECT Id FROM Transfers WHERE {removed_long_ago})"
       ),
-      params![cutoff, canceled_since, download],
+      bound,
     )?;
     let deleted = tx.execute(
       &format!("DELETE FROM Transfers WHERE {removed_long_ago}"),
-      params![cutoff, canceled_since, download],
+      bound,
     )?;
     tx.commit()?;
     Ok(deleted)
@@ -300,6 +306,42 @@ mod tests {
     upload.removed = true;
     let ids = [lately.id, long_ago.id, upload.id];
     insert(&db, vec![lately, long_ago, upload]).await;
+    db.write(move |conn| {
+      let three_hours_ago = timestamp(Utc::now() - chrono::Duration::hours(3));
+      for id in ids {
+        conn.execute(
+          "UPDATE Transfers SET RemovedAt = ?2 WHERE Id = ?1",
+          rusqlite::params![id.to_string(), three_hours_ago],
+        )?;
+      }
+      Ok(())
+    })
+    .await
+    .unwrap();
+    let retention = TransfersRetention {
+      purge_removed_after: Some(HOUR),
+      ..TransfersRetention::default()
+    };
+    assert!(prune(&db, &live, &retention).await.error.is_none());
+    assert_eq!(removed(&db).await, ["lately"]);
+  }
+
+  #[tokio::test]
+  async fn a_removed_upload_is_kept_while_the_upload_limits_count_it() {
+    let db = transfers().await;
+    let live = Live::new(CancellationToken::new());
+    let succeeded = TransferStates::Completed(TransferOutcome::Succeeded);
+    let upload = |user: &str, started_hours_ago: i64| {
+      let mut row = ended(user, succeeded, started_hours_ago);
+      row.direction = TransferDirection::Upload;
+      row.started_at = row.ended_at;
+      row.removed = true;
+      row
+    };
+    let lately = upload("lately", 3);
+    let long_ago = upload("long-ago", 8 * 24);
+    let ids = [lately.id, long_ago.id];
+    insert(&db, vec![lately, long_ago]).await;
     db.write(move |conn| {
       let three_hours_ago = timestamp(Utc::now() - chrono::Duration::hours(3));
       for id in ids {
