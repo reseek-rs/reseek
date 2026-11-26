@@ -82,7 +82,7 @@ impl IncomingSearches {
     *self.filters.write().unwrap_or_else(PoisonError::into_inner) = compiled;
     info!(
       filters = patterns.len(),
-      "Updated and re-compiled search response filters"
+      "Search request filters compiled again"
     );
   }
 
