@@ -93,3 +93,12 @@ export const clearing = (
   const manager = managerOf(view, key);
   return `Set in ${manager ? `the ${manager} configuration` : source.file}, so it can't be cleared here`;
 };
+
+/**
+ * The one notice of a page outside Settings that changes options: that remote configuration is
+ * off, which `editability` leaves to the page, else what `edit` says
+ */
+export const pageNotice = (view: ConfigView, edit: Editability | null): string | null =>
+  valueAt(view.values, "remote_configuration") !== true
+    ? "Read-only because remote configuration is off"
+    : (edit?.notice ?? null);

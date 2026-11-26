@@ -10,7 +10,7 @@
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import Textarea from "#lib/components/ui/Textarea.svelte";
   import UserCard from "#lib/components/users/UserCard.svelte";
-  import { editability } from "#lib/config/editability.js";
+  import { editability, pageNotice } from "#lib/config/editability.js";
   import type { OptionKey } from "#lib/config/keys.js";
   import { valueAt } from "#lib/config/sections.js";
   import { changedText, changedUnder } from "#lib/config/write.js";
@@ -204,8 +204,7 @@
 {#if !admin}
   <Notice kind="info">Only administrators can change the profile</Notice>
 {:else if view.data && !remote}
-  <Notice kind="info"
-    >The profile is read-only because <code>remote_configuration</code> is off</Notice>
+  <Notice kind="info">{pageNotice(view.data, null)}</Notice>
 {/if}
 <LoadError loader={ownProfile.loader} />
 

@@ -14,7 +14,7 @@
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import Tooltip from "#lib/components/ui/Tooltip.svelte";
   import InterestsEditor from "#lib/components/users/profile/InterestsEditor.svelte";
-  import { valueAt } from "#lib/config/sections.js";
+  import { pageNotice } from "#lib/config/editability.js";
   import { plural } from "#lib/format.js";
   import { Loader } from "#lib/loader.svelte.js";
   import { href } from "#lib/nav.js";
@@ -44,12 +44,7 @@
   });
   const edit = $derived(view.data ? interestsEditability(view.data) : null);
   const canMark = $derived(admin && !!edit && edit.mode !== "locked");
-  // an option's editability has no notice while remote configuration is off, so this gives one
-  const notice = $derived(
-    view.data && valueAt(view.data.values, "remote_configuration") !== true
-      ? "Read-only because remote configuration is off"
-      : (edit?.notice ?? null)
-  );
+  const notice = $derived(view.data ? pageNotice(view.data, edit) : null);
   const own = new OwnInterests();
   const finder = new InterestFinder();
 

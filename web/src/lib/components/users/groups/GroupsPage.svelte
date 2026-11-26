@@ -19,6 +19,7 @@
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import Tooltip from "#lib/components/ui/Tooltip.svelte";
   import GroupDot from "#lib/components/users/GroupDot.svelte";
+  import { pageNotice } from "#lib/config/editability.js";
   import { valueAt } from "#lib/config/sections.js";
   import { adminView } from "#lib/config/view.svelte.js";
   import { editabilityOf, writeFromPage } from "#lib/config/write.js";
@@ -120,12 +121,7 @@
   const orderable = $derived(
     !!view.data && admin && editabilityOf(view.data, [ORDER]).mode !== "locked"
   );
-  // an option's editability has no notice while remote configuration is off, so this gives one
-  const notice = $derived(
-    view.data && valueAt(view.data.values, "remote_configuration") !== true
-      ? "Read-only because remote configuration is off"
-      : (edit?.notice ?? null)
-  );
+  const notice = $derived(view.data ? pageNotice(view.data, edit) : null);
 
   /** the group the editor is open for, "new" for a group not made yet */
   let editing = $state<GroupSummary | "new" | null>(null);
