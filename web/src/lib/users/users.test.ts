@@ -56,4 +56,19 @@ describe("user summaries", () => {
     await loading;
     expect(blocked()).toBe(true);
   });
+
+  it("keep a buddy a frame told of over a buddy list read before it", async () => {
+    let answer!: (body: unknown) => void;
+    const net = connected((url) =>
+      url.pathname.endsWith("/api/v0/users") ? new Promise((done) => (answer = done)) : undefined
+    );
+    const loading = users.loadBuddies();
+    await vi.waitFor(() => expect(answer).toBeDefined());
+    net.frame("users.updated", userSummary("carol", { buddy: { notifyPresence: false } }));
+    await flush();
+    expect(users.buddies.has("carol")).toBe(true);
+    answer({ users: [], total: 0 });
+    await loading;
+    expect(users.buddies.has("carol")).toBe(true);
+  });
 });

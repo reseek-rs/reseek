@@ -100,17 +100,25 @@ class Users {
   /** Reads the buddy list into `buddies` unless it was read less than a minute ago */
   loadBuddies(now = Date.now()): Promise<void> {
     if (now - this.#buddiesAt < SUMMARY_TTL_MS) return Promise.resolve();
+    if (this.#buddiesLoading) return this.#buddiesLoading;
+    const began = this.#turn;
     // read by name, so a buddy changed between pages is not missed
-    this.#buddiesLoading ??= this.every({ buddy: true, sort: "username", order: "asc" })
+    const loading = this.every({ buddy: true, sort: "username", order: "asc" })
       .then((outcome) => {
         // a list that can't be read leaves the names as they were, to be read on the next call
-        if (!outcome.ok) return;
+        if (!outcome.ok || began < this.#cleared) return;
         const found = new Set(outcome.data.map((u) => u.username));
-        for (const name of this.buddies) if (!found.has(name)) this.buddies.delete(name);
+        // a name taken after the read began comes from a frame or a read newer than the list
+        for (const name of this.buddies) {
+          if (!found.has(name) && (this.#taken.get(name) ?? 0) <= began) this.buddies.delete(name);
+        }
         this.#buddiesAt = now;
       })
-      .finally(() => (this.#buddiesLoading = null));
-    return this.#buddiesLoading;
+      .finally(() => {
+        if (this.#buddiesLoading === loading) this.#buddiesLoading = null;
+      });
+    this.#buddiesLoading = loading;
+    return loading;
   }
 
   /** The usernames blocked now; null when the directory couldn't be read */
@@ -123,6 +131,7 @@ class Users {
     this.#entries.clear();
     this.buddies.clear();
     this.#buddiesAt = -Infinity;
+    this.#buddiesLoading = null;
     this.#loading.clear();
     this.#taken.clear();
     this.#cleared = this.#turn;
