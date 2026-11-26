@@ -251,6 +251,7 @@ export class MessagePane {
     const page = await this.#page({ before: oldest });
     if (view !== this.#view) return;
     if (!page.ok) return void (this.error = page.error);
+    this.error = "";
     for (const m of page.data.messages) this.#store(m);
     this.#gapsFrom(page.data.gaps);
     this.hasMore = page.data.hasMore;
@@ -264,6 +265,7 @@ export class MessagePane {
     const page = await this.#page({ after: newest });
     if (view !== this.#view) return;
     if (!page.ok) return void (this.error = page.error);
+    this.error = "";
     for (const m of page.data.messages) this.#store(m);
     this.#gapsFrom(page.data.gaps);
     this.hasNewer = page.data.hasMore;
