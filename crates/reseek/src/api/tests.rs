@@ -410,6 +410,7 @@ async fn requests_are_checked_before_any_service_is_asked() {
     ("GET", "/api/v0/events?limit=0".into(), None, 400),
     ("GET", "/api/v0/events?type=Bogus".into(), None, 400),
     ("POST", "/api/v0/events/Any".into(), None, 400),
+    ("GET", "/api/v0/live?reopen=maybe".into(), None, 400),
     (
       "GET",
       format!("{leaderboard}?direction=download&sortBy=totalbytes&sortOrder=asc"),

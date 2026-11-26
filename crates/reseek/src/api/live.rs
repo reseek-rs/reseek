@@ -3,7 +3,7 @@
 use api_types::auth::{PrincipalSummary, Role};
 use api_types::live::{ByeReason, Hello, Lagged, LiveFrame, LiveQuery};
 use axum::Extension;
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
@@ -13,6 +13,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use super::error::ApiError;
+use super::extract::Query;
 use crate::app::AppState;
 use crate::auth::{AnyRole, Authorized, Check, Presented, identify, is_interactive};
 use crate::live::{self, Opening, Revalidate, topics};
