@@ -165,7 +165,7 @@ fn check_logging(logging: &Logging, report: &mut Report) {
       !target.is_empty()
         && !target.contains(char::is_whitespace)
         && LogLevel::parse(level).is_some()
-    });
+    }) && crate::logging::is_directive(directive);
     if !valid {
       report.add(
         "logging.targets",
@@ -328,8 +328,16 @@ mod tests {
     let mut options = Options::default();
     options.logging.targets = vec!["soulseek_client::distributed=TRACE".into()];
     assert!(problems(&options).is_empty());
-    options.logging.targets = vec!["reseek".into(), "=debug".into(), "reseek=verbose".into()];
-    assert_eq!(problems(&options).len(), 3);
+    options.logging.targets = vec![
+      "reseek".into(),
+      "=debug".into(),
+      "reseek=verbose".into(),
+      // the log filter refuses these, or reads the last as two directives
+      "*=debug".into(),
+      "reseek[=debug".into(),
+      "a,b=debug".into(),
+    ];
+    assert_eq!(problems(&options).len(), 6);
   }
 
   #[test]

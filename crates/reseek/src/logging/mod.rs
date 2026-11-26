@@ -216,6 +216,11 @@ fn filter(options: &Options, started: Started) -> Result<EnvFilter, String> {
     .map_err(|e| e.to_string())
 }
 
+/// Whether `directive` is a single directive the log filter reads.
+pub fn is_directive(directive: &str) -> bool {
+  !directive.contains(',') && EnvFilter::builder().parse(directive).is_ok()
+}
+
 /// The target the Soulseek client logs under.
 const CLIENT: &str = "soulseek_client";
 
