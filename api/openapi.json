@@ -251,7 +251,7 @@
         "tags": [
           "analysis"
         ],
-        "summary": "Takes every waiting analysis off the queue, with the files of batches waiting for room in\nit. The analyses running go on; each is stopped on its own.",
+        "summary": "Cancels every waiting and paused file of every analysis job. The files being analyzed go\non; each is stopped on its own.",
         "operationId": "clear_jobs",
         "responses": {
           "204": {

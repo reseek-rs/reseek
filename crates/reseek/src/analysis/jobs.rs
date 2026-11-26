@@ -578,7 +578,7 @@ impl Analysis {
     Ok(())
   }
 
-  /// Cancels every waiting file of every analysis job; the running ones go on.
+  /// Cancels every waiting and paused file of every analysis job; the running ones go on.
   pub(super) async fn cancel_waiting(&self) -> Result<(), ApiError> {
     let jobs = self
       .jobs

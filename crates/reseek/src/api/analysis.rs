@@ -565,8 +565,8 @@ async fn jobs(
   app.services.analysis.jobs().await.map(Json)
 }
 
-/// Takes every waiting analysis off the queue, with the files of batches waiting for room in
-/// it. The analyses running go on; each is stopped on its own.
+/// Cancels every waiting and paused file of every analysis job. The files being analyzed go
+/// on; each is stopped on its own.
 #[utoipa::path(
   delete, path = "/analysis/jobs", tag = "analysis",
   responses(

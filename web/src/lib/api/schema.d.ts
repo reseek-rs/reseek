@@ -74,8 +74,8 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * Takes every waiting analysis off the queue, with the files of batches waiting for room in
-         *     it. The analyses running go on; each is stopped on its own.
+         * Cancels every waiting and paused file of every analysis job. The files being analyzed go
+         *     on; each is stopped on its own.
          */
         delete: operations["clear_jobs"];
         options?: never;

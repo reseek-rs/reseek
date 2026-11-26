@@ -95,13 +95,13 @@ pub trait AnalysisService: Send + Sync {
     Err(not_yet(DOMAIN))
   }
 
-  /// The analyses queued and running, and how many files of batches wait for room.
+  /// The analyses queued and running, and how many more files wait than are listed.
   async fn jobs(&self) -> Result<AnalysisQueue, ApiError> {
     Err(not_yet(DOMAIN))
   }
 
-  /// Takes every waiting analysis off the queue and drops the files of batches waiting for
-  /// room; the running ones go on.
+  /// Cancels every waiting and paused file of every analysis job; the files being analyzed go
+  /// on.
   async fn clear_jobs(&self) -> Result<(), ApiError> {
     Err(not_yet(DOMAIN))
   }
