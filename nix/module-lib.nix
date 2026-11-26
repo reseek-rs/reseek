@@ -53,6 +53,17 @@ rec {
       }
     ) extraConfigFiles;
 
+  # whether `settings` leave the administrator signing in with the built-in password "reseek"
+  defaultLogin =
+    settings:
+    let
+      auth = settings.web.authentication or { };
+    in
+    !(auth.disabled or false)
+    && (auth.local.enabled or true)
+    && (auth.password_hash or null) == null
+    && (auth.password or "reseek") == "reseek";
+
   # whether the daemon refuses to start because its administrator keeps the default password while
   # other machines can reach the web server. It reads only `settings`, so it answers only for a
   # service whose password and listeners nothing else can set. It mirrors check_default_login in
@@ -61,14 +72,7 @@ rec {
     settings:
     let
       web = settings.web or { };
-      auth = web.authentication or { };
       https = web.https or { };
-      # "reseek" is the daemon's built-in administrator password
-      defaultLogin =
-        !(auth.disabled or false)
-        && (auth.local.enabled or true)
-        && (auth.password_hash or null) == null
-        && (auth.password or "reseek") == "reseek";
       # only the usual spellings (127.x, ::1, ::ffff:127.x) count, so a long form such as
       # 0:0:0:0:0:0:0:1 is refused here though the daemon takes it
       isLoopback =
@@ -80,7 +84,7 @@ rec {
       # a listener without addresses binds every address
       reachable = list: list == null || !lib.all isLoopback (lib.splitString "," list);
     in
-    defaultLogin
+    defaultLogin settings
     && (
       reachable (web.ip_address or null)
       || !(https.disabled or false) && reachable (https.ip_address or null)

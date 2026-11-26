@@ -25,6 +25,7 @@ let
     readOnlyShares
     etcFiles
     optionalPaths
+    defaultLogin
     refusesDefaultLogin
     refusedDefaultLogin
     uncheckedDefaultLogin
@@ -434,16 +435,19 @@ let
           message = refusedDefaultLogin unit;
         }
       ];
-      # what an environment file holds is not known here, so a missing account only warns
+      # a missing account and a default password are only known when nothing but the settings
+      # can set them
       warnings =
-        lib.optional (settings.soulseek.username == null && noSecrets)
+        lib.optional (settings.soulseek.username == null && settingsAlone)
           "services.${unit}: no Soulseek account: set settings.soulseek.username, or RESEEK_SLSK_USERNAME and RESEEK_SLSK_PASSWORD in environmentFile."
         ++
           lib.optional (settings.soulseek ? password)
             "services.${unit}: settings.soulseek.password lands in the world-readable store; put RESEEK_SLSK_PASSWORD in environmentFile."
         ++
-          lib.optional
-            (settings.remote_configuration && settings.web.authentication.password_hash == null && noSecrets)
+          lib.optional (settings.web.authentication ? password)
+            "services.${unit}: settings.web.authentication.password lands in the world-readable store; set web.authentication.password_hash or RESEEK_PASSWORD in environmentFile."
+        ++
+          lib.optional (settings.remote_configuration && settingsAlone && defaultLogin (settingsOf instance))
             "services.${unit}: remote_configuration is on and the administrator still has the default password; set web.authentication.password_hash or RESEEK_PASSWORD in environmentFile."
         # an environment file is where the password is meant to go, so a service with one is not
         # warned about
