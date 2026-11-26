@@ -39,7 +39,7 @@
   type Props = {
     transfer: Transfer;
     direction: Direction;
-    /** removes it, asking first when it is still running */
+    /** removes it from the screen at once and from the daemon once its Undo has passed */
     onremove: () => void;
     /** blocks the user, asking first; with `deny` their unfinished uploads are canceled first */
     onblock: (deny: boolean) => void;

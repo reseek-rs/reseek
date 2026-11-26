@@ -47,7 +47,7 @@ export type GroupAction = {
 
 /** What a group's actions ask of the list they are in */
 export type GroupHandlers = {
-  /** removes the group's transfers, asking first for many or running ones */
+  /** removes the group's transfers from the screen at once, from the daemon after their Undo */
   onremove: () => void;
   /** cancels the group's transfers, asking first when any is moving bytes */
   oncancel: () => void;

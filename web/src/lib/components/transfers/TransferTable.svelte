@@ -45,9 +45,8 @@
     ondetails: (t: Transfer) => void;
     /** focus came to a transfer, which the inspector shows */
     inspect: (t: Transfer) => void;
+    /** removes from the screen at once and from the daemon once their Undo has passed */
     onremove: (transfers: Transfer[]) => void;
-    /** removes with the Delete key, which asks first for more than one */
-    ondelete: (transfers: Transfer[]) => void;
     oncancel: (transfers: Transfer[]) => void;
     onblock: (username: string, deny: boolean) => void;
     /** a key the row with focus acts on: retry, cancel, open */
@@ -65,7 +64,6 @@
     ondetails,
     inspect,
     onremove,
-    ondelete,
     oncancel,
     onblock,
     onkey
@@ -153,7 +151,7 @@
     if (!session.can("ReadWrite") && writes.some((b) => isPressed(b, e))) return false;
     if (isPressed(TRANSFERS.remove, e)) {
       // the selection when the focused row is in it, else the focused row alone
-      ondelete(
+      onremove(
         selected.size > 1 && selected.has(t.id)
           ? store.list.rows.filter((r) => selected.has(r.id))
           : [t]

@@ -405,7 +405,6 @@
     ondetails={details}
     inspect={(t) => (shownId = t.id)}
     onremove={remove}
-    ondelete={remove}
     oncancel={cancel}
     onblock={blockUser}
     {onkey} />
