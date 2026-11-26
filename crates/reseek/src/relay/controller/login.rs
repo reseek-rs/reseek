@@ -46,17 +46,18 @@ pub(super) struct Ours<'a> {
 
 /// Checks `login` against the configured `agent` with its name, if any, and the `challenge` of
 /// the socket, if it still has one, at `now`, for the controller `ours`; `key` derives the
-/// agent's key from its secret. Returns that key when the login checks out. An agent that names
-/// no schema is let in, and its share upload is checked instead.
-pub(super) fn check(
-  agent: Option<&RelayAgent>,
+/// agent's key from its secret. Returns that key and the secret when the login checks out. An
+/// agent with no secret is refused, and one that names no schema is let in, its share upload
+/// checked instead.
+pub(super) fn check<'a>(
+  agent: Option<&'a RelayAgent>,
   login: &Login,
   challenge: Option<&Challenge>,
   lifetime: Duration,
   now: Instant,
   ours: &Ours,
   key: impl FnOnce(&str) -> Key,
-) -> Result<Key, LoginFailure> {
+) -> Result<(Key, &'a str), LoginFailure> {
   let (address, credential) = (login.address, login.credential);
   let agent = agent.ok_or(LoginFailure::UnknownAgent)?;
   if !Controller::address_allowed(agent, address) {
@@ -65,8 +66,7 @@ pub(super) fn check(
   let challenge = challenge
     .filter(|c| now.duration_since(c.issued) <= lifetime)
     .ok_or(LoginFailure::ChallengeExpired)?;
-  // a configured agent has a secret, which loading the options checked
-  let secret = agent.secret.as_deref().unwrap_or_default();
+  let secret = agent.secret.as_deref().ok_or(LoginFailure::BadCredential)?;
   let key = key(secret);
   if !key.verifies(Purpose::Login, &challenge.token, credential) {
     return Err(LoginFailure::BadCredential);
@@ -80,7 +80,7 @@ pub(super) fn check(
   {
     return Err(LoginFailure::SchemaMismatch);
   }
-  Ok(key)
+  Ok((key, secret))
 }
 
 #[cfg(test)]
@@ -149,6 +149,14 @@ mod tests {
       ),
       Err(LoginFailure::ChallengeExpired),
       "a stale challenge"
+    );
+    let no_secret = RelayAgent {
+      secret: None,
+      ..lan.clone()
+    };
+    assert_eq!(
+      login(Some(&no_secret), Some(&challenge), issued, &right),
+      Err(LoginFailure::BadCredential)
     );
     let replayed = key(SECRET).credential(Purpose::Login, "an earlier challenge");
     assert_eq!(

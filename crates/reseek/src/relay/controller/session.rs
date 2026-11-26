@@ -354,11 +354,8 @@ impl Session {
       |secret| Key::derive(secret, &name),
     );
     let cidr = configured.as_ref().map(|a| a.cidr.clone());
-    // used once the login checked out, when the agent is configured, with a secret loading the
-    // options checked
-    let secret = configured.and_then(|a| a.secret).unwrap_or_default();
     let now = Instant::now();
-    let registered = checked.and_then(|key| {
+    let registered = checked.and_then(|(key, secret)| {
       let record = RelayAgentState {
         name: name.clone(),
         ip_address: self.address.to_string(),
@@ -376,7 +373,7 @@ impl Session {
         record,
         outbound: self.outbound.clone(),
         address: self.address,
-        secret,
+        secret: secret.to_owned(),
         key,
         device: device_id,
         left: self.controller.shutdown.child_token(),
