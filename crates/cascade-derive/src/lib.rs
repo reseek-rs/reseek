@@ -6,6 +6,8 @@
 
 mod attrs;
 
+use std::collections::BTreeMap;
+
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, Ident, parse_macro_input};
@@ -50,12 +52,33 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     }
   };
   let container = attrs::container(&input.attrs, &mut errors);
-  let pushes: Vec<TokenStream> = fields
+  let read: Vec<(&syn::Field, FieldAttrs)> = fields
+    .into_iter()
+    .map(|field| (field, attrs::field(field, &mut errors)))
+    .filter(|(_, attrs)| !attrs.skip)
+    .collect();
+  // a variable or flag names one field; one under a section is checked when the schema is built
+  let mut names = BTreeMap::new();
+  for (field, attrs) in &read {
+    let short = attrs.short.map(|c| format!("-{c}"));
+    let given = attrs
+      .env
+      .iter()
+      .chain(&attrs.env_aliases)
+      .chain(&attrs.long)
+      .chain(&short);
+    for name in given {
+      if let Some(first) = names.insert(name.clone(), &attrs.name) {
+        errors.push(syn::Error::new_spanned(
+          &field.ident,
+          format!("`{name}` already sets `{first}`"),
+        ));
+      }
+    }
+  }
+  let pushes: Vec<TokenStream> = read
     .iter()
-    .filter_map(|field| {
-      let attrs = attrs::field(field, &mut errors);
-      (!attrs.skip).then(|| push(&field.ty, &attrs))
-    })
+    .map(|(field, attrs)| push(&field.ty, attrs))
     .collect();
   errors.finish()?;
 
@@ -178,5 +201,47 @@ mod tests {
     let message = errors.to_string();
     assert!(message.contains("unknown apply"), "{message}");
     assert_eq!(errors.into_iter().count(), 2);
+  }
+
+  #[test]
+  fn a_variable_or_flag_sets_one_field() {
+    for (input, expected) in [
+      (
+        parse_quote!(
+          struct A {
+            #[cascade(env = "SAME")]
+            a: u8,
+            #[cascade(env = "OTHER", env_alias = "SAME")]
+            b: u8,
+          }
+        ),
+        "`SAME` already sets `a`",
+      ),
+      (
+        parse_quote!(
+          struct A {
+            #[cascade(cli = "-a|--alpha")]
+            a: bool,
+            #[cascade(cli = "-a|--again")]
+            b: bool,
+          }
+        ),
+        "`-a` already sets `a`",
+      ),
+      (
+        parse_quote!(
+          struct A {
+            #[cascade(cli = "--same")]
+            a: bool,
+            #[cascade(cli = "--same")]
+            b: bool,
+          }
+        ),
+        "`--same` already sets `a`",
+      ),
+    ] {
+      let message = error(input);
+      assert!(message.contains(expected), "{message:?} lacks {expected:?}");
+    }
   }
 }

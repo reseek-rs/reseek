@@ -145,8 +145,10 @@ pub(crate) fn field(field: &Field, errors: &mut Errors) -> FieldAttrs {
     skip: false,
   };
   let mut doc_given = false;
+  let mut cascade_given = false;
   for attr in &field.attrs {
     if attr.path().is_ident("cascade") {
+      cascade_given = true;
       let parsed = attr.parse_nested_meta(|meta| cascade_meta(&meta, &mut attrs, &mut doc_given));
       if let Err(e) = parsed {
         errors.push(e);
@@ -192,6 +194,32 @@ pub(crate) fn field(field: &Field, errors: &mut Errors) -> FieldAttrs {
     errors.push(syn::Error::new_spanned(
       ident,
       "`env_alias` needs an `env` it is an alias of",
+    ));
+  }
+  let mut names: Vec<&String> = attrs.env.iter().chain(&attrs.env_aliases).collect();
+  names.sort();
+  if let Some(pair) = names.windows(2).find(|pair| pair[0] == pair[1]) {
+    errors.push(syn::Error::new_spanned(
+      ident,
+      format!("`{}` is given twice as the field's variable", pair[0]),
+    ));
+  }
+  if attrs.path && attrs.kind.is_some_and(|kind| kind != "String") {
+    errors.push(syn::Error::new_spanned(
+      ident,
+      "a `path` is a string, drop `kind` or make it `string`",
+    ));
+  }
+  if attrs.negated && attrs.kind.is_some_and(|kind| kind != "Bool") {
+    errors.push(syn::Error::new_spanned(
+      ident,
+      "`negated` turns a boolean off, drop `kind` or make it `bool`",
+    ));
+  }
+  if attrs.skip && cascade_given {
+    errors.push(syn::Error::new_spanned(
+      ident,
+      "a `serde(skip)` field is not part of the configuration, drop its cascade attributes",
     ));
   }
   attrs
@@ -527,6 +555,26 @@ mod tests {
       (
         named(parse_quote!({ #[cascade(order, user_keyed)] a: Map })),
         "`order` is for a list of names",
+      ),
+      (
+        named(parse_quote!({ #[cascade(env = "A", env_alias = "A")] a: u8 })),
+        "`A` is given twice",
+      ),
+      (
+        named(parse_quote!({ #[cascade(env = "A", env_alias = "B", env_alias = "B")] a: u8 })),
+        "`B` is given twice",
+      ),
+      (
+        named(parse_quote!({ #[cascade(kind = "integer", path)] a: u8 })),
+        "a `path` is a string",
+      ),
+      (
+        named(parse_quote!({ #[cascade(kind = "string", cli = "--x", negated)] a: Mode })),
+        "`negated` turns a boolean off",
+      ),
+      (
+        named(parse_quote!({ #[cascade(env = "A")] #[serde(skip)] a: u8 })),
+        "drop its cascade attributes",
       ),
       (
         named(parse_quote!({ #[serde(flatten)] a: Inner })),

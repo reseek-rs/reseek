@@ -562,10 +562,16 @@ mod tests {
     assert!(schema.field_under("nope.x").is_none());
   }
 
+  // the derive refuses a name given twice in one struct, the schema one given in two
   #[derive(Default, Serialize, crate::Cascade)]
   struct TwoVars {
     #[cascade(env = "SAME")]
     a: u8,
+    inner: AliasSame,
+  }
+
+  #[derive(Default, Serialize, crate::Cascade)]
+  struct AliasSame {
     #[cascade(env = "OTHER", env_alias = "SAME")]
     b: u8,
   }
@@ -580,6 +586,11 @@ mod tests {
   struct TwoFlags {
     #[cascade(cli = "-a|--alpha")]
     a: bool,
+    inner: FlagAgain,
+  }
+
+  #[derive(Default, Serialize, crate::Cascade)]
+  struct FlagAgain {
     #[cascade(cli = "-a|--again")]
     b: bool,
   }
