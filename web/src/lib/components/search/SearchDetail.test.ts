@@ -412,6 +412,19 @@ describe("search results", () => {
     expect(all()).toBe("checked");
   });
 
+  it("look up the users of the drawn lines in the tree", async () => {
+    const stored = [response("alice", 300), response("bob", 200)];
+    const net = await open(stored);
+    for (const r of stored) net.frame("search.response", { searchId: ID, response: r });
+    await streamed();
+    await flushFaked();
+    const asked = net.requests
+      .map((r) => r.url.pathname)
+      .filter((p) => p.endsWith("/summary"))
+      .toSorted();
+    expect(asked).toEqual(["/api/v0/users/alice/summary", "/api/v0/users/bob/summary"]);
+  });
+
   it("keep a user's tick whole when the filter hides some of their ticked files", async () => {
     const one = response("alice", 300);
     const net = await open([one]);

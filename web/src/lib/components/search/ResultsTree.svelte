@@ -136,6 +136,14 @@
     for (const f of chosen) counts.set(f.result, (counts.get(f.result) ?? 0) + 1);
     return counts;
   });
+  // the users on screen are looked up, for their presence and the offline toggle
+  $effect(() => {
+    const drawn = tree?.drawn() ?? [];
+    const names = drawn.flatMap((l) =>
+      l.kind === "item" ? [l.item.owner] : (results.get(l.node.key)?.response.username ?? [])
+    );
+    for (const name of new Set(names)) void users.load(name);
+  });
   const attributed = $derived(all.some((f) => f.suspect || formatAttributes(f)));
   const columns = $derived(fileColumns({ quality: attributed, phone: viewport.phone }));
 
