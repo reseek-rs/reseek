@@ -345,19 +345,27 @@ export class MessagePane {
     return this.#deliver(row);
   };
 
-  /** Tells the daemon the newest messages are read: acknowledged or the read marker moved */
+  /**
+   * Tells the daemon the newest messages are read: acknowledged or the read marker moved. One
+   * asked for while another is on its way runs once that ends, for what arrived meanwhile
+   */
   markRead = async () => {
-    if (this.#reading) return;
+    if (this.#reading) return void (this.#readAgain = true);
     this.#reading = true;
     try {
-      await this.#markRead();
+      do {
+        this.#readAgain = false;
+        await this.#markRead();
+      } while (this.#readAgain);
     } finally {
       this.#reading = false;
     }
   };
 
-  /** a read is being told to the daemon; another asked for meanwhile is skipped */
+  /** a read is being told to the daemon */
   #reading = false;
+  /** another read was asked for while one was on its way */
+  #readAgain = false;
   /** room messages the daemon took that the server never echoed, shown as not sent */
   #unechoed = new Set<number>();
   /** the newest stored message the pane has held */
@@ -373,9 +381,12 @@ export class MessagePane {
   async #markRead() {
     const { kind, name } = this.target;
     if (kind === "user") {
-      if (!chat.unreadOf(name) && !this.messages.rows.some((m) => m.unread)) return;
+      // only what is unread as the request goes out is acknowledged by it
+      const unread = this.messages.rows.filter((m) => m.unread);
+      if (!chat.unreadOf(name) && !unread.length) return;
       const outcome = await chat.acknowledge(name);
-      if (outcome.ok) for (const m of this.messages.rows) if (m.unread) m.unread = false;
+      if (!outcome.ok) return;
+      for (const m of unread) m.unread = false;
       return;
     }
     // read up to the newest message unless the marker is there already; the unread counts can

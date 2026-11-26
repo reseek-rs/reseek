@@ -424,18 +424,19 @@ describe("a conversation's pane", () => {
     vi.unstubAllGlobals();
   });
 
+  const said = (localId: number, isAcknowledged = true) => ({
+    localId,
+    id: localId,
+    timestamp: new Date(Date.UTC(2026, 9, 27, 18, 0, localId)).toISOString(),
+    username: "alice",
+    direction: "In",
+    message: `line ${localId}`,
+    isAcknowledged,
+    wasReplayed: false,
+    autoReply: false
+  });
+
   it("marks a message unread again wherever it is held when the server delivers it again", async () => {
-    const said = (localId: number, isAcknowledged = true) => ({
-      localId,
-      id: localId,
-      timestamp: new Date(Date.UTC(2026, 9, 27, 18, 0, localId)).toISOString(),
-      username: "alice",
-      direction: "In",
-      message: `line ${localId}`,
-      isAcknowledged,
-      wasReplayed: false,
-      autoReply: false
-    });
     const net = fakeNetwork((url) => {
       if (url.pathname.endsWith("/conversations")) return [];
       if (url.pathname.endsWith("/messages")) return [said(1), said(2)];
@@ -459,6 +460,39 @@ describe("a conversation's pane", () => {
     await vi.waitFor(() => expect(pane.ordered.map((m) => m.unread)).toEqual([true, false]));
     expect(net.requests).toHaveLength(reads);
     stop();
+  });
+
+  it("acknowledges again a message that arrives while an acknowledgement is on its way", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((done) => (release = done));
+    let acknowledged = 0;
+    const net = fakeNetwork(async (url, method) => {
+      if (url.pathname.endsWith("/conversations")) return [];
+      if (url.pathname.endsWith("/messages")) return [said(1, false)];
+      if (url.pathname.endsWith("/conversations/alice") && method === "PUT") {
+        acknowledged += 1;
+        if (acknowledged === 1) await held;
+        return { status: 204 };
+      }
+      return undefined;
+    });
+    const pane = new MessagePane({ kind: "user", name: "alice" }, () => "me");
+    const stop = $effect.root(() => pane.follow());
+    live.start();
+    net.frame("hello", { principal: { name: "me", role: "Administrator" } } as never);
+    await pane.load();
+    const reading = pane.markRead();
+    await vi.waitFor(() => expect(acknowledged).toBe(1));
+    // the daemon took the acknowledgement before this one came, so it is still unread there
+    net.frame("conversations.message", { username: "alice", message: said(2, false) } as never);
+    await vi.waitFor(() => expect(pane.ordered.map((m) => m.localId)).toEqual([1, 2]));
+    // the list asks again as the new message shows at the bottom
+    void pane.markRead();
+    release();
+    await reading;
+    stop();
+    expect(acknowledged).toBe(2);
+    expect(pane.ordered.map((m) => m.unread)).toEqual([false, false]);
   });
 });
 
