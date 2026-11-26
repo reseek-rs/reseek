@@ -84,12 +84,14 @@
     void wanted;
     untrack(() => void listed.load());
   });
-  // this user's transfers change in place; a new one shows with the next load
+  // this user's transfers change in place; a new one shows with the next load. The list holds
+  // removed transfers too, so a removed one stays, marked removed
   $effect(() =>
     live.on("transfers.updated", (t) => {
       if (rows.get(t.id)) rows.upsert(t);
     })
   );
+  $effect(() => live.on("transfers.removed", (t) => rows.assign(t.id, { removed: true })));
   $effect(() =>
     live.on("transfers.added", (t) => {
       if (t.username === username) void listed.load();
@@ -179,7 +181,7 @@
           {...list.line(t, i)}
           class={[
             "group relative isolate grid items-center list-row py-1",
-            rows.removed.has(t.id) && "opacity-40"
+            (t.removed || rows.removed.has(t.id)) && "opacity-40"
           ]}
           style={grid.row}>
           <span role="gridcell" class="flex px-2">
