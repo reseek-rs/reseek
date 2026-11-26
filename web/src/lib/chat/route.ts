@@ -1,4 +1,4 @@
-import { chatHref, href, roomHref } from "#lib/nav.js";
+import { chatHref, decodeSegment, href, roomHref } from "#lib/nav.js";
 
 import type { Target } from "./pane.svelte";
 import type { SearchKind } from "./search/match";
@@ -18,9 +18,9 @@ export const chatTarget = (path: string): Target | "search" | "public" | null =>
   if (parts.length === 1 && parts[0] === "search") return "search";
   if (parts.length === 1 && parts[0] === "public") return "public";
   if (parts[0] === "rooms" && parts.length === 2 && parts[1]) {
-    return { kind: "room", name: decodeURIComponent(parts[1]) };
+    return { kind: "room", name: decodeSegment(parts[1]) };
   }
-  if (parts.length === 1) return { kind: "user", name: decodeURIComponent(parts[0]) };
+  if (parts.length === 1) return { kind: "user", name: decodeSegment(parts[0]) };
   return null;
 };
 

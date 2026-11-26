@@ -25,6 +25,16 @@ export const route = (url: { hash: string }): { path: string; query: URLSearchPa
 export const segment = (name: string) =>
   /^\.+$/.test(name) ? name.replaceAll(".", "%2E") : encodeURIComponent(name);
 
+/** A path segment decoded; a stray `%` leaves it as written */
+export const decodeSegment = (text: string) => {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    // a malformed escape, as in a link typed by hand
+    return text;
+  }
+};
+
 /** The link to a user's profile, or to one of its tabs */
 export const userHref = (username: string, tab?: string) =>
   href(`/users/${segment(username)}${tab ? `/${tab}` : ""}`);

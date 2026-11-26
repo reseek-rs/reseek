@@ -15,6 +15,11 @@ describe("chat routes", () => {
     expect(chatTarget("/chat/alice")).toEqual({ kind: "user", name: "alice" });
   });
 
+  it("takes a name with a malformed escape as written", () => {
+    expect(chatTarget("/chat/50%")).toEqual({ kind: "user", name: "50%" });
+    expect(chatTarget("/chat/rooms/100%")).toEqual({ kind: "room", name: "100%" });
+  });
+
   it("carries the search through its results and the chats opened from them", () => {
     expect(resultsHref("a&b c")).toBe("#/chat/search?q=a%26b%20c");
     expect(resultsHref("x", "rooms")).toBe("#/chat/search?q=x&in=rooms");
