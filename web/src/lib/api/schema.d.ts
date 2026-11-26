@@ -3421,7 +3421,10 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Asks the server to report a user's presence and figures as they change. */
+        /**
+         * Asks the server to report a user's presence as it changes; their statistics are asked for
+         *     again with each change.
+         */
         put: operations["watch"];
         post?: never;
         /** Stops watching a user; refused while the user has uploads that have not completed. */

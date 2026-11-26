@@ -186,7 +186,8 @@ async fn interests(
   app.services.users.interests(&username).await.map(Json)
 }
 
-/// Asks the server to report a user's presence and figures as they change.
+/// Asks the server to report a user's presence as it changes; their statistics are asked for
+/// again with each change.
 #[utoipa::path(
   put, path = "/users/{username}/watch", tag = "users",
   params(("username" = String, Path, description = "the user"), UsernameQuery),

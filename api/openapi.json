@@ -16193,7 +16193,7 @@
         "tags": [
           "users"
         ],
-        "summary": "Asks the server to report a user's presence and figures as they change.",
+        "summary": "Asks the server to report a user's presence as it changes; their statistics are asked for\nagain with each change.",
         "operationId": "watch",
         "parameters": [
           {
