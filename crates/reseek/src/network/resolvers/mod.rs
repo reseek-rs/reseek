@@ -157,8 +157,8 @@ impl Drop for UserSearch {
 /// How the client answers peers: from the answers at the network's edge. A peer's `confirmed`
 /// is not read: whether a request counts as its user's is decided by `Directory::confirms`
 /// alone, which asks the server for the address at the time. Every relayed request is dialed,
-/// the parent nearest the top of its branch is taken and every child is let in while a slot is
-/// free, as the client does by default.
+/// the parent nearest the top of its branch is taken, as the client does by default, and a child
+/// is let in while a slot is free unless they are blocked from the distributed network.
 pub struct Answers(Arc<Edges>);
 
 impl Answers {
@@ -215,6 +215,15 @@ impl Handler for Answers {
       Ok(()) => OfferReply::Taken,
       Err(not_taken) => refused(&not_taken),
     }
+  }
+
+  fn accept_child(&self, peer: &Peer) -> bool {
+    !blocked(
+      &self.0,
+      &peer.username,
+      Some(peer.address),
+      BlockScope::Distributed,
+    )
   }
 }
 
@@ -508,6 +517,26 @@ pub(crate) mod tests {
         .queue_length,
       i32::MAX as u32
     );
+  }
+
+  #[tokio::test]
+  async fn a_user_blocked_from_the_distributed_network_is_refused_as_a_child() {
+    let app = app(CONFIG, &[]).await;
+    let block = json!({ "scopes": ["distributed"] });
+    let answer = app
+      .send(request("PUT", "/api/v0/users/mallory/block", Some(block)))
+      .await;
+    assert_eq!(answer.status, 200);
+    let answers = Answers::new(edges(&app));
+    let peer = |username: &str, ip: &str| Peer {
+      username: username.into(),
+      address: from(ip),
+      confirmed: true,
+    };
+
+    assert!(!answers.accept_child(&peer("mallory", "198.51.100.7")));
+    assert!(answers.accept_child(&peer("alice", "198.51.100.8")));
+    assert!(!answers.accept_child(&peer("alice", "192.0.2.9")));
   }
 
   #[tokio::test]
