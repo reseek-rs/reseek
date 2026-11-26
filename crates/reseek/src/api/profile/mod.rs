@@ -18,7 +18,7 @@ use api_types::auth::Principal;
 use api_types::options::{OptionsChanged, RevisionQuery};
 use api_types::profile::{Interests, OwnProfile, ProfileSources, ProfileText};
 use axum::body::Body;
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use cascade::{Change, Lasts, Loaded, Source};
@@ -30,7 +30,7 @@ use utoipa_axum::routes;
 use uuid::Uuid;
 
 use super::error::ApiError;
-use super::extract::{Json, essence};
+use super::extract::{Json, Query, essence};
 use super::options::{kept, remote};
 use crate::app::AppState;
 use crate::auth::{Administrator, AnyRole, Authorized, require_interactive};

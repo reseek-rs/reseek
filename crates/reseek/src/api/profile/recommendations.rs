@@ -3,7 +3,7 @@
 //! ours or who like one. Each is asked of the server when read; any role may read them.
 
 use api_types::profile::{Recommendation, Recommendations, SimilarUser};
-use axum::extract::{Path, State};
+use axum::extract::State;
 use soulseek_client::soulseek_proto;
 use soulseek_client::{Error as ClientError, ErrorKind};
 use tracing::debug;
@@ -11,7 +11,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::api::error::ApiError;
-use crate::api::extract::Json;
+use crate::api::extract::{Json, Path};
 use crate::app::AppState;
 use crate::auth::{AnyRole, Authorized};
 

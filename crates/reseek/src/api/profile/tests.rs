@@ -345,6 +345,18 @@ async fn interests_saved_from_a_profile_read_before_another_save_are_refused() {
   assert_eq!(profile(&app).await["interests"]["liked"], json!(["jazz"]));
   let again = put(json!({ "liked": ["jazz", "dub"], "hated": [] }), &left).await;
   assert_eq!(again.status, 200, "{:?}", again.body);
+  // an empty revision makes no check, and one given twice is refused in the body errors have
+  let unchecked = put(json!({ "liked": ["jazz"], "hated": [] }), &json!("")).await;
+  assert_eq!(unchecked.status, 200, "{:?}", unchecked.body);
+  let twice = app
+    .send(request(
+      "PUT",
+      "/api/v0/profile?revision=a&revision=b",
+      Some(json!({})),
+    ))
+    .await;
+  assert_eq!(twice.status, 400, "{:?}", twice.body);
+  assert_eq!(twice.json()["error"], "Invalid query");
 }
 
 #[tokio::test]
