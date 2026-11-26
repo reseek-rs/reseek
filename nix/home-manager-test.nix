@@ -1,6 +1,7 @@
 # Builds a home with the Home Manager module enabled and checks what it generates: the user unit
-# runs the package with the linked configuration, marked managed by Home Manager, and the
-# configuration holds the settings.
+# runs the package with the linked configuration, marked managed by Home Manager, the
+# configuration holds the settings, and a secret outside the store is linked in config.d as a
+# `.toml` file.
 {
   self,
   home-manager,
@@ -22,6 +23,7 @@ let
           enable = true;
           environmentFile = "/run/user/1000/reseek.env";
           settings.soulseek.username = "someone";
+          extraConfigFiles = [ "/run/agenix/reseek-oidc" ];
         };
       }
     ];
@@ -36,5 +38,6 @@ runCommand "reseek-home-manager" { } ''
   grep -q '^RestartForceExitStatus=75' ${unit}
   grep -q '^RestartPreventExitStatus=3' ${unit}
   grep -q 'username = "someone"' ${files}/.config/reseek/config.toml
+  [ "$(readlink -m ${files}/.config/reseek/config.d/01-reseek-oidc.toml)" = /run/agenix/reseek-oidc ]
   touch $out
 ''

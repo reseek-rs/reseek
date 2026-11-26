@@ -107,7 +107,13 @@ in
       lib.imap1 (
         index: file:
         lib.nameValuePair "reseek/config.d/${lib.fixedWidthNumber 2 index}-${dropInName file}" {
-          source = file;
+          # a file outside the store, such as a rendered secret, is linked where it is rather than
+          # copied into the world-readable store
+          source =
+            if builtins.isPath file || lib.hasPrefix "${builtins.storeDir}/" (toString file) then
+              file
+            else
+              config.lib.file.mkOutOfStoreSymlink file;
         }
       ) cfg.extraConfigFiles
     );
