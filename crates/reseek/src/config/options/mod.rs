@@ -357,18 +357,18 @@ pub struct Chat {
   /// Maximum length of a sent message, in characters.
   #[cascade(env = "RESEEK_CHAT_MAX_MESSAGE_LENGTH")]
   pub max_message_length: u32,
-  /// Lets other users add you to their private rooms.
+  /// Lets other users add this account to their private rooms.
   #[cascade(env = "RESEEK_CHAT_ACCEPT_PRIVATE_ROOM_INVITATIONS")]
   pub accept_private_room_invitations: bool,
   /// Words and phrases that mark a room message as a mention. Matched as whole words, in any
   /// case.
   #[cascade(env = "RESEEK_CHAT_HIGHLIGHT_WORDS")]
   pub highlight_words: Vec<String>,
-  /// Time with the web UI closed before you are shown as away. `0` turns this off.
+  /// Time with the web UI closed before this account is shown as away. `0` turns this off.
   #[cascade(env = "RESEEK_CHAT_AUTO_AWAY")]
   #[serde(with = "crate::config::duration")]
   pub auto_away: Duration,
-  /// Sent while you are away, as an automatic reply to each user's first private message.
+  /// Sent while this account is away, as an automatic reply to each user's first private message.
   #[cascade(env = "RESEEK_CHAT_AUTO_REPLY")]
   pub auto_reply: Option<String>,
 }
@@ -394,7 +394,7 @@ pub struct Blocking {
   /// `messages`, `rooms`, `downloads` and `distributed`.
   #[cascade(env = "RESEEK_BLOCKING_DEFAULT_SCOPES")]
   pub default_scopes: Vec<String>,
-  /// What a user blocked from uploads is told when they try to download from you.
+  /// What a user blocked from uploads is told when they try to download from this account.
   #[cascade(env = "RESEEK_BLOCKING_REFUSAL_MESSAGE")]
   pub refusal_message: String,
 }

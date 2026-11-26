@@ -31,7 +31,7 @@ pub struct ChatNotifications {
   /// How a private message is announced.
   #[cascade(env = "RESEEK_CHAT_NOTIFICATIONS_PRIVATE_MESSAGES")]
   pub private_messages: NotificationMode,
-  /// How a room message that mentions you is announced.
+  /// How a room message that mentions this account is announced.
   #[cascade(env = "RESEEK_CHAT_NOTIFICATIONS_MENTIONS")]
   pub mentions: NotificationMode,
   /// How messages in rooms set to notify of every message are announced.

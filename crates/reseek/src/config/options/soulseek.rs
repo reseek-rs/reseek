@@ -1,4 +1,4 @@
-//! The Soulseek network: the server, our account, the peer listener and connection tuning.
+//! The Soulseek network: the server, the account, the peer listener and connection tuning.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -44,7 +44,7 @@ pub struct Soulseek {
   /// that sets it.
   #[cascade(env = "RESEEK_SLSK_PICTURE", cli = "--slsk-picture", path)]
   pub picture: Option<PathBuf>,
-  /// Your interests and dislikes, used to suggest similar users and interests.
+  /// Interests and dislikes of this account, used to suggest similar users and interests.
   pub interests: SoulseekInterests,
   /// IP address on which to accept connections from other users.
   #[cascade(
@@ -108,7 +108,7 @@ impl Default for Soulseek {
   }
 }
 
-/// Your interests and dislikes, sent to the server at login and whenever they change.
+/// Interests and dislikes of this account, sent to the server at login and whenever they change.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Cascade)]
 #[serde(default)]
 pub struct SoulseekInterests {
@@ -310,8 +310,8 @@ pub struct SoulseekLimits {
   pub search_response_cache_size: u32,
   /// Maximum number of user addresses remembered between connections.
   pub user_endpoint_cache_size: u32,
-  /// Time a user offering to pass you searches in the distributed network has to start doing so.
-  /// One that doesn't is dropped.
+  /// Time a user offering to pass this account searches in the distributed network has to start
+  /// doing so. One that doesn't is dropped.
   #[serde(with = "crate::config::duration")]
   pub distributed_parent_negotiation_timeout: Duration,
 }

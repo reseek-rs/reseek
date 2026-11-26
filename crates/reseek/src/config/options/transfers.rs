@@ -138,7 +138,7 @@ pub struct Download {
   /// skipped in folder and selection downloads, never when downloaded on their own.
   #[cascade(env = "RESEEK_DOWNLOAD_FILTERS")]
   pub filters: Vec<String>,
-  /// Files other users send you without being asked.
+  /// Files other users send this account without being asked.
   pub received: Received,
 }
 
@@ -160,19 +160,19 @@ impl Default for Download {
   }
 }
 
-/// Files other users send you without being asked. They are downloaded like any other file, as
-/// a job started by their sender. Files matching the download filters are refused.
+/// Files other users send this account without being asked. They are downloaded like any other
+/// file, as a job started by their sender. Files matching the download filters are refused.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Cascade)]
 #[serde(default)]
 pub struct Received {
-  /// Groups whose members may send you files, such as `buddies`; `default` is everyone, and then
-  /// a sender's name is not checked against their address. No one may when empty.
+  /// Groups whose members may send this account files, such as `buddies`; `default` is everyone,
+  /// and then a sender's name is not checked against their address. No one may when empty.
   pub from: Vec<String>,
   /// Largest file accepted. No limit when not set.
   #[cascade(kind = "size")]
   pub max_size: Option<bytesize::ByteSize>,
-  /// Most files one user may be sending you at once. When everyone may send, each address is
-  /// held to it instead. `0` for no limit.
+  /// Most files one user may be sending this account at once. When everyone may send, each
+  /// address is held to it instead. `0` for no limit.
   pub max_files: u32,
 }
 
@@ -252,7 +252,7 @@ pub struct Permissions {
 pub const PRIVILEGED_GROUP: &str = BuiltinGroup::Privileged.as_str();
 /// The group of users who share too little.
 pub const LEECHERS_GROUP: &str = BuiltinGroup::Leechers.as_str();
-/// The group of our buddies.
+/// The group of buddies.
 pub const BUDDIES_GROUP: &str = BuiltinGroup::Buddies.as_str();
 /// The group of everyone in no group with upload settings of its own.
 pub const DEFAULT_GROUP: &str = BuiltinGroup::Default.as_str();
@@ -285,7 +285,7 @@ pub struct Groups {
   pub default: Group,
   /// Users who share too little.
   pub leechers: Leechers,
-  /// Our buddies.
+  /// The buddies.
   pub buddies: Buddies,
   /// Users who are never served.
   pub blacklisted: Blacklisted,
@@ -340,11 +340,11 @@ impl Groups {
   }
 }
 
-/// Our buddies.
+/// The buddies.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Cascade)]
 #[serde(default)]
 pub struct Buddies {
-  /// Upload queue and limits of our buddies. Their slots and speed limit are always set and
+  /// Upload queue and limits of buddies. Their slots and speed limit are always set and
   /// start at no limit, so buddies have a queue of their own served before everyone else and a
   /// buddy who shares too little is not slowed by the leechers' settings.
   pub upload: GroupUpload,
