@@ -4,7 +4,9 @@
 
 use std::future::Future;
 
-use api_types::jobs::{Job, JobCounts, JobEnding, JobKind, JobPartState, JobStarter, JobState};
+use api_types::jobs::{
+  Job, JobCounts, JobEnding, JobKind, JobPartState, JobStarter, JobState, ScheduleName,
+};
 use bytesize::ByteSize;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -12,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use super::{Ended, NewJob, NewPart, RunOutcome};
+use super::{Ended, NewJob, NewPart, RunOutcome, schedules};
 use crate::api::error::ApiError;
 use crate::app::AppState;
 use crate::app::tasks;
@@ -436,9 +438,10 @@ fn is_database(app: &AppState, name: &str) -> bool {
 }
 
 /// Runs the maintenance run `data` of the job `id` describes again, started by the user, in
-/// the background. 409 when it cannot be: kept by a version that kept none, kept in a shape
-/// this version does not read, which is logged, or of a database that is gone.
-pub fn run_again(
+/// the background; a cleanup or a vacuum of every database starts as Run now of its schedule.
+/// 409 when it cannot be: kept by a version that kept none, kept in a shape this version does
+/// not read, which is logged, of a database that is gone, or while its schedule runs.
+pub async fn run_again(
   app: &AppState,
   id: Uuid,
   data: Option<serde_json::Value>,
@@ -450,20 +453,18 @@ pub fn run_again(
     warn!(job = %id, error = %e, "maintenance job's stored run not read");
     refused("What it ran cannot be read".to_string())
   })?;
-  let app = app.clone();
   match run {
-    MaintenanceRun::Cleanup => {
-      tokio::spawn(async move { cleanup(&app, JobStarter::you(), true).await });
-    }
+    MaintenanceRun::Cleanup => schedules::run_now(app, ScheduleName::Cleanup.as_str()).await?,
     MaintenanceRun::Vacuum { database: None } => {
-      tokio::spawn(async move { vacuum(&app, JobStarter::you(), true).await });
+      schedules::run_now(app, ScheduleName::Vacuum.as_str()).await?;
     }
     MaintenanceRun::Vacuum {
       database: Some(name),
     } => {
-      if !is_database(&app, &name) {
+      if !is_database(app, &name) {
         return Err(refused(format!("The database {name}.db no longer exists")));
       }
+      let app = app.clone();
       tokio::spawn(async move {
         // the database is known, so the vacuum makes a job, and its end says how it went
         let _ = vacuum_one(&app, &name).await;
@@ -485,6 +486,8 @@ mod tests {
   use crate::transfers::state::State;
   use api_types::jobs::{JobPartState, JobStarterKind};
   use api_types::transfers::TransferOutcome;
+
+  use reseek_shares::lock;
 
   use super::*;
   use crate::testing::{TRUSTED, app};
@@ -580,6 +583,17 @@ mod tests {
     assert_eq!(parts, [JobPartState::Succeeded, JobPartState::Canceled]);
   }
 
+  #[tokio::test]
+  async fn run_again_of_a_cleanup_going_on_is_refused() {
+    let app = app(TRUSTED, &[]).await;
+    lock(&app.state.jobs.running_schedules).insert(ScheduleName::Cleanup);
+    let cleanup = serde_json::json!({ "run": "cleanup" });
+    let refused = run_again(&app.state, Uuid::new_v4(), Some(cleanup))
+      .await
+      .unwrap_err();
+    assert_eq!(refused.status(), axum::http::StatusCode::CONFLICT);
+  }
+
   #[test]
   fn a_maintenance_run_is_kept_in_the_shape_jobs_already_hold() {
     let vacuum = |database: Option<&str>| MaintenanceRun::Vacuum {
@@ -605,10 +619,14 @@ mod tests {
   async fn a_vacuum_of_a_database_that_is_gone_is_refused_rather_than_dropped() {
     let app = app(TRUSTED, &[]).await;
     let gone = serde_json::json!({ "run": "vacuum", "database": "old" });
-    let refused = run_again(&app.state, Uuid::new_v4(), Some(gone)).unwrap_err();
+    let refused = run_again(&app.state, Uuid::new_v4(), Some(gone))
+      .await
+      .unwrap_err();
     assert_eq!(refused.status(), axum::http::StatusCode::CONFLICT);
     let name = app.state.databases.names().remove(0);
     let known = serde_json::json!({ "run": "vacuum", "database": name });
-    run_again(&app.state, Uuid::new_v4(), Some(known)).unwrap();
+    run_again(&app.state, Uuid::new_v4(), Some(known))
+      .await
+      .unwrap();
   }
 }

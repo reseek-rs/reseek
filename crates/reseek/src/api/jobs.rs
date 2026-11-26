@@ -233,7 +233,8 @@ async fn resume(
 /// Starts a job that did not succeed again, as a new job; the old one stays in the list. A
 /// download job queues its failed and canceled files again, an analysis job analyzes its failed
 /// files again, a scan or maintenance run runs again. The new job's id is given when it is
-/// known at once; a scan's and a maintenance run's show in the list as they start.
+/// known at once; a scan's and a maintenance run's show in the list as they start. 409 while a
+/// scan, a cleanup or a vacuum of every database already runs.
 #[utoipa::path(
   operation_id = "run_job_again",
   post, path = "/jobs/{id}/run-again", tag = "jobs",
@@ -272,7 +273,7 @@ async fn run_again(
       None
     }
     JobKind::Maintenance => {
-      crate::jobs::maintenance::run_again(&app, id, data)?;
+      crate::jobs::maintenance::run_again(&app, id, data).await?;
       None
     }
   };
