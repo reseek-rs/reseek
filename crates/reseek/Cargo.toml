@@ -93,7 +93,6 @@ win32job = "2"
 [dev-dependencies]
 choon = { workspace = true, features = ["testing"] }
 reseek-shares = { workspace = true, features = ["testing"] }
-proptest.workspace = true
 # turns a generated key into the PKCS#1 form the test identity provider signs with
 rsa = "0.9"
 tempfile.workspace = true
