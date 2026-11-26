@@ -220,13 +220,14 @@ export const browserTabs = (): Tabs | null => {
   if (typeof BroadcastChannel === "undefined") return (tabs = null);
   const made = new Tabs(new BroadcastChannel("reseek-tabs"), performance.timeOrigin);
   setInterval(() => made.beat(), BEAT_MS);
-  // a page kept in the back-forward cache, or frozen, comes back through pageshow or resume
+  // a page kept in the back-forward cache, or frozen, comes back through pageshow or resume.
+  // freeze and resume are sent to the document and do not bubble to the window
   addEventListener("pagehide", () => made.leave());
-  addEventListener("freeze", () => made.leave());
+  document.addEventListener("freeze", () => made.leave());
   addEventListener("pageshow", (e) => {
     if (e.persisted) made.back();
   });
-  addEventListener("resume", () => made.back());
+  document.addEventListener("resume", () => made.back());
   // focus comes on a switch of tabs or windows; the page shown already focused hears no event
   addEventListener("focus", () => made.focus());
   document.addEventListener("visibilitychange", () => {
