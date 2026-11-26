@@ -76,7 +76,6 @@ struct Rig {
   state: StateOwner,
   reachability: Arc<Reachability>,
   requests: Arc<Mutex<Vec<String>>>,
-  /// the count of peers reaching us, which the judgment follows while it is held
   /// the client whose inbound connections are counted, which nobody connects to
   _client: soulseek_client::Client,
 }
