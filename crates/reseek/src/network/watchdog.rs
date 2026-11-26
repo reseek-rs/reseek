@@ -6,8 +6,9 @@
 //! time: the first attempt at once, then each after an exponential back-off with jitter, or,
 //! after a login the server never answered, 15 minutes, an hour and then 6 hours apart. A timer
 //! starts a new loop while the watchdog is on and none runs. The back-off goes on across loops
-//! until a login succeeds or the watchdog is restarted, so a server that drops us during every
-//! login is not tried again at once each time. A restart cancels the running turn, and what
+//! until a session stays logged in for [`SETTLED`] or the watchdog is restarted, so a server that
+//! drops us during or right after every login is not tried again at once each time. A restart
+//! cancels the running turn, and what
 //! that turn still reports after, a refused login or its session's connect, leaves the watchdog
 //! on.
 
@@ -20,6 +21,7 @@ use chrono::Utc;
 use reseek_shares::{Outage, backoff, lock};
 use soulseek_client::{Client, Error as ClientError, ErrorKind};
 use tokio::sync::watch;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, info, info_span, warn};
 
@@ -32,6 +34,10 @@ const BACKSTOP: Duration = Duration::from_millis(100);
 
 /// The longest wait between two attempts after transport failures.
 pub const BACKOFF_MAX: Duration = Duration::from_secs(300);
+
+/// How long a session stays logged in before its loss counts as a new outage: one lost sooner
+/// counts as a failed attempt, so the back-off goes on.
+const SETTLED: Duration = Duration::from_secs(60);
 
 /// The waits after one, two, and three or more logins in a row the server did not answer.
 const UNANSWERED: [Duration; 3] = [
@@ -99,6 +105,8 @@ struct Turns {
   failures: u32,
   /// logins in a row the server left unanswered
   unanswered: u32,
+  /// when the session that is up logged in
+  logged_in_at: Option<Instant>,
 }
 
 impl Turns {
@@ -123,9 +131,29 @@ impl Turns {
     true
   }
 
+  /// A login succeeded `at`: the server answered it.
+  fn logged_in(&mut self, at: Instant) {
+    self.unanswered = 0;
+    self.logged_in_at = Some(at);
+  }
+
+  /// The session that logged in was lost `at`: the failures are forgotten when it stayed up for
+  /// [`SETTLED`], and it counts as one more otherwise.
+  fn lost(&mut self, at: Instant) {
+    let Some(logged_in_at) = self.logged_in_at.take() else {
+      return;
+    };
+    if at.duration_since(logged_in_at) >= SETTLED {
+      self.failures = 0;
+    } else {
+      self.failures += 1;
+    }
+  }
+
   fn clear(&mut self) {
     self.failures = 0;
     self.unanswered = 0;
+    self.logged_in_at = None;
   }
 
   fn cancel(&self) {
@@ -223,8 +251,10 @@ impl Watchdog {
   }
 
   /// A session that reached the server was lost: the watchdog is turned on as by a start,
-  /// unless it was held off since.
+  /// unless it was held off since. A session lost within [`SETTLED`] of its login counts as a
+  /// failed attempt.
   pub fn lost(&self) {
+    lock(&self.inner.turns).lost(Instant::now());
     let mut held = false;
     self.inner.mode.send_if_modified(|mode| match mode {
       Mode::Held => {
@@ -350,10 +380,11 @@ impl Watchdog {
     true
   }
 
-  /// Forgets the failed attempts, the unanswered logins and the failures warned of, once a login
-  /// succeeded: a failure from then on is a new outage.
+  /// Forgets the unanswered logins and the failures warned of, once a login succeeded: a failure
+  /// from then on is a new outage. The failed attempts are forgotten once the session stays up
+  /// for [`SETTLED`].
   pub fn logged_in(&self) {
-    lock(&self.inner.turns).clear();
+    lock(&self.inner.turns).logged_in(Instant::now());
     lock(&self.inner.outage).end();
     self.publish();
   }
@@ -586,6 +617,27 @@ mod tests {
     assert!(!turns.count(&second, true));
     let (_, failed, unanswered) = turns.begin(CancellationToken::new());
     assert_eq!((failed, unanswered), (0, 0), "the next turn starts at once");
+  }
+
+  #[test]
+  fn a_session_lost_soon_after_its_login_keeps_the_back_off() {
+    let mut turns = Turns::default();
+    let token = CancellationToken::new();
+    let start = Instant::now();
+    // a server that takes each login and closes the session a second later
+    let mut waits = Vec::new();
+    for login in 0..4u32 {
+      let at = start + Duration::from_secs(10 * u64::from(login));
+      turns.logged_in(at);
+      turns.lost(at + Duration::from_secs(1));
+      let (_, failed, _) = turns.begin(token.clone());
+      waits.push(failed);
+    }
+    assert_eq!(waits, [1, 2, 3, 4], "each quick loss is one more failure");
+    // a session that stays up starts the next outage afresh
+    turns.logged_in(start);
+    turns.lost(start + SETTLED);
+    assert_eq!(turns.begin(token).1, 0);
   }
 
   #[tokio::test]
