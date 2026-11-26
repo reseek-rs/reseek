@@ -1,9 +1,10 @@
-//! One upload's task: the user is watched, the file found again, and the client's upload run
-//! with the queue's slot, the group's speed limit and every state written as it comes, the
-//! progress at most every [`PROGRESS_EVERY`]. How it ended is written, counted and, for a
-//! success, raised as `UploadFileComplete`; whatever the end, the upload leaves the queue. A
-//! file no longer shared to the user fails the upload, and a peer that asked for it is told it
-//! is not shared. A stop of the daemon leaves the record as it is, for the stop to end.
+//! One upload's task: the user is watched and the client's upload run with the queue's slot,
+//! the group's speed limit and every state written as it comes, the progress at most every
+//! [`PROGRESS_EVERY`]. How it ended is written, counted and, for a success, raised as
+//! `UploadFileComplete`; whatever the end, the upload leaves the queue. The file is found again
+//! when the slot comes: a file no longer shared to the user then fails the upload, and a peer
+//! that asked for it is told it is not shared. A stop of the daemon leaves the record as it is,
+//! for the stop to end.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,7 +30,7 @@ use crate::shares::LOCAL_HOST;
 use crate::transfers::state::{self, State};
 use crate::transfers::{PROGRESS_EVERY, Record, removal, store};
 
-/// Why an upload whose file is gone when it starts ended.
+/// Why an upload whose file is gone when its slot comes ended.
 const FILE_GONE: &str = "File could not be found";
 
 /// Why an upload that was canceled ended.
@@ -146,48 +147,6 @@ impl Uploads {
     };
     self.users.watch(&client, &record.username).await;
     info!(filename = record.filename, "Initializing upload");
-    // the request was confirmed when it was queued, and the file goes to the user the server
-    // knows by the name; whether they still see the file is decided again
-    let sees = self.users.sees(&record.username);
-    let located = match self.locate(&sees, &record.filename).await {
-      Ok(Locating::Found(found)) => found,
-      Ok(Locating::NotShared) => {
-        self.fail(&mut record, &Failed::Gone, None).await;
-        // a request of the user's since it was sent unasked makes it theirs to be told about
-        let asked = lock(&self.in_flight)
-          .get(&record.id)
-          .is_some_and(|entry| entry.asked);
-        if !asked {
-          return debug!("a file sent unasked is gone; its user, who never asked, is not told");
-        }
-        // the answer a request for a file not shared gets, so the peer stops waiting for it; sent
-        // on a task of its own, so the upload leaves the queue without waiting for the peer, and
-        // given up when the upload is canceled or the daemon stops
-        let (username, filename) = (record.username.clone(), record.filename.clone());
-        let (cancel, stop) = (cancel.clone(), self.shutdown.clone());
-        self.tasks.spawn(
-          async move {
-            tokio::select! {
-              () = cancel.cancelled() => debug!("the peer is not told the file is gone; canceled"),
-              () = stop.cancelled() => debug!("the peer is not told the file is gone; stopping"),
-              () = client.transfers().deny(&username, filename, NOT_SHARED.to_string()) => {}
-            }
-          }
-          .in_current_span(),
-        );
-        return;
-      }
-      // the agent is asked for the file again when the upload's turn comes, and the peer is
-      // told the upload failed when it cannot send it then
-      Ok(Locating::Later) => {
-        debug!("the agent holding the file cannot answer now; the upload waits for its turn");
-        located
-      }
-      Err(e) => {
-        warn!(error = %e, "share index not read; the file found when the request was accepted is sent");
-        located
-      }
-    };
     let username = record.username.clone();
     let users = self.users.clone();
     let (governor, reporter) = self
@@ -215,17 +174,23 @@ impl Uploads {
     match result {
       Ok(transfer) => self.succeeded(&mut record, &transfer, &located).await,
       Err((error, ended)) => {
+        let gone = lock(&self.in_flight)
+          .get(&record.id)
+          .is_some_and(|entry| entry.gone);
+        let failed = if gone {
+          Failed::Gone
+        } else {
+          Failed::Client(error)
+        };
         let ended = ended.map(|snapshot| {
           let snapshot = *snapshot;
           let outcome = match state::reported(snapshot.state) {
-            TransferStates::Completed(outcome) => outcome,
-            _ => outcome(&Failed::Client(error.clone())),
+            TransferStates::Completed(outcome) if !gone => outcome,
+            _ => outcome(&failed),
           };
           (snapshot, outcome)
         });
-        self
-          .fail(&mut record, &Failed::Client(error), ended.as_ref())
-          .await;
+        self.fail(&mut record, &failed, ended.as_ref()).await;
       }
     }
   }
@@ -318,8 +283,9 @@ impl Uploads {
     (upload, Some(relay))
   }
 
-  /// What the client waits on for the upload `id`'s slot: the queue's start. The slot goes back
-  /// to the queue once the upload lets go of it.
+  /// What the client waits on for the upload `id`'s slot: the queue's start, then the file
+  /// found again, which fails the upload when it is no longer shared to the user. The slot goes
+  /// back to the queue once the upload lets go of it.
   fn slot(
     &self,
     id: Uuid,
@@ -328,25 +294,59 @@ impl Uploads {
   + Sync
   + 'static {
     let this = self.this();
-    move |_| {
+    move |transfer| {
       let start = this.queue.await_start(id);
       let uploads = this.clone();
+      let (username, filename) = (transfer.username.clone(), transfer.filename.as_str().to_owned());
       Box::pin(async move {
         let start = match start {
           Ok(start) => start,
           Err(e) => return Slot::Fail(e.to_string()),
         };
-        match start.await {
-          Ok(()) => Slot::granted(Held { uploads, id }),
-          Err(_) => Slot::Fail(format!("upload {id} left the queue before its slot")),
+        if start.await.is_err() {
+          return Slot::Fail(format!("upload {id} left the queue before its slot"));
         }
+        let held = Held { uploads, id };
+        if held.uploads.gone(id, &username, &filename).await {
+          // the slot goes back to the queue as `held` drops
+          return Slot::Fail(FILE_GONE.to_string());
+        }
+        Slot::granted(held)
       })
     }
   }
 
+  /// Whether `filename` of the upload `id` is no longer shared to `username`, which marks the
+  /// upload as gone. The request was confirmed when it was queued, and the file goes to the user
+  /// the server knows by the name.
+  async fn gone(&self, id: Uuid, username: &str, filename: &str) -> bool {
+    let sees = self.users.sees(username);
+    match self.locate(&sees, filename).await {
+      Ok(Locating::Found(_)) => false,
+      // the agent is asked for the file again as the peer asks for its bytes, and the peer is
+      // told the upload failed when it cannot send it then
+      Ok(Locating::Later) => {
+        debug!("the agent holding the file cannot answer now; the upload goes on");
+        false
+      }
+      Err(e) => {
+        warn!(error = %e, "share index not read; the file found when the request was accepted is sent");
+        false
+      }
+      Ok(Locating::NotShared) => {
+        if let Some(entry) = lock(&self.in_flight).get_mut(&id) {
+          entry.gone = true;
+        }
+        true
+      }
+    }
+  }
+
   /// What the client asks before it tells the peer an upload `id` that did not succeed ended:
-  /// the upload is marked ended first, since the peer may ask again at once, and what the peer
-  /// is told is left to the client.
+  /// the upload is marked ended first, since the peer may ask again at once. A peer that asked
+  /// for a file gone is told it is not shared, the answer its request would get now, so it stops
+  /// waiting for it; one sent the file unasked is told nothing. Otherwise what the peer is told
+  /// is left to the client.
   fn ended(
     &self,
     id: Uuid,
@@ -355,7 +355,13 @@ impl Uploads {
     move |snapshot, _| {
       this.shown.ended(snapshot);
       this.mark_ended(id);
-      None
+      let in_flight = lock(&this.in_flight);
+      let entry = in_flight.get(&id).filter(|entry| entry.gone)?;
+      Some(if entry.asked {
+        UploadNotice::Denied(NOT_SHARED.to_string())
+      } else {
+        UploadNotice::Nothing
+      })
     }
   }
 

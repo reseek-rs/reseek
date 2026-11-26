@@ -168,6 +168,7 @@ impl Uploads {
           reason: None,
           ended: false,
           asked,
+          gone: false,
         },
       );
       live

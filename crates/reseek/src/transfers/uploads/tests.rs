@@ -228,7 +228,7 @@ async fn one_address_holds_no_more_than_its_share_of_the_queue() {
 
 /// What [`silent_app`] runs: the shared files, the daemon, its server and the users' clients.
 struct Silent {
-  _files: tempfile::TempDir,
+  files: tempfile::TempDir,
   app: TestApp,
   _server: Server,
   /// where every user's client is: a socket that takes connections and never answers, so the
@@ -288,7 +288,7 @@ async fn silent_app() -> Silent {
   .await;
   server.login(&app).await;
   Silent {
-    _files: files,
+    files,
     app,
     _server: server,
     _clients: silent,
@@ -337,6 +337,67 @@ async fn one_address_queues_its_share_of_users_and_more_once_they_leave() {
     ask("one-more".into()).await,
     None,
     "the address holds no place now"
+  );
+}
+
+/// A file that leaves its user's view while their upload waits for its slot fails the upload as
+/// gone when the slot comes.
+#[tokio::test]
+async fn a_file_gone_while_its_upload_waits_for_its_slot_fails_it_when_the_slot_comes() {
+  let silent = silent_app().await;
+  let app = &silent.app;
+  let second = "Music\\Album\\02.mp3";
+  // alice's upload takes the one slot and waits on her client
+  assert_eq!(asked(app, "alice", SHARED).await, None);
+  assert_eq!(asked(app, "bob", second).await, None);
+  let uploads = &app.state.uploads;
+  let client = uploads.client().unwrap();
+  let within = std::time::Duration::from_secs(10);
+  tokio::time::timeout(within, async {
+    while !client
+      .transfers()
+      .uploads()
+      .iter()
+      .any(|t| t.username == "bob")
+    {
+      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+  })
+  .await
+  .expect("bob's upload waits for its slot in the client");
+  std::fs::remove_file(silent.files.path().join("music/Album/02.mp3")).unwrap();
+
+  let listed = async |username: &str| -> Vec<api_types::transfers::Transfer> {
+    let path = format!("/api/v0/transfers/uploads/{username}");
+    let (_, body) = app.call("GET", &path, None).await;
+    let user: UserResponse = serde_json::from_value(body).unwrap();
+    user.directories.into_iter().flat_map(|d| d.files).collect()
+  };
+  let alices = listed("alice").await[0].id;
+  let (status, _) = app
+    .call(
+      "DELETE",
+      &format!("/api/v0/transfers/uploads/alice/{alices}"),
+      None,
+    )
+    .await;
+  assert_eq!(status, 204);
+  let ended = tokio::time::timeout(within, async {
+    loop {
+      if let Some(ended) = listed("bob").await.into_iter().find(|t| t.ended_at.is_some()) {
+        return ended;
+      }
+      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+  })
+  .await
+  .expect("bob's upload ends");
+  assert_eq!(
+    (ended.state, ended.exception.as_deref()),
+    (
+      TransferStates::Completed(TransferOutcome::Aborted),
+      Some("File could not be found")
+    )
   );
 }
 
@@ -497,6 +558,7 @@ async fn a_strangers_request_for_a_buddys_queued_hidden_file_is_not_shared() {
       reason: None,
       ended: false,
       asked: false,
+      gone: false,
     },
   );
   let asked_for = || lock(&uploads.in_flight)[&id].asked;
@@ -532,6 +594,7 @@ async fn a_running_upload_stands_for_a_new_request_and_an_ended_one_is_supersede
       reason: None,
       ended: false,
       asked: true,
+      gone: false,
     },
   );
   let listed = async || -> Vec<Uuid> {
@@ -745,6 +808,7 @@ async fn sending_shared(app: &TestApp) -> Uuid {
       reason: None,
       ended: false,
       asked: false,
+      gone: false,
     },
   );
   id

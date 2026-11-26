@@ -66,6 +66,8 @@ struct InFlight {
   ended: bool,
   /// its user asked for the file, by a request of theirs, rather than our sending it unasked
   asked: bool,
+  /// its file was no longer shared to its user when its slot came
+  gone: bool,
 }
 
 /// The upload engine.

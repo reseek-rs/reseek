@@ -938,49 +938,6 @@ async fn a_file_its_agent_is_slow_to_find_has_the_peer_ask_again() {
   );
 }
 
-/// An upload accepted while its agent had the file, whose agent leaves before the upload's task
-/// asks it again, is not failed as gone: the client runs it, and the agent is asked for the
-/// file when its turn comes. The daemon here is logged out, so the client's upload ends at once.
-#[tokio::test]
-async fn an_upload_whose_agent_leaves_before_its_task_starts_is_left_to_its_turn() {
-  let (app, controller) = controller_asking_within("10s").await;
-  let (to_socket, mut from_socket, _served) =
-    log_in(&controller, [127, 0, 0, 1].into(), SECRET).await;
-  agent_ready(&controller).await;
-  let sending = tokio::spawn({
-    let uploads = app.state.uploads.clone();
-    async move { uploads.send("alice", vec![AGENT_FILE.to_string()]).await }
-  });
-  let accepting = file_info_request(&mut from_socket).await;
-  to_socket.send(file_info(accepting, true, 5)).await.unwrap();
-  assert_eq!(sending.await.unwrap().queued, [AGENT_FILE]);
-  // the task asks again as it starts, and the agent leaves before it answers
-  file_info_request(&mut from_socket).await;
-  assert!(controller.kick("nas"));
-
-  let ended = tokio::time::timeout(Duration::from_secs(10), async {
-    loop {
-      let (_, body) = app
-        .call("GET", "/api/v0/transfers/uploads/alice", None)
-        .await;
-      let user: api_types::transfers::UserResponse = serde_json::from_value(body).unwrap();
-      let ended = user
-        .directories
-        .into_iter()
-        .flat_map(|d| d.files)
-        .find(|f| f.ended_at.is_some());
-      if let Some(ended) = ended {
-        return ended;
-      }
-      tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-  })
-  .await
-  .expect("the upload ends");
-  let exception = ended.exception.unwrap();
-  assert!(exception.contains("logged in to upload"), "{exception}");
-}
-
 /// A scripted server where alice is online at a listener of the test's, logged in by `app`;
 /// returns the listener, where the daemon's connections to her are read, and the server.
 async fn alice_online(
@@ -1048,11 +1005,52 @@ async fn first_told(alice: &tokio::net::TcpListener) -> soulseek_proto::PeerMess
   PeerMessage::decode(&told).unwrap()
 }
 
-/// An upload accepted while its agent had the file, whose agent says the file is gone when the
-/// upload's task asks again, fails, and alice, who asked for it, is told it is not shared, the
-/// answer her request would get now, so she stops waiting for it.
+/// An upload accepted while its agent had the file, whose agent leaves before it answers again
+/// as the upload's slot comes, is not failed as gone: the client offers alice the file, and the
+/// agent is asked for its bytes when she asks for them.
 #[tokio::test]
-async fn an_upload_whose_agent_lost_the_file_before_its_task_starts_is_denied_to_its_peer() {
+async fn an_upload_whose_agent_leaves_as_its_slot_comes_is_offered_to_its_peer() {
+  use soulseek_proto::PeerMessage;
+  use soulseek_proto::peer::TransferRequest;
+
+  let app = crate::testing::soulseek::app(&controller_config("10s")).await;
+  let controller = app.state.relay.controller.clone().unwrap();
+  let (alice, _server) = alice_online(&app).await;
+  let (to_socket, mut from_socket, _served) =
+    log_in(&controller, [127, 0, 0, 1].into(), SECRET).await;
+  agent_ready(&controller).await;
+
+  let queued = {
+    let asking = asked(&app);
+    tokio::pin!(asking);
+    let id = tokio::select! {
+      id = file_info_request(&mut from_socket) => id,
+      answer = &mut asking => panic!("answered before the agent: {answer:?}"),
+    };
+    to_socket.send(file_info(id, true, 5)).await.unwrap();
+    asking.await
+  };
+  assert!(queued.is_ok(), "{queued:?}");
+  // the agent is asked again as the slot comes, and leaves before it answers
+  file_info_request(&mut from_socket).await;
+  assert!(controller.kick("nas"));
+
+  let offered = first_told(&alice).await;
+  assert!(
+    matches!(
+      &offered,
+      PeerMessage::TransferRequest(TransferRequest::Upload { filename, .. })
+        if filename.as_str() == AGENT_FILE
+    ),
+    "{offered:?}"
+  );
+}
+
+/// An upload accepted while its agent had the file, whose agent says the file is gone when it is
+/// asked again as the upload's slot comes, fails, and alice, who asked for it, is told it is not
+/// shared, the answer her request would get now, so she stops waiting for it.
+#[tokio::test]
+async fn an_upload_whose_agent_lost_the_file_before_its_slot_is_denied_to_its_peer() {
   use soulseek_proto::PeerMessage;
   use soulseek_proto::peer::UploadDenied;
 
@@ -1074,7 +1072,7 @@ async fn an_upload_whose_agent_lost_the_file_before_its_task_starts_is_denied_to
     asking.await
   };
   assert!(queued.is_ok(), "{queued:?}");
-  // the task asks again as it starts, and the agent no longer has the file
+  // the agent is asked again as the slot comes, and no longer has the file
   let starting = file_info_request(&mut from_socket).await;
   to_socket.send(file_info(starting, false, 0)).await.unwrap();
 
@@ -1085,23 +1083,33 @@ async fn an_upload_whose_agent_lost_the_file_before_its_task_starts_is_denied_to
       reason: "File not shared.".into(),
     })
   );
-  let (_, body) = app
-    .call("GET", "/api/v0/transfers/uploads/alice", None)
-    .await;
-  let user: api_types::transfers::UserResponse = serde_json::from_value(body).unwrap();
-  let ended = user.directories.into_iter().flat_map(|d| d.files).next();
-  assert_eq!(
-    ended.and_then(|t| t.exception).as_deref(),
-    Some("File could not be found"),
-    "the upload is failed before alice is told"
-  );
+  ended_as_gone(&app).await;
 }
 
-/// A file we send alice unasked that the agent no longer has when the upload's task starts
-/// fails, and alice, who never asked for it, is told nothing: what she hears first from the
-/// daemon is the browse it is asked for next.
+/// Waits for the upload to alice to end as one whose file is gone.
+async fn ended_as_gone(app: &crate::testing::TestApp) {
+  tokio::time::timeout(Duration::from_secs(10), async {
+    loop {
+      let (_, body) = app
+        .call("GET", "/api/v0/transfers/uploads/alice", None)
+        .await;
+      let user: api_types::transfers::UserResponse = serde_json::from_value(body).unwrap();
+      let ended = user.directories.into_iter().flat_map(|d| d.files).next();
+      if ended.and_then(|t| t.exception).as_deref() == Some("File could not be found") {
+        return;
+      }
+      tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+  })
+  .await
+  .expect("the upload ends as gone");
+}
+
+/// A file we send alice unasked that the agent no longer has when the upload's slot comes fails,
+/// and alice, who never asked for it, is told nothing: what she hears first from the daemon is
+/// the browse it is asked for next.
 #[tokio::test]
-async fn a_file_sent_unasked_that_the_agent_lost_before_its_task_starts_ends_quietly() {
+async fn a_file_sent_unasked_that_the_agent_lost_before_its_slot_ends_quietly() {
   use soulseek_proto::PeerMessage;
 
   let app = crate::testing::soulseek::app(&controller_config("10s")).await;
@@ -1128,21 +1136,7 @@ async fn a_file_sent_unasked_that_the_agent_lost_before_its_task_starts_ends_qui
   );
   let starting = file_info_request(&mut from_socket).await;
   to_socket.send(file_info(starting, false, 0)).await.unwrap();
-  tokio::time::timeout(Duration::from_secs(10), async {
-    loop {
-      let (_, body) = app
-        .call("GET", "/api/v0/transfers/uploads/alice", None)
-        .await;
-      let user: api_types::transfers::UserResponse = serde_json::from_value(body).unwrap();
-      let ended = user.directories.into_iter().flat_map(|d| d.files).next();
-      if ended.and_then(|t| t.exception).as_deref() == Some("File could not be found") {
-        return;
-      }
-      tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-  })
-  .await
-  .expect("the upload ends");
+  ended_as_gone(&app).await;
 
   let browse = app.call("GET", "/api/v0/users/alice/browse", None);
   tokio::pin!(browse);
@@ -1154,7 +1148,7 @@ async fn a_file_sent_unasked_that_the_agent_lost_before_its_task_starts_ends_qui
 }
 
 /// A file we send alice unasked that she then asks for herself, answered as queued already, is
-/// hers to be told about: when the agent no longer has it as the upload's task starts, she is
+/// hers to be told about: when the agent no longer has it as the upload's slot comes, she is
 /// told it is not shared.
 #[tokio::test]
 async fn a_file_sent_unasked_then_asked_for_is_denied_once_the_agent_lost_it() {
@@ -1183,12 +1177,20 @@ async fn a_file_sent_unasked_then_asked_for_is_denied_once_the_agent_lost_it() {
     (status, &answer["queued"]),
     (200, &serde_json::json!([AGENT_FILE]))
   );
-  // the task waits for the agent as it starts, and alice asks for the file meanwhile
+  // the slot waits for the agent, and alice asks for the file meanwhile, which the agent has
+  // when her request asks
   let starting = file_info_request(&mut from_socket).await;
-  assert!(
-    asked(&app).await.is_ok(),
-    "alice's request is answered as queued"
-  );
+  let answer = {
+    let asking = asked(&app);
+    tokio::pin!(asking);
+    let id = tokio::select! {
+      id = file_info_request(&mut from_socket) => id,
+      answer = &mut asking => panic!("answered before the agent: {answer:?}"),
+    };
+    to_socket.send(file_info(id, true, 5)).await.unwrap();
+    asking.await
+  };
+  assert!(answer.is_ok(), "alice's request is answered as queued");
   to_socket.send(file_info(starting, false, 0)).await.unwrap();
   assert_eq!(
     first_told(&alice).await,
