@@ -13,9 +13,10 @@ use crate::{ScanOrigin, SharedCounts};
 pub(crate) enum Ended {
   /// a scan filled the index
   Completed,
-  /// a scan was canceled, and the index from before is served
+  /// a scan was canceled: the directories it wrote stay, listed but not searchable, nothing
+  /// was pruned and the totals from before are shown
   Canceled,
-  /// a scan failed, and the index from before is served
+  /// a scan failed, leaving the index as a canceled one does
   Failed,
 }
 
@@ -36,7 +37,7 @@ pub(crate) enum Phase {
     force: bool,
     origin: ScanOrigin,
   },
-  /// a scan runs; a scan that does not complete leaves `before` served
+  /// a scan runs; a scan that does not complete leaves the totals `before` shown
   Scanning {
     cancel: CancellationToken,
     progress: Progress,

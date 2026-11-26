@@ -969,7 +969,7 @@ async fn a_faulted_scan_keeps_the_served_index_ready_and_marks_a_scan_pending() 
   );
   shares.faulted("the index refused a write");
   let shown = engine.state();
-  assert!(shown.ready, "the index from before is still served");
+  assert!(shown.ready, "the index is still served");
   assert!(shown.faulted && shown.scan_pending && !shown.scanning);
   assert_eq!(shown.files, before.files);
   shares.hold(Edge::Release);
@@ -1068,7 +1068,7 @@ async fn a_canceled_scan_leaves_the_engine_idle_at_full_progress() {
   let shown = engine.state();
   assert!(shown.cancelled && shown.scan_pending && !shown.scanning);
   assert_eq!(shown.scan_progress, 1.0);
-  assert!(shown.ready, "the index from before is still served");
+  assert!(shown.ready, "the index is still served");
   drop(files);
 }
 

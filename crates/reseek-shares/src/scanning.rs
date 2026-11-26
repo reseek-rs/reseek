@@ -213,7 +213,8 @@ impl Shares {
     settings.snapshot.get("content") == Some(&content)
   }
 
-  /// Puts a failed scan into the state: the cache served is what was there before.
+  /// Puts a failed scan into the state: the totals from before are shown and a rescan is
+  /// pending.
   pub(super) fn faulted(&self, error: &str) {
     tracing::error!(error, "Failed to scan shares.");
     self.hold(Edge::ScanEnded(ScanResult::Failed));

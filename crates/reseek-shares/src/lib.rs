@@ -162,9 +162,10 @@ pub enum ScanOrigin {
 pub enum ScanEnded {
   /// every directory was scanned and the index holds these totals
   Completed(SharedCounts),
-  /// it was canceled, and the index from before is served
+  /// it was canceled: the directories it wrote stay, listed and downloadable but not yet
+  /// searchable, nothing was pruned, the totals from before are shown and a rescan is pending
   Canceled,
-  /// it failed for this reason, and the index from before is served
+  /// it failed for this reason, leaving the index as a canceled scan does
   Failed(String),
 }
 
