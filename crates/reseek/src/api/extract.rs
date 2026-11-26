@@ -1,13 +1,14 @@
 //! Reading a request: its JSON body, its query, its path parameters and the usernames and room
-//! names in it. Anything that does not read is answered 400 in the body every error has, naming
-//! the field that is wrong, before the handler runs.
+//! names in it. Anything that does not read is answered in the body every error has before the
+//! handler runs: 400 naming the field that is wrong, 413 for a body past the size limit and 415
+//! for a body that is not JSON.
 
 use std::collections::BTreeSet;
 
 use axum::body::Bytes;
 use axum::extract::rejection::BytesRejection;
 use axum::extract::{FromRequest, FromRequestParts, OptionalFromRequest, RawPathParams, Request};
-use axum::http::header;
+use axum::http::{StatusCode, header};
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
@@ -51,7 +52,7 @@ impl<T: Serialize> IntoResponse for Json<T> {
 }
 
 /// The body of a request that says it is JSON; a body that says it is something else is
-/// answered 415.
+/// answered 415, and one past the size limit 413.
 async fn json_bytes<S: Send + Sync>(request: Request, state: &S) -> Result<Bytes, ApiError> {
   let declared = request
     .headers()
@@ -60,8 +61,9 @@ async fn json_bytes<S: Send + Sync>(request: Request, state: &S) -> Result<Bytes
     .map(str::to_string);
   let bytes = Bytes::from_request(request, state)
     .await
-    .map_err(|e: BytesRejection| {
-      ApiError::invalid("Could not read the request body", e.body_text())
+    .map_err(|e: BytesRejection| match e.status() {
+      StatusCode::PAYLOAD_TOO_LARGE => ApiError::too_large("The request body is too large"),
+      _ => ApiError::invalid("Could not read the request body", e.body_text()),
     })?;
   if bytes.is_empty() {
     return Ok(bytes);

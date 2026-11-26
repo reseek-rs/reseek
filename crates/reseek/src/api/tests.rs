@@ -446,6 +446,13 @@ async fn requests_are_checked_before_any_service_is_asked() {
   *wrong_type.body_mut() = axum::body::Body::from("{\"searchText\":\"x\"}");
   let wrong_type = with(wrong_type, "content-type", "text/plain");
   assert_eq!(app.send(wrong_type).await.status, 415);
+  // past axum's default body limit of 2 MB
+  let too_large = json!({ "searchText": "x".repeat(3 << 20) });
+  let answer = app
+    .send(request("POST", "/api/v0/searches", Some(too_large)))
+    .await;
+  assert_eq!(answer.status, 413);
+  assert!(answer.json()["error"].is_string());
 }
 
 #[tokio::test]
