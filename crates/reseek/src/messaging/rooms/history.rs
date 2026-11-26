@@ -307,10 +307,12 @@ pub fn left(conn: &Connection, room: &str, now: DateTime<Utc>) -> rusqlite::Resu
   Ok(())
 }
 
-/// Moves `room`'s read marker to `local_id`, never back.
+/// Moves `room`'s read marker to `local_id`, never back and never past the room's newest
+/// stored message, so a later message always counts as unread.
 pub fn mark_read(conn: &Connection, room: &str, local_id: i64) -> rusqlite::Result<()> {
   conn.execute(
-    "INSERT INTO room_state (room_name, last_read_id) VALUES (?1, ?2) \
+    "INSERT INTO room_state (room_name, last_read_id) VALUES (?1, min(?2, \
+       (SELECT COALESCE(MAX(local_id), 0) FROM room_messages WHERE room_name = ?1))) \
      ON CONFLICT (room_name) DO UPDATE SET last_read_id = max(last_read_id, excluded.last_read_id)",
     params![room, local_id],
   )?;
@@ -399,6 +401,22 @@ mod tests {
         mentions: 0
       },
       "the marker never moves back"
+    );
+    // a marker past every message stops at the room's newest, so the next one counts
+    db.write(|conn| mark_read(conn, "rock", i64::MAX))
+      .await
+      .unwrap();
+    let rock = db.read(|conn| read_marker(conn, "rock")).await.unwrap();
+    assert!(rock > ids[4] && rock < i64::MAX, "{rock}");
+    db.write(|conn| insert(conn, &said("rock", "erin", "2026-10-26T10:01:00Z")))
+      .await
+      .unwrap();
+    assert_eq!(
+      db.read(|conn| unread(conn, "rock")).await.unwrap(),
+      RoomUnread {
+        unread: 1,
+        mentions: 0
+      }
     );
 
     let query = RoomMessagesQuery {
