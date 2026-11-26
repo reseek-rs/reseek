@@ -27,12 +27,13 @@ const ATTEMPTS: u32 = 3;
 const ATTEMPT_BACKOFF: Duration = Duration::from_secs(60);
 
 /// The parts of the relative path `filename`, written with either separator; `None` when it is
-/// empty, absolute, names a drive or steps outside.
+/// empty, absolute or steps outside, or on Windows when a part has a colon, which names a drive
+/// there.
 fn parts(filename: &str) -> Option<Vec<&str>> {
   let parts: Vec<&str> = filename.split(['/', '\\']).collect();
-  let safe = parts
-    .iter()
-    .all(|part| !part.is_empty() && *part != "." && *part != ".." && !part.contains(':'));
+  let safe = parts.iter().all(|part| {
+    !part.is_empty() && *part != "." && *part != ".." && !(cfg!(windows) && part.contains(':'))
+  });
   safe.then_some(parts)
 }
 
@@ -216,8 +217,18 @@ mod tests {
       parts("alice\\Album/01.flac"),
       Some(vec!["alice", "Album", "01.flac"])
     );
-    for unsafe_path in ["", "/etc/passwd", "a//b", "a/../b", "C:\\x", "./a"] {
+    for unsafe_path in ["", "/etc/passwd", "a//b", "a/../b", "\\x", "./a"] {
       assert_eq!(parts(unsafe_path), None, "{unsafe_path:?}");
+    }
+    let colon = parts("alice/Album: Deluxe/01 Intro: Part One.flac");
+    if cfg!(windows) {
+      assert_eq!(colon, None);
+      assert_eq!(parts("C:\\x"), None);
+    } else {
+      assert_eq!(
+        colon,
+        Some(vec!["alice", "Album: Deluxe", "01 Intro: Part One.flac"])
+      );
     }
   }
 
