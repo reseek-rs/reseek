@@ -15,27 +15,33 @@ use super::Messaging;
 use crate::api::error::ApiError;
 use crate::db::{enum_at, enum_text, read_timestamp};
 
-/// Where a snippet's match starts and ends before it is escaped; no message holds them.
-const OPEN: &str = "\u{1}";
-const CLOSE: &str = "\u{2}";
+/// Where a snippet's match starts and ends before it is escaped.
+const OPEN: char = '\u{1}';
+const CLOSE: char = '\u{2}';
 
 /// How many words a snippet holds around a match.
 const SNIPPET_WORDS: u32 = 12;
 
-/// `text` with what HTML reads as markup escaped, and the match markers turned into `<mark>`.
-fn snippet_html(text: &str) -> String {
-  let mut escaped = String::with_capacity(text.len());
-  for c in text.chars() {
+/// `snippet` of `message` with what HTML reads as markup escaped, and the match markers turned
+/// into `<mark>`. A message that holds a marker character itself has its snippet answered
+/// without marks, since its markers cannot be told from its text.
+fn snippet_html(snippet: &str, message: &str) -> String {
+  let marked = !message.contains([OPEN, CLOSE]);
+  let mut escaped = String::with_capacity(snippet.len());
+  for c in snippet.chars() {
     match c {
       '&' => escaped.push_str("&amp;"),
       '<' => escaped.push_str("&lt;"),
       '>' => escaped.push_str("&gt;"),
       '"' => escaped.push_str("&quot;"),
       '\'' => escaped.push_str("&#39;"),
+      OPEN if marked => escaped.push_str("<mark>"),
+      CLOSE if marked => escaped.push_str("</mark>"),
+      OPEN | CLOSE => {}
       c => escaped.push(c),
     }
   }
-  escaped.replace(OPEN, "<mark>").replace(CLOSE, "</mark>")
+  escaped
 }
 
 /// The statement finding the hits `query` asks for, with its values; `None` when no kind of
@@ -103,14 +109,15 @@ fn search(conn: &Connection, query: &MessageSearchQuery) -> rusqlite::Result<Mes
   let hits = conn
     .prepare(&page)?
     .query_map(params_from_iter(&values), |row| {
+      let message: String = row.get(4)?;
       Ok(MessageHit {
         kind: enum_at(row, 0)?,
         username: row.get(1)?,
         room: row.get(2)?,
         timestamp: read_timestamp(&row.get::<_, String>(3)?)?,
-        message: row.get(4)?,
+        snippet: snippet_html(&row.get::<_, String>(6)?, &message),
+        message,
         local_id: row.get(5)?,
-        snippet: snippet_html(&row.get::<_, String>(6)?),
       })
     })?
     .collect::<rusqlite::Result<_>>()?;
@@ -191,6 +198,18 @@ mod tests {
       offset: 0,
       limit: 50,
     }
+  }
+
+  #[test]
+  fn a_message_holding_a_marker_character_has_no_marks() {
+    assert_eq!(
+      snippet_html("x \u{1}floyd\u{2}", "x floyd"),
+      "x <mark>floyd</mark>"
+    );
+    assert_eq!(
+      snippet_html("\u{1}a\u{2} \u{1}floyd\u{2}", "\u{1}a\u{2} floyd"),
+      "a floyd"
+    );
   }
 
   #[tokio::test]
