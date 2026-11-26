@@ -23,6 +23,7 @@ let
     sharePath
     readOnlyShares
     etcFiles
+    optionalPaths
     ;
   unit = "reseek-agent";
 
@@ -222,8 +223,8 @@ in
         ProtectHome = "read-only";
         PrivateTmp = true;
         NoNewPrivileges = true;
-        ReadWritePaths = map (path: "-${path}") writable;
-        ReadOnlyPaths = map (path: "-${path}") (readOnlyShares writable cfg.settings.shares.directories);
+        ReadWritePaths = optionalPaths writable;
+        ReadOnlyPaths = optionalPaths (readOnlyShares writable cfg.settings.shares.directories);
         RestrictAddressFamilies = [
           "AF_INET"
           "AF_INET6"

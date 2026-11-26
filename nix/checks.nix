@@ -8,7 +8,7 @@
 let
   fs = lib.fileset;
   moduleLib = import ./module-lib.nix { inherit lib; };
-  # the module helpers whose output the daemon parses
+  # the module helpers whose output systemd and the daemon parse
   moduleLibFailures = lib.runTests {
     testDropInNameAddsToml = {
       expr = moduleLib.dropInName "/run/agenix/reseek-oidc";
@@ -17,6 +17,16 @@ let
     testDropInNameKeepsToml = {
       expr = moduleLib.dropInName "/run/secrets/oidc.toml";
       expected = "oidc.toml";
+    };
+    testOptionalPathsQuotes = {
+      expr = moduleLib.optionalPaths [
+        "/mnt/media/Soulseek Downloads"
+        ''/srv/a"b\c%d''
+      ];
+      expected = [
+        ''"-/mnt/media/Soulseek Downloads"''
+        ''"-/srv/a\"b\\c%%d"''
+      ];
     };
   };
 in

@@ -24,6 +24,7 @@ let
     sharePath
     readOnlyShares
     etcFiles
+    optionalPaths
     refusesDefaultLogin
     refusedDefaultLogin
     uncheckedDefaultLogin
@@ -387,8 +388,8 @@ let
         NoNewPrivileges = true;
         # a path that does not exist yet, such as a disk not mounted, is left out rather than
         # failing the unit, so the daemon starts and says what is missing
-        ReadWritePaths = map (path: "-${path}") writable;
-        ReadOnlyPaths = map (path: "-${path}") readOnly;
+        ReadWritePaths = optionalPaths writable;
+        ReadOnlyPaths = optionalPaths readOnly;
         # netlink is how the daemon finds the default gateway to ask it for a port mapping
         RestrictAddressFamilies = [
           "AF_INET"

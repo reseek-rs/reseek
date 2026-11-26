@@ -35,6 +35,12 @@ rec {
     in
     if lib.hasSuffix ".toml" name then name else "${name}.toml";
 
+  # ReadWritePaths or ReadOnlyPaths entries, quoted so systemd keeps a path with a space whole and
+  # escaped for its specifiers, each with `-` so a path that does not exist yet is skipped
+  optionalPaths = map (
+    path: ''"-${lib.replaceStrings [ "\\" "\"" "%" ] [ "\\\\" "\\\"" "%%" ] path}"''
+  );
+
   # the /etc entries of a service's configuration: `config.toml` from `configFile`, then each of
   # `extraConfigFiles` in config.d, in order
   etcFiles =
