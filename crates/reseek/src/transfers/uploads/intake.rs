@@ -3,6 +3,8 @@
 //! request waits for its user's turn before it takes one of those, so one user cannot hold them
 //! all. When the requests waiting would take more than [`BACKLOG_MILLIS`] at the pace of the
 //! last ones accepted, a new request is dropped, since its peer would have given up by then.
+//! A request of a user not in the queue is refused when the queue holds [`QUEUED_USERS`]
+//! users, or [`QUEUED_PER_ADDRESS`] from the request's address, counting those being decided.
 //! A request for a file queued to its user already is answered as queued. One for a file not
 //! shared, or shared and gone from disk, is refused, and so is one past the limits of its user's
 //! group, unless the user is privileged. A request for a file of a relay agent that cannot say
@@ -99,8 +101,8 @@ pub(super) struct Intake {
   deciding: Semaphore,
   /// requests waiting for either
   pub(super) waiting: AtomicUsize,
-  /// the address each user whose request was queued asked from, kept while the queue holds them
-  addresses: Mutex<HashMap<String, IpAddr>>,
+  /// the addresses users count against in the queue's bounds
+  addresses: Mutex<Addresses>,
   /// the moving average of the time accepted requests took, in milliseconds, as `f64` bits
   pub(super) latency: AtomicU64,
 }
@@ -111,9 +113,31 @@ impl Default for Intake {
       turns: Mutex::new(HashMap::new()),
       deciding: Semaphore::new(DECIDING),
       waiting: AtomicUsize::new(0),
-      addresses: Mutex::new(HashMap::new()),
+      addresses: Mutex::new(Addresses::default()),
       latency: AtomicU64::new(0f64.to_bits()),
     }
+  }
+}
+
+/// The addresses users asked from, which the queue's bounds count.
+#[derive(Default)]
+struct Addresses {
+  /// of each user whose request was queued, kept while the queue holds them
+  queued: HashMap<String, IpAddr>,
+  /// of each user whose request is being decided; one each, as a user's requests are decided
+  /// one at a time
+  deciding: HashMap<String, IpAddr>,
+}
+
+/// A user's place in the queue's bounds while their request is decided, given up when dropped.
+struct Deciding<'a> {
+  addresses: &'a Mutex<Addresses>,
+  username: String,
+}
+
+impl Drop for Deciding<'_> {
+  fn drop(&mut self) {
+    lock(self.addresses).deciding.remove(&self.username);
   }
 }
 
@@ -248,40 +272,98 @@ impl Uploads {
     true
   }
 
-  /// Whether the queue takes no upload of `username`, asking from `from`, now: they have none
-  /// in it, and it holds [`QUEUED_USERS`] users already, or [`QUEUED_PER_ADDRESS`] who asked
-  /// from that address. A refusal is counted.
+  /// Whether the queue takes no upload of `username`, asking from `from`, now, by
+  /// [`Uploads::full`]; a refusal is counted. The decision of the request checks again and
+  /// holds the user's place, so this only turns a request away early.
   pub fn queue_full(&self, username: &str, from: IpAddr) -> bool {
+    let full = self.full(&mut lock(&self.intake.addresses), username, from);
+    if let Some((users, from_there)) = full {
+      self.refused_full(username, from, users, from_there);
+    }
+    full.is_some()
+  }
+
+  /// Holds the place of `username`, asking from `from`, in the queue's bounds while their
+  /// request is decided; `None`, counted as a refusal, when the queue takes no upload of theirs
+  /// by [`Uploads::full`]. Checked and held under one lock, so requests decided at once cannot
+  /// all pass on the same free places.
+  fn hold_place(&self, username: &str, from: IpAddr) -> Option<Deciding<'_>> {
+    let full = {
+      let mut addresses = lock(&self.intake.addresses);
+      let full = self.full(&mut addresses, username, from);
+      if full.is_none() {
+        addresses.deciding.insert(username.to_string(), from);
+      }
+      full
+    };
+    if let Some((users, from_there)) = full {
+      self.refused_full(username, from, users, from_there);
+      return None;
+    }
+    Some(Deciding {
+      addresses: &self.intake.addresses,
+      username: username.to_string(),
+    })
+  }
+
+  /// The users counted and those from `from`, when the queue takes no upload of `username`,
+  /// asking from `from`: they have none in it, and it holds [`QUEUED_USERS`] users already, or
+  /// [`QUEUED_PER_ADDRESS`] who asked from that address, counting the users whose requests are
+  /// being decided.
+  fn full(
+    &self,
+    addresses: &mut Addresses,
+    username: &str,
+    from: IpAddr,
+  ) -> Option<(usize, usize)> {
     let queued: HashSet<String> = self.queue.users().into_iter().collect();
     if queued.contains(username) {
-      return false;
+      return None;
     }
-    let from_there = {
-      let mut addresses = lock(&self.intake.addresses);
-      addresses.retain(|user, _| queued.contains(user));
-      addresses.values().filter(|&&ip| ip == from).count()
-    };
-    if queued.len() < QUEUED_USERS && from_there < QUEUED_PER_ADDRESS {
-      return false;
-    }
+    addresses.queued.retain(|user, _| queued.contains(user));
+    // a user both queued and being decided counts once, at the address they ask from now
+    let mut counted: HashMap<&str, IpAddr> = addresses
+      .queued
+      .iter()
+      .map(|(user, &ip)| (user.as_str(), ip))
+      .collect();
+    counted.extend(
+      addresses
+        .deciding
+        .iter()
+        .filter(|(user, _)| user.as_str() != username)
+        .map(|(user, &ip)| (user.as_str(), ip)),
+    );
+    let users = queued.len()
+      + counted
+        .keys()
+        .filter(|&&user| !queued.contains(user))
+        .count();
+    let from_there = counted.values().filter(|&&ip| ip == from).count();
+    (users >= QUEUED_USERS || from_there >= QUEUED_PER_ADDRESS).then_some((users, from_there))
+  }
+
+  /// Counts and logs a request of `username` from `from` refused for a full queue.
+  fn refused_full(&self, username: &str, from: IpAddr, users: usize, from_there: usize) {
     self.telemetry.metrics().enqueue.requests_rejected.inc();
     if let Some(suppressed) = FULL.allow() {
       warn!(
         username,
         %from,
-        users = queued.len(),
+        users,
         from_there,
         suppressed,
         "upload request refused; the queue takes no new user now"
       );
     }
-    true
   }
 
   /// The request of `username`, asking from `from`, was queued: they count against that address
   /// while the queue holds them.
-  pub fn queued_from(&self, username: &str, from: IpAddr) {
-    lock(&self.intake.addresses).insert(username.to_string(), from);
+  pub(super) fn queued_from(&self, username: &str, from: IpAddr) {
+    lock(&self.intake.addresses)
+      .queued
+      .insert(username.to_string(), from);
   }
 
   /// Decides the request of `username` from `from`, who sees the shares of the groups `sees`,
@@ -321,6 +403,9 @@ impl Uploads {
     let (_turn, waiting) = self.intake.turn(username).await;
     let enqueue = &self.telemetry.metrics().enqueue;
     enqueue.queue_depth.set(waiting as f64);
+    let Some(_place) = self.hold_place(username, from) else {
+      return Err(NotQueued::Refused(QUEUE_FULL.to_string()));
+    };
     // a peer asking again for a file queued to them is answered as queued, not decided again:
     // the limits count that file, so they could turn it away
     if self.sending_already(username, filename, true).await? {
@@ -360,7 +445,9 @@ impl Uploads {
       }
       Err(Refusal::Failed(error)) => return Err(NotQueued::Failed(error)),
     };
-    self.enqueue(username, filename, located, true).await?;
+    if self.enqueue(username, filename, located, true).await? == Enqueued::Queued {
+      self.queued_from(username, from);
+    }
     let total = millis(started);
     enqueue.latency.observe(total);
     let average = enqueue.latency_current.update(total);

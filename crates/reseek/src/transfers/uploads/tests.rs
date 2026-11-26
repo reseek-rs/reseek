@@ -226,15 +226,24 @@ async fn one_address_holds_no_more_than_its_share_of_the_queue() {
   assert!(queued.is_ok(), "{queued:?}");
 }
 
-#[tokio::test]
-async fn one_address_queues_its_share_of_users_and_more_once_they_leave() {
+/// What [`silent_app`] runs: the shared files, the daemon, its server and the users' clients.
+struct Silent {
+  _files: tempfile::TempDir,
+  app: TestApp,
+  _server: Server,
+  /// where every user's client is: a socket that takes connections and never answers, so the
+  /// one upload running waits for its answer and keeps the queue as it is
+  _clients: tokio::net::TcpListener,
+}
+
+/// [`shared_app`] with one upload slot, logged in to a scripted server that says every user is
+/// online, shares enough not to be a leecher, and is at a client that never answers.
+async fn silent_app() -> Silent {
   use soulseek_proto::server::{
     GetPeerAddressResponse, UserStatistics, UserStats, UserStatus, WatchUserResponse, WatchedUser,
   };
   use soulseek_proto::{ServerRequest, ServerResponse, UserPresence};
 
-  // where the users' clients are: a socket that takes connections and never answers, so the one
-  // upload running waits for its answer and keeps the queue as it is
   let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
   let port = silent.local_addr().unwrap().port();
   let files = tempfile::tempdir().unwrap();
@@ -278,19 +287,26 @@ async fn one_address_queues_its_share_of_users_and_more_once_they_leave() {
   })
   .await;
   server.login(&app).await;
+  Silent {
+    _files: files,
+    app,
+    _server: server,
+    _clients: silent,
+  }
+}
+
+/// What `username` asking `app` for [`SHARED`] from [`REPORTED`] is told: `None` when it is
+/// queued.
+async fn asked_owned(app: &TestApp, username: String) -> Option<String> {
+  asked(app, &username, SHARED).await
+}
+
+#[tokio::test]
+async fn one_address_queues_its_share_of_users_and_more_once_they_leave() {
+  let silent = silent_app().await;
+  let app = &silent.app;
   // names one host makes up, all asking from one address
-  let here = from("198.51.100.7");
-  let ask = |username: String| {
-    let edges = edges(&app);
-    async move {
-      let file = RemoteFilename::from(SHARED);
-      match enqueue_download(&edges, &username, here, &file).await {
-        Ok(()) => None,
-        Err(NotQueued::Refused(reason)) => Some(reason),
-        Err(other) => panic!("not a refusal: {other}"),
-      }
-    }
-  };
+  let ask = |username: String| asked_owned(app, username);
   for n in 0..QUEUED_PER_ADDRESS {
     assert_eq!(ask(format!("made-up{n}")).await, None, "made-up{n}");
   }
@@ -322,7 +338,25 @@ async fn one_address_queues_its_share_of_users_and_more_once_they_leave() {
     None,
     "the address holds no place now"
   );
-  drop(silent);
+}
+
+/// Names one host makes up, asking all at once, are queued no further than the address's share:
+/// the places of the requests being decided count as taken.
+#[tokio::test]
+async fn names_asking_at_once_from_one_address_get_only_its_share() {
+  let silent = silent_app().await;
+  let app = &silent.app;
+  let over = 5;
+  let answers = futures_util::future::join_all(
+    (0..QUEUED_PER_ADDRESS + over).map(|n| asked_owned(app, format!("made-up{n}"))),
+  )
+  .await;
+  let queued = answers.iter().filter(|answer| answer.is_none()).count();
+  let full = answers
+    .iter()
+    .filter(|answer| answer.as_deref() == Some("Queue full"))
+    .count();
+  assert_eq!((queued, full), (QUEUED_PER_ADDRESS, over), "{answers:?}");
 }
 
 #[tokio::test]

@@ -314,7 +314,6 @@ pub async fn enqueue_download(
   uploads
     .request(username, endpoint.ip(), filename.as_str(), sees)
     .await?;
-  uploads.queued_from(username, endpoint.ip());
   edges.activity.queued(username, filename.as_str());
   Ok(())
 }
