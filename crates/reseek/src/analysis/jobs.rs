@@ -3,6 +3,7 @@
 //! in `jobs.db` so they carry on after a restart. A paused job finishes the file it is on and
 //! holds the rest. The workers that take the files are in `worker.rs`.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -264,6 +265,8 @@ impl Analysis {
       job_id: None,
     };
     let mut targets = Vec::new();
+    // a file named twice in the batch is queued once
+    let mut taken = HashSet::new();
     for (index, target) in files {
       if targets.len() >= BATCH_LIMIT {
         result.refused.push(AnalysisBatchRefusal {
@@ -274,12 +277,17 @@ impl Analysis {
       }
       let checked = async {
         let file = self.files.local_file(&target).await?;
-        let skip = self.is_current(&file).await? || self.holds(&file.path).await?;
+        let skip = taken.contains(&file.path)
+          || self.is_current(&file).await?
+          || self.holds(&file.path).await?;
         Ok::<_, ApiError>((file, skip))
       };
       match checked.await {
         Ok((_, true)) => result.current += 1,
-        Ok((file, false)) => targets.push(Target::of(&target, &file)),
+        Ok((file, false)) => {
+          targets.push(Target::of(&target, &file));
+          taken.insert(file.path);
+        }
         Err(e) => result.refused.push(AnalysisBatchRefusal {
           index,
           error: e.message().to_string(),

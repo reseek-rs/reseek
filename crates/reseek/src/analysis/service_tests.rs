@@ -536,6 +536,7 @@ async fn a_batch_is_one_job_whose_files_are_analyzed_in_turn_and_kept_by_name() 
   let files: Vec<Value> = [file("../escape.mp3"), file("batch/missing.mp3")]
     .into_iter()
     .chain(names.iter().map(|name| file(name)))
+    .chain([file(&names[0])])
     .collect();
   let (status, answer) = app
     .call(
@@ -546,6 +547,10 @@ async fn a_batch_is_one_job_whose_files_are_analyzed_in_turn_and_kept_by_name() 
     .await;
   assert_eq!(status, 202, "{answer}");
   assert_eq!(answer["queued"], 6, "{answer}");
+  assert_eq!(
+    answer["current"], 1,
+    "a file named twice is queued once: {answer}"
+  );
   let refused: Vec<u64> = answer["refused"]
     .as_array()
     .unwrap()
