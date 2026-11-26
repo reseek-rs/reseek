@@ -115,6 +115,7 @@ impl Shares {
         }
       }
     };
+    self.retire_watches_unlike(&settings);
     let outcome = scanner::scan(
       &self.db,
       settings.clone(),
@@ -244,6 +245,21 @@ impl Shares {
       }
       .in_current_span(),
     );
+  }
+
+  /// Retires the watches when they apply changes by settings that share other than `settings`
+  /// do; a scan that completes watches the shares again.
+  fn retire_watches_unlike(&self, settings: &Settings) {
+    let content = settings.snapshot.get("content");
+    let mut watches = lock(&self.watches);
+    if watches
+      .as_ref()
+      .is_some_and(|w| w.settings.snapshot.get("content") != content)
+      && let Some(watching) = watches.take()
+    {
+      debug!("the share watches are retired: the scan shares by other options");
+      watching.retire();
+    }
   }
 
   /// Starts watching the shares `settings` covers, in place of what was watched before.

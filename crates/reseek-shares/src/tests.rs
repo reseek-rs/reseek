@@ -942,6 +942,7 @@ async fn lost_events_rescan_the_directory_and_drop_what_is_gone() {
     &shares,
     &settings,
     &roots,
+    &CancellationToken::new(),
     vec![(album, watcher::Need::Rescan)],
   )
   .await
@@ -1020,6 +1021,43 @@ async fn changes_waiting_for_quiet_are_applied_when_the_watches_are_replaced() {
 }
 
 #[tokio::test]
+async fn a_change_seen_before_an_exclusion_is_not_shared_after_the_rescan() {
+  let files = tempfile::tempdir().unwrap();
+  let excluding = config(files.path());
+  let music = files.path().join("music");
+  let open = format!("[shares]\ndirectories = [\"[Music]{}\"]\n", music.display());
+  let engine = engine(&open).await;
+  let shares = engine
+    .again_in(
+      &files.path().join("cache"),
+      CancellationToken::new(),
+      Duration::from_secs(600),
+    )
+    .await;
+  shares.initialized().await;
+  eventually(async || idle(&shares) && lock(&shares.watches).is_some()).await;
+  assert_eq!(names(&shares, "p").await, ["Music\\private\\p.mp3"]);
+  std::fs::write(music.join("private/q.mp3"), "q").unwrap();
+  // the notification needs a moment to reach the watcher before the options change
+  tokio::time::sleep(Duration::from_millis(300)).await;
+  engine.reconfigure(&excluding).await;
+  eventually(async || lock(&shares.status).scan_pending).await;
+  shares.scan(false, ScanOrigin::Asked).unwrap();
+  eventually(async || {
+    idle(&shares) && lock(&shares.watches).is_some() && !lock(&shares.status).scan_pending
+  })
+  .await;
+  // watches dropped rather than retired apply what they saw in a task of their own
+  tokio::time::sleep(Duration::from_millis(300)).await;
+  assert!(names(&shares, "p").await.is_empty());
+  assert!(
+    names(&shares, "q").await.is_empty(),
+    "the change waiting for quiet was seen under the options before"
+  );
+  drop(files);
+}
+
+#[tokio::test]
 async fn a_canceled_scan_leaves_the_engine_idle_at_full_progress() {
   let (files, engine) = shared_engine().await;
   let shares = engine.shares.clone();
@@ -1066,6 +1104,7 @@ async fn a_share_added_since_the_last_scan_is_not_counted_by_watched_changes() {
     &shares,
     &shares.filled_from(),
     &[files.path().join("music")],
+    &CancellationToken::new(),
     vec![(album.join("02.mp3"), watcher::Need::Change)],
   )
   .await

@@ -19,6 +19,7 @@ use notify::{
   Config, ErrorKind, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _,
 };
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, warn};
 
 use super::Shares;
@@ -37,14 +38,26 @@ const BACKLOG: usize = 4096;
 static WATCH_FAILED: LogLimiter = LogLimiter::new();
 
 /// The shares being watched. Dropping it stops the watches and the task applying their
-/// changes.
+/// changes, which applies what was still waiting for quiet first; [`Watching::retire`] stops
+/// them without applying anything more.
 pub(super) struct Watching {
   watcher: RecommendedWatcher,
   /// the share directories watched
   pub(super) roots: Vec<PathBuf>,
+  /// the settings changes are applied by
+  pub(super) settings: Arc<Settings>,
+  /// stops the task and any write it has not made yet
+  retired: CancellationToken,
 }
 
 impl Watching {
+  /// Stops the watches and drops what they saw without writing it, for when the index is about
+  /// to be filled by other settings: a write by these settings would put back what those leave
+  /// out, stamped after the scan started so its prune keeps it.
+  pub(super) fn retire(self) {
+    self.retired.cancel();
+  }
+
   /// Stops watching the shares no longer in `shares`.
   pub(super) fn keep_only(&mut self, shares: &[Share]) {
     let watcher = &mut self.watcher;
@@ -124,8 +137,23 @@ pub(super) async fn start(shares: Arc<Shares>, settings: Arc<Settings>) -> Optio
       return None;
     }
   };
-  tokio::spawn(apply_changes(shares, settings, roots.clone(), receiver).in_current_span());
-  Some(Watching { watcher, roots })
+  let retired = shares.shutdown.child_token();
+  tokio::spawn(
+    apply_changes(
+      shares,
+      settings.clone(),
+      roots.clone(),
+      retired.clone(),
+      receiver,
+    )
+    .in_current_span(),
+  );
+  Some(Watching {
+    watcher,
+    roots,
+    settings,
+    retired,
+  })
 }
 
 /// Whether `event` only says a file was opened, read or closed without being written, as when
@@ -146,11 +174,13 @@ pub(super) enum Need {
 }
 
 /// Collects notifications per path and applies each path once it has been quiet for the
-/// engine's quiet time; ends when the watches are dropped, applying what was still waiting.
+/// engine's quiet time; ends when the watches are dropped, applying what was still waiting, or
+/// when `retired`, applying nothing more.
 async fn apply_changes(
   shares: Arc<Shares>,
   settings: Arc<Settings>,
   roots: Vec<PathBuf>,
+  retired: CancellationToken,
   mut receiver: mpsc::Receiver<notify::Result<Event>>,
 ) {
   let quiet = shares.quiet;
@@ -158,7 +188,7 @@ async fn apply_changes(
   let mut tick = tokio::time::interval((quiet / 4).max(Duration::from_millis(10)));
   loop {
     tokio::select! {
-      () = shares.shutdown.cancelled() => return,
+      () = retired.cancelled() => return,
       message = receiver.recv() => {
         let Some(message) = message else {
           // the watches were replaced or dropped: what was still waiting for quiet is applied
@@ -166,7 +196,7 @@ async fn apply_changes(
           let due: Vec<(PathBuf, Need)> =
             pending.drain().map(|(path, (_, need))| (path, need)).collect();
           if !due.is_empty()
-            && let Err(e) = apply(&shares, &settings, &roots, due).await
+            && let Err(e) = apply(&shares, &settings, &roots, &retired, due).await
           {
             warn!(error = %e, "watched share changes not applied; they are seen by the next rescan");
           }
@@ -209,7 +239,7 @@ async fn apply_changes(
     for (path, _) in &due {
       pending.remove(path);
     }
-    if let Err(e) = apply(&shares, &settings, &roots, due).await {
+    if let Err(e) = apply(&shares, &settings, &roots, &retired, due).await {
       warn!(error = %e, "watched share changes not applied; they are seen by the next rescan");
     }
   }
@@ -293,11 +323,13 @@ fn look(settings: &Settings, due: Vec<(PathBuf, Need)>) -> Vec<Looked> {
   looked
 }
 
-/// Applies the due paths in one transaction, then counts the shares again.
+/// Applies the due paths in one transaction, then counts the shares again; nothing is written
+/// once `retired`.
 pub(super) async fn apply(
   shares: &Arc<Shares>,
   settings: &Arc<Settings>,
   roots: &[PathBuf],
+  retired: &CancellationToken,
   due: Vec<(PathBuf, Need)>,
 ) -> Result<(), scanner::ScanError> {
   let mut writes = Vec::new();
@@ -347,7 +379,7 @@ pub(super) async fn apply(
         if need == Need::Rescan || !known {
           let walk = {
             let settings = settings.clone();
-            let cancel = shares.shutdown.clone();
+            let cancel = retired.clone();
             let path = path.clone();
             tokio::task::spawn_blocking(move || {
               let mut seen = HashSet::new();
@@ -375,9 +407,15 @@ pub(super) async fn apply(
   }
   let timestamp = scanner::now_ms();
   let count = writes.len();
-  shares
+  let retired = retired.clone();
+  let written = shares
     .db
     .write(move |conn| {
+      // checked in the write, so a write made before a scan retired the watches is stamped no
+      // later than the scan's start, and one after it is not made
+      if retired.is_cancelled() {
+        return Ok(false);
+      }
       let tx = conn.transaction()?;
       for write in &writes {
         match write {
@@ -393,10 +431,14 @@ pub(super) async fn apply(
           }
         }
       }
-      tx.commit()
+      tx.commit().map(|()| true)
     })
     .await
     .map_err(scanner::ScanError::from)?;
+  if !written {
+    debug!("watched share changes dropped: the watches were retired");
+    return Ok(());
+  }
   debug!(changes = count, "watched share changes applied");
   counted(shares).await.map_err(scanner::ScanError::from)
 }
