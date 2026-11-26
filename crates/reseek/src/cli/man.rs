@@ -79,7 +79,7 @@ pub fn man(schema: &Schema) -> String {
   }
   page.push_str(
     ".SH FILES\nWith \\-\\-app\\-dir, everything lives under that one directory: config.toml, \
-     data/, cache/, logs/, downloads/ and incomplete/. Without it, the configuration is under \
+     scripts/, data/ (with downloads/ and incomplete/ in it), cache/ and logs/. Without it, the configuration is under \
      the user's configuration directory (on Linux ~/.config/reseek), the databases, downloads \
      and incomplete files under the local data directory (~/.local/share/reseek), the share \
      index under the cache directory (~/.cache/reseek) and the logs under the state directory \
