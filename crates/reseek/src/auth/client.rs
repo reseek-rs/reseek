@@ -23,8 +23,9 @@ pub struct Client {
 
 /// The client of a request that reached us from `peer`. `X-Forwarded-For`,
 /// `X-Forwarded-Proto` and `X-Forwarded-Host` are believed only when the peer is one of
-/// `proxies`; the client is then the rightmost address of `X-Forwarded-For` that is not a
-/// trusted proxy.
+/// `proxies`. The client is then the rightmost address of `X-Forwarded-For`, read across all
+/// its header lines, that is not a trusted proxy; a hop that is not an address stops the walk
+/// at the trusted address to its right.
 pub fn resolve(peer: &Peer, uri: &Uri, headers: &HeaderMap, proxies: &[IpRange]) -> Client {
   let peer_ip = peer.ip();
   let host_header = headers
@@ -42,29 +43,35 @@ pub fn resolve(peer: &Peer, uri: &Uri, headers: &HeaderMap, proxies: &[IpRange])
   if !trusted(peer_ip) {
     return direct;
   }
+  // a proxy may add its own header line instead of joining the existing one, so the last line
+  // is the one the nearest proxy wrote
   let forwarded = |name: &str| {
     headers
-      .get(name)
+      .get_all(name)
+      .iter()
+      .next_back()
       .and_then(|h| h.to_str().ok())
       .map(str::trim)
       .filter(|v| !v.is_empty())
   };
-  let hops: Vec<IpAddr> = forwarded("x-forwarded-for")
-    .map(|list| {
-      list
-        .split(',')
-        .filter_map(|hop| hop.trim().parse().ok())
-        .map(unmapped)
-        .collect()
-    })
-    .unwrap_or_default();
-  let ip = hops
+  let mut ip = peer_ip;
+  let hops = headers
+    .get_all("x-forwarded-for")
     .iter()
     .rev()
-    .find(|ip| !trusted(**ip))
-    .or(hops.first())
-    .copied()
-    .unwrap_or(peer_ip);
+    // a line that is not text reads as a single hop that is not an address
+    .flat_map(|line| line.to_str().unwrap_or("").rsplit(','));
+  // walk from the nearest hop and stop at the first one that is not a trusted proxy. a hop that
+  // is not an address ends the walk, since nothing to its left was written by a trusted proxy
+  for hop in hops {
+    let Ok(hop) = without_port(hop.trim()).parse::<IpAddr>() else {
+      break;
+    };
+    ip = unmapped(hop);
+    if !trusted(ip) {
+      break;
+    }
+  }
   let https = match forwarded("x-forwarded-proto") {
     Some(proto) => proto.eq_ignore_ascii_case("https"),
     None => direct.https,
@@ -111,7 +118,7 @@ mod tests {
   fn headers(items: &[(&'static str, &'static str)]) -> HeaderMap {
     let mut map = HeaderMap::new();
     for (name, value) in items {
-      map.insert(*name, HeaderValue::from_static(value));
+      map.append(*name, HeaderValue::from_static(value));
     }
     map
   }
@@ -139,6 +146,31 @@ mod tests {
     assert_eq!(direct.host.as_deref(), Some("127.0.0.1"));
     assert_eq!(direct.authority.as_deref(), Some("127.0.0.1:5030"));
     assert!(!direct.https);
+  }
+
+  #[test]
+  fn every_forwarded_for_line_counts_and_a_bad_hop_ends_the_walk() {
+    let proxies = vec!["127.0.0.1/32".parse().unwrap()];
+    let uri = Uri::from_static("/");
+    let from_proxy = |h: &HeaderMap| resolve(&peer("127.0.0.1:40000"), &uri, h, &proxies).ip;
+    let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+    // the first line is the client's own, the second the proxy's
+    let two_lines = headers(&[
+      ("x-forwarded-for", "192.168.1.50"),
+      ("x-forwarded-for", "203.0.113.9"),
+      ("x-forwarded-proto", "http"),
+      ("x-forwarded-proto", "https"),
+    ]);
+    assert_eq!(from_proxy(&two_lines), ip("203.0.113.9"));
+    assert!(resolve(&peer("127.0.0.1:40000"), &uri, &two_lines, &proxies).https);
+    let ported = headers(&[("x-forwarded-for", "192.168.1.50, 203.0.113.9:51234")]);
+    assert_eq!(from_proxy(&ported), ip("203.0.113.9"));
+    let ported_v6 = headers(&[("x-forwarded-for", "192.168.1.50, [2001:db8::1]:443")]);
+    assert_eq!(from_proxy(&ported_v6), ip("2001:db8::1"));
+    let unknown = headers(&[("x-forwarded-for", "192.168.1.50, unknown")]);
+    assert_eq!(from_proxy(&unknown), ip("127.0.0.1"));
+    let behind_trusted = headers(&[("x-forwarded-for", "192.168.1.50, unknown, 127.0.0.1")]);
+    assert_eq!(from_proxy(&behind_trusted), ip("127.0.0.1"));
   }
 
   #[test]
