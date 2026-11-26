@@ -176,7 +176,7 @@ impl Users {
       .await
       .map_err(ApiError::internal)?;
     let stored = row.is_some();
-    if !stored && !self.exists(username).await {
+    if !stored && !self.directory.exists(self.network.client(), username).await {
       return Err(ApiError::not_found(format!(
         "User {username} does not exist"
       )));
@@ -226,27 +226,6 @@ impl Users {
       stored.info.stale = stored.info.fetched_at < asked_at;
     }
     Ok(profile)
-  }
-
-  /// Whether the server knows `username`: watching them is the one question it answers no to.
-  /// A user the server did not watch for us before is not watched afterwards.
-  async fn exists(&self, username: &str) -> bool {
-    let client = self.network.client();
-    match client.users().watch(username).await {
-      Err(e) if e.kind() == ErrorKind::UserNotFound => false,
-      Err(e) => {
-        debug!(username, error = %e, "whether the user exists not asked; taken as existing");
-        true
-      }
-      Ok(_) => {
-        if !self.directory.is_watched(username)
-          && let Err(e) = client.users().unwatch(username).await
-        {
-          debug!(username, error = %e, "user watched to ask whether they exist not unwatched");
-        }
-        true
-      }
-    }
   }
 }
 

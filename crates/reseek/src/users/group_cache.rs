@@ -28,7 +28,7 @@ use api_types::users::{CachedUser, StatisticsSnapshot, UserPresence, UserStatus}
 use chrono::Utc;
 use reseek_shares::LogLimiter;
 use reseek_shares::lock;
-use soulseek_client::{Client, Error as ClientError};
+use soulseek_client::{Client, Error as ClientError, ErrorKind};
 use soulseek_proto::server::UserStats;
 use tracing::{Instrument, debug, info, trace, warn};
 
@@ -779,12 +779,38 @@ impl Directory {
     Ok(())
   }
 
-  /// Stops the server's status reports of `username`.
+  /// Stops the server's status reports of `username`, in their watch turn, so a watch of theirs
+  /// on its way is answered first.
   pub async fn unwatch(&self, client: &Client, username: &str) -> Result<(), ClientError> {
+    let (mut turn, _) = self.groups.line_up(username);
+    turn.take().await;
     client.users().unwatch(username).await?;
     self.groups.watched().remove(username);
     debug!(username, "user no longer watched");
     Ok(())
+  }
+
+  /// Whether the server knows `username`: watching them is the one question it answers no to.
+  /// Asked in their watch turn, so a watch of theirs on its way is answered first, and a user
+  /// the server did not watch for us before is not watched afterwards.
+  pub(super) async fn exists(&self, client: &Client, username: &str) -> bool {
+    let (mut turn, _) = self.groups.line_up(username);
+    turn.take().await;
+    match client.users().watch(username).await {
+      Err(e) if e.kind() == ErrorKind::UserNotFound => false,
+      Err(e) => {
+        debug!(username, error = %e, "whether the user exists not asked; taken as existing");
+        true
+      }
+      Ok(_) => {
+        if !self.is_watched(username)
+          && let Err(e) = client.users().unwatch(username).await
+        {
+          debug!(username, error = %e, "user watched to ask whether they exist not unwatched");
+        }
+        true
+      }
+    }
   }
 
   /// Puts the user of the watch `asking`, answered now, among the watched users, unless they
@@ -1235,6 +1261,55 @@ mod tests {
     // given up before its turn comes
     drop(second);
     assert!(lock(&users.groups.watches).is_empty());
+  }
+
+  #[tokio::test]
+  async fn asking_whether_a_user_exists_waits_for_their_watch_and_keeps_it() {
+    let app = crate::testing::soulseek::app("").await;
+    let users = &app.state.users;
+    // erin's first watch is answered only when the test says
+    let mut held = false;
+    let mut server = crate::testing::soulseek::Server::start(move |request| match request {
+      ServerRequest::WatchUser(asked) if asked.username == "erin" && !held => {
+        held = true;
+        Vec::new()
+      }
+      ServerRequest::WatchUser(asked) => vec![watched(&asked.username, true)],
+      ServerRequest::GetStatus(asked) => vec![ServerResponse::GetStatus(UserStatus {
+        username: asked.username.clone(),
+        presence: soulseek_proto::UserPresence::Online,
+        is_privileged: false,
+      })],
+      _ => Vec::new(),
+    })
+    .await;
+    server.login(&app).await;
+    let client = app.state.network.client();
+    let mut watching = Box::pin(users.watch_again(client, "erin"));
+    let asked = |request: &ServerRequest| {
+      matches!(request, ServerRequest::WatchUser(asked) if asked.username == "erin").then_some(())
+    };
+    tokio::select! {
+      _ = &mut watching => panic!("watched before the server answered"),
+      () = server.received(asked) => {}
+    }
+    let mut probing = Box::pin(users.exists(client, "erin"));
+    let pending =
+      std::future::poll_fn(|cx| std::task::Poll::Ready(probing.as_mut().poll(cx).is_pending()));
+    assert!(pending.await, "the probe waits for the watch on its way");
+    server.send(vec![watched("erin", true)]);
+    watching.await.unwrap();
+    assert!(probing.await);
+    assert!(users.is_watched("erin"));
+    fn unwatched(name: &str) -> impl Fn(&ServerRequest) -> bool {
+      move |request| matches!(request, ServerRequest::UnwatchUser(asked) if asked.username == name)
+    }
+    let within = std::time::Duration::from_millis(200);
+    assert!(!server.receives(within, unwatched("erin")).await);
+    // a user nobody watched is watched only for the question
+    assert!(users.exists(client, "frank").await);
+    assert!(!users.is_watched("frank"));
+    assert!(server.receives(within, unwatched("frank")).await);
   }
 
   #[tokio::test]
