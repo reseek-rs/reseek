@@ -135,14 +135,11 @@
               [
                 reseek-rust
                 cargo-nextest
-                cargo-deny
-                cargo-insta
                 bacon
                 watchexec
                 just
                 # `just dev` opens zellij_dev_layout.kdl in it
                 zellij
-                typos
                 sqlite
                 (soulfind pkgs)
                 # the completions test reads each script in its shell
