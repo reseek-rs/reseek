@@ -246,13 +246,25 @@ fn printed(doc: &DocumentMut) -> Vec<Line> {
     if !path.is_empty() && !(table.is_implicit() && table.get_values().is_empty()) {
       lines.push(Line::Header(path.clone()));
     }
-    for (key, item) in table.iter() {
-      if item.is_value() {
-        lines.push(Line::Value(path.clone(), key.to_string()));
-      }
-    }
+    push_values(table, &mut path.clone(), &mut lines);
   }
   lines
+}
+
+/// The values `table` prints under its header, in order, with the dotted keys that print there
+/// (`server.port = 1`) under the path of their dotted tables.
+fn push_values(table: &Table, path: &mut Vec<Step>, lines: &mut Vec<Line>) {
+  for (key, item) in table.iter() {
+    match item {
+      Item::Value(_) => lines.push(Line::Value(path.clone(), key.to_string())),
+      Item::Table(inner) if inner.is_dotted() => {
+        path.push(Step::Table(key.to_string()));
+        push_values(inner, path, lines);
+        path.pop();
+      }
+      _ => {}
+    }
+  }
 }
 
 /// Each table at or under `table` that is not dotted, with its path and the position it prints
@@ -288,7 +300,8 @@ fn collect_tables<'a>(
   }
 }
 
-/// The comments and blank lines above `line`.
+/// The comments and blank lines above `line`. A dotted key prints the leaf decor of its last
+/// part in front of the whole path.
 fn prefix(doc: &DocumentMut, line: &Line) -> String {
   let decor = match line {
     Line::Header(path) => table_at(doc, path).map(Table::decor),
@@ -907,6 +920,12 @@ mod tests {
     assert_eq!(
       patch(text, &[], &["debug"]).unwrap(),
       "# banner\n\n[server]\nport = 1\n"
+    );
+    let text = "# banner\n\nserver.port = 1\ndebug = true\n";
+    assert_eq!(
+      patch(text, &[], &["server.port"]).unwrap(),
+      "# banner\n\ndebug = true\n",
+      "a dotted key"
     );
     let text = "[server]\nport = 1\n\n# the end\n\naddress = \"a\"\n";
     assert_eq!(
