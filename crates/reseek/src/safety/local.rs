@@ -14,12 +14,15 @@ const RESERVED: [&str; 22] = [
   "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
-/// The longest path `os` creates: 4096 bytes on Unix, 260 characters on Windows without long
-/// path support.
+/// The longest path `os` creates: 4095 bytes on Linux, 1023 on macOS, 259 characters on
+/// Windows without long path support.
+///
+/// Each is one under the system's own limit, which counts the terminating NUL.
 fn path_limit(os: Os) -> usize {
   match os {
-    Os::Unix => 4096,
-    Os::Windows => 260,
+    Os::Unix if cfg!(target_os = "macos") => 1023,
+    Os::Unix => 4095,
+    Os::Windows => 259,
   }
 }
 
@@ -136,9 +139,13 @@ mod tests {
 
   #[test]
   fn paths_are_measured_as_their_system_measures_them() {
-    assert!(!too_long(&"é".repeat(2048), Os::Unix));
-    assert!(too_long(&"é".repeat(2049), Os::Unix));
-    assert!(!too_long(&"é".repeat(260), Os::Windows));
-    assert!(too_long(&"é".repeat(261), Os::Windows));
+    let unix = path_limit(Os::Unix);
+    // two-byte characters and one ASCII byte, so the length is counted in bytes
+    let longest = format!("{}a", "é".repeat(unix / 2));
+    assert_eq!(longest.len(), unix);
+    assert!(!too_long(&longest, Os::Unix));
+    assert!(too_long(&format!("{longest}a"), Os::Unix));
+    assert!(!too_long(&"é".repeat(259), Os::Windows));
+    assert!(too_long(&"é".repeat(260), Os::Windows));
   }
 }
