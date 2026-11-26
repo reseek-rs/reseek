@@ -104,7 +104,8 @@ async fn get_debug(
   admin: Authorized<Administrator>,
 ) -> Result<Json<String>, ApiError> {
   let current = app.config.current();
-  if !current.values.debug {
+  // debug applies on restart, so the view opens with the mode the daemon runs in
+  if !app.startup.values.debug {
     warn!("Blocked configuration debug view; debug mode is off");
     return Err(ApiError::forbidden("The debug view requires debug mode").logged());
   }
@@ -982,6 +983,18 @@ mod tests {
       .send(request("GET", "/api/v0/options/debug", None))
       .await;
     assert_eq!(refused.status, 403);
+    // debug saved while running waits for a restart, and so does the view
+    std::fs::write(
+      quiet.dir.path().join("config.toml"),
+      format!("debug = true\n{TRUSTED}"),
+    )
+    .unwrap();
+    quiet.state.config.reload().await.unwrap();
+    assert!(quiet.state.config.current().values.debug);
+    let still = quiet
+      .send(request("GET", "/api/v0/options/debug", None))
+      .await;
+    assert_eq!(still.status, 403);
   }
 
   #[tokio::test]
