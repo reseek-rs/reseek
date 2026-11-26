@@ -9,7 +9,7 @@
   import { getFileName, plural } from "#lib/format.js";
   import { sendFiles, sending, sentText } from "#lib/transfers/send.svelte.js";
 
-  // the page's one dialog for sending our shared files to a user who did not ask for them
+  // the page's one dialog for sending the user's shared files to someone who did not ask for them
   let username = $state("");
   let error = $state("");
   let busy = $state(false);

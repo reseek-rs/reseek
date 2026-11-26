@@ -23,7 +23,7 @@
   };
 
   let { path, username, ondownload, ondetails }: Props = $props();
-  // a file of our own shares can be sent to another user
+  // a file of the user's own shares can be sent to another user
   const ours = $derived(username === app.state?.user.username && session.can("ReadWrite"));
 </script>
 

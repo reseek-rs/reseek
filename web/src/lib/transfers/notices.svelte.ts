@@ -31,7 +31,7 @@ const jobNotice = (job: Schemas["DownloadJobFinished"]) => {
 
 /**
  * Turns transfer frames into notifications: everything queued in one go finished, once, and
- * another user queued uploads from us, those gathered per user for a moment
+ * another user queued uploads from this user's shares, those gathered per user for a moment
  */
 class TransferNotices {
   #queued = new Map<string, string[]>();

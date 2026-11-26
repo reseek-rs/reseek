@@ -26,8 +26,8 @@
   import Recent from "./Recent.svelte";
 
   type Props = {
-    /** where the search goes; when not given, the bar offers the network, the rooms we are in or
-     * our buddies */
+    /** where the search goes; when not given, the bar offers the network, the rooms the user is
+     * in or their buddies */
     scope?: SearchScope;
     /** drops the scope, back to the whole network */
     onclearscope?: () => void;

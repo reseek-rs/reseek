@@ -2,12 +2,12 @@ import { api, byUser, type Schemas } from "#lib/api/client.js";
 import { getFileName, plural } from "#lib/format.js";
 import { call } from "#lib/request.js";
 
-/** The one dialog of the page that sends our files to a user: what it sends, while it is open */
+/** The page's one dialog that sends the user's files to another user: what it sends, while open */
 class Sending {
   files = $state.raw<string[]>([]);
   open = $state(false);
 
-  /** Asks whom to send `files` to, each a path as other users see it in our shares */
+  /** Asks whom to send `files` to, each a path as other users see it in the user's shares */
   ask(files: string[]) {
     this.files = files;
     this.open = true;

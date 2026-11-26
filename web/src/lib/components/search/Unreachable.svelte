@@ -5,7 +5,7 @@
   import { href } from "#lib/nav.js";
   import { SOULSEEK_SETTINGS, unreachable } from "#lib/reachability.js";
 
-  // other users can't connect to us: said plainly where it costs the most, on searches
+  // other users can't connect to this client: said plainly where it costs the most, on searches
   const listen = $derived(app.state?.server.listen);
 </script>
 
