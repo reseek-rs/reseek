@@ -9082,7 +9082,7 @@
         "tags": [
           "searches"
         ],
-        "summary": "One search's responses, empty while it runs.",
+        "summary": "One search's responses: those taken so far while it runs.",
         "operationId": "responses",
         "parameters": [
           {

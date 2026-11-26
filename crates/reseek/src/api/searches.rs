@@ -186,7 +186,7 @@ async fn get(
     .map(Json)
 }
 
-/// One search's responses, empty while it runs.
+/// One search's responses: those taken so far while it runs.
 #[utoipa::path(
   get, path = "/searches/{id}/responses", tag = "searches",
   params(("id" = Uuid, Path, description = "the search's id")),

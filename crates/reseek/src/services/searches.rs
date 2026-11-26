@@ -47,7 +47,7 @@ pub trait SearchService: Send + Sync {
     Err(not_yet(DOMAIN))
   }
 
-  /// The responses of one search, empty while it runs.
+  /// One search's responses: those taken so far while it runs.
   async fn responses(&self, id: Uuid) -> Result<Vec<SearchResponse>, ApiError> {
     Err(not_yet(DOMAIN))
   }

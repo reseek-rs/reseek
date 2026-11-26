@@ -1964,7 +1964,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** One search's responses, empty while it runs. */
+        /** One search's responses: those taken so far while it runs. */
         get: operations["responses"];
         put?: never;
         post?: never;
