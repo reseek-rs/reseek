@@ -61,6 +61,7 @@
   import { downloads } from "#lib/transfers/transfers.svelte.js";
   import { placeText, waits, whyText } from "#lib/transfers/why.svelte.js";
   import { lineStart } from "#lib/tree/indent.js";
+  import { clock } from "#lib/ui/clock.svelte.js";
   import { viewport } from "#lib/ui/viewport.svelte.js";
   import { groupColor } from "#lib/users/colors.js";
   import { queueOf } from "#lib/users/groups.js";
@@ -111,7 +112,7 @@
   const write = $derived(session.can("ReadWrite"));
   const user = $derived(users.get(t.username));
   const wait = $derived(direction === "upload" ? waits.get(t.id) : undefined);
-  const retryIn = $derived(t.nextAttemptAt ? ago(t.nextAttemptAt) : null);
+  const retryIn = $derived(t.nextAttemptAt ? ago(t.nextAttemptAt, clock.now) : null);
   // a download waiting here has a place in the local queue, which dragging its handle onto
   // another waiting download's moves it before that one
   const localPlace = $derived(direction === "download" ? downloads.places.get(t.id) : undefined);
@@ -342,7 +343,7 @@
       {@const at =
         column === "requested" ? t.requestedAt : column === "started" ? t.startedAt : t.endedAt}
       {#if at}
-        <Tooltip text={ago(at)} dense {dormant}>
+        <Tooltip text={ago(at, clock.now)} dense {dormant}>
           {#snippet child({ props })}<span {...props} class="truncate">{dateTime(at)}</span
             >{/snippet}
         </Tooltip>
