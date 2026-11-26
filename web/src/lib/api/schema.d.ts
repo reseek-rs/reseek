@@ -2466,7 +2466,7 @@ export interface paths {
         post?: never;
         /**
          * Revokes a token, closing the event streams it opened; the owner's or, for an administrator,
-         *     anyone's. The record is kept a month for the audit view.
+         *     anyone's. The record is kept a month, then deleted.
          */
         delete: operations["revoke_token"];
         options?: never;
