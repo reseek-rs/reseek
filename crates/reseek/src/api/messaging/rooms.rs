@@ -451,8 +451,8 @@ async fn set_notify(
   Ok(StatusCode::NO_CONTENT)
 }
 
-/// The server's list of rooms, asked of it now: public rooms, then private ones we are a
-/// member of, then those we own.
+/// The server's list of rooms as it last sent it, asked for again once it is a minute old:
+/// public rooms, then private ones we are a member of, then those we own.
 #[utoipa::path(
   get, path = "/rooms/available", tag = "rooms",
   responses(

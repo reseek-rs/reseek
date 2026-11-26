@@ -6748,7 +6748,7 @@
         "tags": [
           "rooms"
         ],
-        "summary": "The server's list of rooms, asked of it now: public rooms, then private ones we are a\nmember of, then those we own.",
+        "summary": "The server's list of rooms as it last sent it, asked for again once it is a minute old:\npublic rooms, then private ones we are a member of, then those we own.",
         "operationId": "available",
         "responses": {
           "200": {
@@ -21245,7 +21245,7 @@
           "mentions": {
             "type": "integer",
             "format": "int32",
-            "description": "those of them that mention us",
+            "description": "those of them marked `isMention`",
             "minimum": 0
           },
           "name": {
@@ -22671,7 +22671,7 @@
           },
           "snippet": {
             "type": "string",
-            "description": "the matching part of the text, HTML-escaped, with the matches inside `<mark>` and\n`</mark>`"
+            "description": "the matching part of the text, HTML-escaped, with the matches inside `<mark>` and\n`</mark>`; none are marked when the text holds U+0001 or U+0002"
           },
           "timestamp": {
             "type": "string",
@@ -24486,7 +24486,7 @@
             "items": {
               "$ref": "#/components/schemas/HistoryGap"
             },
-            "description": "the intervals without history between the page's first message and its last, or now on\nthe newest page, oldest first"
+            "description": "the intervals without history from the page's first message to the first message of the\nnext newer page; on the newest page, to now while we are in the room, else to when we\nleft it. Oldest first"
           },
           "hasMore": {
             "type": "boolean",
@@ -24600,7 +24600,7 @@
           },
           "isMention": {
             "type": "boolean",
-            "description": "the message mentions our username"
+            "description": "the message names us or holds one of the words in `chat.highlight_words`"
           },
           "localId": {
             "type": "integer",
@@ -24703,7 +24703,7 @@
           "mentions": {
             "type": "integer",
             "format": "int32",
-            "description": "those of them that mention us",
+            "description": "those of them marked `isMention`",
             "minimum": 0
           },
           "unread": {

@@ -1543,8 +1543,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * The server's list of rooms, asked of it now: public rooms, then private ones we are a
-         *     member of, then those we own.
+         * The server's list of rooms as it last sent it, asked for again once it is a minute old:
+         *     public rooms, then private ones we are a member of, then those we own.
          */
         get: operations["available"];
         put?: never;
@@ -5846,7 +5846,7 @@ export interface components {
             lastReadId: number;
             /**
              * Format: int32
-             * @description those of them that mention us
+             * @description those of them marked `isMention`
              */
             mentions: number;
             /**
@@ -6330,7 +6330,7 @@ export interface components {
             room?: string | null;
             /**
              * @description the matching part of the text, HTML-escaped, with the matches inside `<mark>` and
-             *     `</mark>`
+             *     `</mark>`; none are marked when the text holds U+0001 or U+0002
              */
             snippet: string;
             /**
@@ -7250,8 +7250,9 @@ export interface components {
         /** @description One page of a room's message history. */
         RoomHistory: {
             /**
-             * @description the intervals without history between the page's first message and its last, or now on
-             *     the newest page, oldest first
+             * @description the intervals without history from the page's first message to the first message of the
+             *     next newer page; on the newest page, to now while we are in the room, else to when we
+             *     left it. Oldest first
              */
             gaps: components["schemas"]["HistoryGap"][];
             /** @description older messages exist, or with `after` newer ones */
@@ -7304,7 +7305,7 @@ export interface components {
         RoomMessage: {
             /** @description the author is blocked for rooms, so the message is shown collapsed */
             hidden: boolean;
-            /** @description the message mentions our username */
+            /** @description the message names us or holds one of the words in `chat.highlight_words` */
             isMention: boolean;
             /**
              * Format: int64
@@ -7361,7 +7362,7 @@ export interface components {
         RoomUnread: {
             /**
              * Format: int32
-             * @description those of them that mention us
+             * @description those of them marked `isMention`
              */
             mentions: number;
             /**

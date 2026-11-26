@@ -94,7 +94,7 @@ pub struct ChatUnread {
 pub struct RoomUnread {
   /// messages after the read marker, not ours and not hidden
   pub unread: u32,
-  /// those of them that mention us
+  /// those of them marked `isMention`
   pub mentions: u32,
 }
 
@@ -166,7 +166,7 @@ pub struct MessageHit {
   /// the message's id in its room's history or its conversation
   pub local_id: i64,
   /// the matching part of the text, HTML-escaped, with the matches inside `<mark>` and
-  /// `</mark>`
+  /// `</mark>`; none are marked when the text holds U+0001 or U+0002
   pub snippet: String,
 }
 

@@ -63,7 +63,7 @@ pub struct RoomMessage {
   /// the author is us
   #[serde(rename = "self")]
   pub is_self: bool,
-  /// the message mentions our username
+  /// the message names us or holds one of the words in `chat.highlight_words`
   pub is_mention: bool,
   /// the author is blocked for rooms, so the message is shown collapsed
   pub hidden: bool,
@@ -104,7 +104,7 @@ pub struct JoinedRoom {
   pub name: String,
   /// messages after the read marker, not ours and not hidden
   pub unread: u32,
-  /// those of them that mention us
+  /// those of them marked `isMention`
   pub mentions: u32,
   /// which messages notify
   pub notify: NotifyLevel,
@@ -205,8 +205,9 @@ pub struct RoomHistory {
   pub messages: Vec<RoomMessage>,
   /// older messages exist, or with `after` newer ones
   pub has_more: bool,
-  /// the intervals without history between the page's first message and its last, or now on
-  /// the newest page, oldest first
+  /// the intervals without history from the page's first message to the first message of the
+  /// next newer page; on the newest page, to now while we are in the room, else to when we
+  /// left it. Oldest first
   pub gaps: Vec<HistoryGap>,
 }
 
