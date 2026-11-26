@@ -225,7 +225,7 @@ async fn update(
 }
 
 /// Revokes a token, closing the event streams it opened; the owner's or, for an administrator,
-/// anyone's. The record is kept a month for the audit view.
+/// anyone's. The record is kept a month, then deleted.
 #[utoipa::path(
   operation_id = "revoke_token",
   delete, path = "/tokens/{id}", tag = "tokens",
