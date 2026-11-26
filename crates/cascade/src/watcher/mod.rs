@@ -20,7 +20,7 @@ use crate::files::{Entry, LoadedFile};
 use crate::layers::{Checked, Failure, Layers};
 use crate::loaded::{Loaded, NotApplied};
 use crate::overrides::Lasts;
-use crate::schema::keep_secrets;
+use crate::schema::{keep_secrets, keeps_hidden};
 use crate::{Apply, Error, Key, Root, lock, tree};
 use events::{FileEvents, SETTLE, Settle, Writing, quiet};
 use reload::{Read, pending};
@@ -174,21 +174,31 @@ fn show_pending_reconnect<T: Clone>(state: &State<T>, shared: &Shared<T>) {
 }
 
 /// `set` with the secrets its lists of tables and user-keyed maps show as `*****` put back
-/// from the values in effect. Called with the state locked, so the secrets put back are the
-/// ones the change is made over.
+/// from the values in effect, and without the secret lists and tables sent back as they were
+/// shown. Called with the state locked, so the secrets put back are the ones the change is made
+/// over.
 fn with_entry_secrets<T>(
   shared: &Shared<T>,
-  mut set: BTreeMap<Key, Value>,
+  set: BTreeMap<Key, Value>,
 ) -> Result<BTreeMap<Key, Value>, Error> {
   let current = shared.current.borrow().clone();
-  for (key, value) in &mut set {
-    let field = current.schema().field(key);
-    if let Some(field) = field.filter(|field| !field.secret) {
-      keep_secrets(field, value, tree::get(&current.tree, key))
-        .map_err(|invalid| Error::Invalid(vec![invalid]))?;
+  let mut kept = BTreeMap::new();
+  for (key, mut value) in set {
+    if let Some(field) = current.schema().field(&key) {
+      let in_effect = tree::get(&current.tree, &key);
+      let unchanged = if field.secret {
+        keeps_hidden(field, &value, in_effect)
+      } else {
+        keep_secrets(field, &mut value, in_effect).map(|()| false)
+      }
+      .map_err(|invalid| Error::Invalid(vec![invalid]))?;
+      if unchanged {
+        continue;
+      }
     }
+    kept.insert(key, value);
   }
-  Ok(set)
+  Ok(kept)
 }
 
 /// How a file is to be changed.

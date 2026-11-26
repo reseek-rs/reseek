@@ -336,6 +336,41 @@ fn redact_field(field: &Field, value: &mut Value) {
   }
 }
 
+/// Whether `value`, sent for `field`, a secret that is a list or a table, is the value in effect,
+/// `current`, as a client read it: hidden element by element. Such a value keeps `current`; any
+/// other that holds `*****` is refused, since nothing can tell which secret it shows.
+pub(crate) fn keeps_hidden(
+  field: &Field,
+  value: &Value,
+  current: Option<&Value>,
+) -> Result<bool, Invalid> {
+  if !field.secret || !(value.is_array() || value.is_object()) {
+    return Ok(false);
+  }
+  let shown = current.map(|current| {
+    let mut shown = current.clone();
+    hide(&mut shown);
+    shown
+  });
+  if shown.as_ref() == Some(value) {
+    return Ok(true);
+  }
+  if shows_hidden(value) {
+    return Err(nothing_to_keep(&field.key, &field.key));
+  }
+  Ok(false)
+}
+
+/// Whether `*****` is anywhere in `value`.
+fn shows_hidden(value: &Value) -> bool {
+  match value {
+    Value::String(s) => s == REDACTED,
+    Value::Array(items) => items.iter().any(shows_hidden),
+    Value::Object(entries) => entries.values().any(shows_hidden),
+    _ => false,
+  }
+}
+
 /// Puts back the secrets of `value`, a new value of `field`, which is a list of tables or a
 /// user-keyed map, wherever it shows them as `*****`, and leaves out the empty ones: what a
 /// client read comes with its secrets hidden, and it sends the whole value back when it changes
@@ -347,12 +382,16 @@ pub(crate) fn keep_secrets(
   value: &mut Value,
   current: Option<&Value>,
 ) -> Result<(), Invalid> {
-  kept_in(field, &field.key, value, current).map_err(|path| {
-    Invalid::new(
-      field.key.clone(),
-      format!("The field {path} is hidden and has no value to keep here. Enter it again."),
-    )
-  })
+  kept_in(field, &field.key, value, current).map_err(|path| nothing_to_keep(&field.key, &path))
+}
+
+/// The refusal of `*****` sent for the secret at `path`, under the field `key`, where it stands
+/// for no value.
+fn nothing_to_keep(key: &str, path: &str) -> Invalid {
+  Invalid::new(
+    key,
+    format!("The field {path} is hidden and has no value to keep here. Enter it again."),
+  )
 }
 
 /// [`keep_secrets`] for the value at `path`, whose error is the path of the hidden value.
@@ -578,6 +617,32 @@ mod tests {
   #[should_panic(expected = "`ranks` is not a list of strings")]
   fn only_a_list_of_names_is_an_order() {
     Schema::of::<NumberOrder>();
+  }
+
+  #[derive(Default, Serialize, crate::Cascade)]
+  struct SecretList {
+    #[cascade(secret)]
+    tokens: Vec<String>,
+  }
+
+  #[test]
+  fn a_secret_list_sent_back_hidden_keeps_its_value() {
+    let schema = Schema::of::<SecretList>();
+    let field = schema.field("tokens").unwrap();
+    let current = json!(["a", "b"]);
+    let shown = schema.redact(&json!({ "tokens": current }))["tokens"].clone();
+    assert_eq!(shown, json!([REDACTED, REDACTED]));
+    assert_eq!(keeps_hidden(field, &shown, Some(&current)), Ok(true));
+    assert_eq!(
+      keeps_hidden(field, &json!(["c"]), Some(&current)),
+      Ok(false),
+      "a new value replaces it"
+    );
+    for value in [json!([REDACTED, "c"]), json!([REDACTED])] {
+      let refused = keeps_hidden(field, &value, Some(&current)).unwrap_err();
+      assert!(refused.message.contains("hidden"), "{value}: {refused}");
+    }
+    assert!(keeps_hidden(field, &shown, None).is_err());
   }
 
   #[test]
