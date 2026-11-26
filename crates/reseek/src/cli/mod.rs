@@ -3,9 +3,9 @@
 //!
 //! A flag's value follows it (`--http-port 5030`) or is attached with `=` (`--http-port=5030`);
 //! a boolean flag takes no following value, so `--debug` is true and `--debug=false` false.
-//! Short boolean flags may be grouped (`-nx`). A list flag is repeated for each element. A flag
-//! no option has is passed on with its attached value, if any, so the configuration warns
-//! about it.
+//! Short boolean flags may be grouped (`-nx`), and the last one may take a value attached with
+//! `=` (`-nd=false`). A list flag is repeated for each element. A flag no option has is passed
+//! on with its attached value, if any, so the configuration warns about it.
 
 mod commands;
 mod completions;
@@ -256,21 +256,29 @@ pub fn parse(
       let chars = shorts.char_indices();
       for (at, c) in chars {
         let display = format!("-{c}");
+        let rest = &shorts[at + c.len_utf8()..];
         let Some(flag) = lookup_short(c, schema) else {
           invocation.flags.push((display, "true".to_string()));
           continue;
         };
         if !takes_value(&flag) {
-          record(
-            flag,
-            &display,
-            "true".to_string(),
-            &mut invocation,
-            &mut seen,
-          );
+          // a boolean read as `-d=false` takes the rest of the token, as `--debug=false` does
+          let attached = rest.strip_prefix('=');
+          if let Some(value) = attached
+            && value != "true"
+            && value != "false"
+          {
+            return Err(UsageError(format!(
+              "`{display}` is true or false, not `{value}`"
+            )));
+          }
+          let (value, _) = value_for(&flag, &display, attached.map(str::to_string), None)?;
+          record(flag, &display, value, &mut invocation, &mut seen);
+          if attached.is_some() {
+            break;
+          }
           continue;
         }
-        let rest = &shorts[at + c.len_utf8()..];
         let attached =
           (!rest.is_empty()).then(|| rest.strip_prefix('=').unwrap_or(rest).to_string());
         let next = (attached.is_none()).then(|| args.get(i)).flatten();
@@ -542,6 +550,19 @@ mod tests {
         ("--shared", "/b"),
       ])
     );
+    // a short boolean with `=` takes the rest of the token, never more flags of the group
+    assert_eq!(
+      flags(&["-d=false", "-nd=true"]),
+      pairs(&[
+        ("--debug", "false"),
+        ("--no-logo", "true"),
+        ("--debug", "true"),
+      ])
+    );
+    assert_eq!(
+      run(&["-d=lse"]).unwrap_err(),
+      UsageError("`-d` is true or false, not `lse`".into())
+    );
   }
 
   #[test]
@@ -573,6 +594,7 @@ mod tests {
       run(&["--http-port"]).unwrap_err(),
       UsageError("`--http-port` needs a value".into())
     );
+  }
   }
 
   #[test]
