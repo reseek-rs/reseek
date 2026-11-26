@@ -12,18 +12,43 @@ pub fn render(schema: &Schema) -> String {
      are read after it, in\n# name order, and win over it. Environment variables and \
      command-line flags are listed by\n# `reseek --envars` and `reseek --help`.\n\n",
   );
-  // keys outside every table must come before the first table header
-  let (top, nested): (Vec<&Field>, Vec<&Field>) = schema
-    .fields()
-    .iter()
-    .partition(|f| !f.key.contains('.') && f.kind != Kind::Map);
-  let mut table = String::new();
-  for field in top.into_iter().chain(nested) {
-    let (section, name) = match field.key.rsplit_once('.') {
-      Some((section, name)) => (section, name),
-      None => ("", field.key.as_str()),
+  // each table's keys are written together under one header, before the user-keyed maps in
+  // it, since TOML refuses a table header given twice
+  let mut tables: Vec<(&str, Vec<&Field>, Vec<&Field>)> = Vec::new();
+  for field in schema.fields() {
+    let section = field
+      .key
+      .rsplit_once('.')
+      .map_or("", |(section, _)| section);
+    let at = match tables.iter().position(|(name, ..)| *name == section) {
+      Some(at) => at,
+      None => {
+        tables.push((section, Vec::new(), Vec::new()));
+        tables.len() - 1
+      }
     };
+    let (_, keys, maps) = &mut tables[at];
     if field.kind == Kind::Map {
+      maps.push(field);
+    } else {
+      keys.push(field);
+    }
+  }
+  // keys outside every table must come before the first table header
+  tables.sort_by_key(|(section, ..)| !section.is_empty());
+  for (section, keys, maps) in tables {
+    if !section.is_empty() && !keys.is_empty() {
+      text.push_str(&format!("\n# [{section}]\n"));
+    }
+    for field in keys {
+      let name = field
+        .key
+        .rsplit_once('.')
+        .map_or(field.key.as_str(), |(_, name)| name);
+      doc(&mut text, field);
+      text.push_str(&format!("# {name} = {}\n", toml_value(&field.default)));
+    }
+    for field in maps {
       text.push('\n');
       doc(&mut text, field);
       text.push_str(&format!("# [{}.<name>]\n", field.key));
@@ -34,15 +59,7 @@ pub fn render(schema: &Schema) -> String {
           toml_value(&entry.default)
         ));
       }
-      table.clear();
-      continue;
     }
-    if section != table && !section.is_empty() {
-      text.push_str(&format!("\n# [{section}]\n"));
-      table = section.to_string();
-    }
-    doc(&mut text, field);
-    text.push_str(&format!("# {name} = {}\n", toml_value(&field.default)));
   }
   text
 }
@@ -76,5 +93,14 @@ mod tests {
     assert!(web < port);
     assert!(text.contains("# [web.authentication.api_keys.<name>]\n"));
     assert!(text.contains("# debug = false\n"));
+    let headers: Vec<&str> = text.lines().filter(|l| l.starts_with("# [")).collect();
+    let mut unique = headers.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(
+      headers.len(),
+      unique.len(),
+      "a table header is written twice"
+    );
   }
 }
