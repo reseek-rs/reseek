@@ -155,6 +155,9 @@ pub enum ScanOrigin {
   /// the start of the engine: the first scan, or the one that finds what changed while the
   /// program was not running
   Startup,
+  /// the watches lost changes under a whole share, as when the system dropped its
+  /// notifications during a large copy
+  Missed,
 }
 
 /// How a scan ended.

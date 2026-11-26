@@ -3,7 +3,7 @@
 //! is on disk then. A file is read again unless its size and time are unchanged, a directory
 //! the index does not have is scanned with everything under it, and a path that is gone takes
 //! its rows with it. When the system says changes were dropped, the directory they were in is
-//! scanned again.
+//! scanned again, and when they were dropped for a whole share, a scan of the shares starts.
 //!
 //! Notifications come from the local kernel only: a change made on another machine to a
 //! network or FUSE mount is not seen until a rescan.
@@ -22,12 +22,12 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, info, warn};
 
-use super::Shares;
 use super::phase::Edge;
 use super::repository::{self, DirectoryRows};
 use super::scanner::{self, Settings};
 use super::share::{self, Share};
 use super::walk;
+use super::{ScanOrigin, Shares};
 use crate::db::DbError;
 use crate::entries;
 use crate::lock;
@@ -217,7 +217,10 @@ async fn apply_changes(
             (e.paths, Need::Rescan)
           }
         };
-        let paths = if paths.is_empty() && need == Need::Rescan { roots.clone() } else { paths };
+        if need == Need::Rescan && lost_a_share(&roots, &paths) {
+          scan_missed(&shares).await;
+          continue;
+        }
         for path in paths {
           let entry = pending.entry(path).or_insert((now, need));
           entry.0 = now;
@@ -242,6 +245,30 @@ async fn apply_changes(
     if let Err(e) = apply(&shares, &settings, &roots, &retired, due).await {
       warn!(error = %e, "watched share changes not applied; they are seen by the next rescan");
     }
+  }
+}
+
+/// Whether changes dropped under `paths`, which are none when the system does not say where,
+/// take in a whole share of `roots`.
+fn lost_a_share(roots: &[PathBuf], paths: &[PathBuf]) -> bool {
+  paths.is_empty()
+    || paths
+      .iter()
+      .any(|path| roots.iter().any(|root| share::is_within(root, path)))
+}
+
+/// Marks the index drifted and starts a scan of the shares; a scan already running stays
+/// pending after it, as it may have read the shares before the changes.
+async fn scan_missed(shares: &Shares) {
+  if let Err(e) = shares.request_scan().await {
+    warn!(error = %e, "the index not marked drifted after changes were missed");
+  }
+  match shares.scan(false, ScanOrigin::Missed) {
+    Ok(()) => info!("Changes under the shares were missed; scanning them again"),
+    Err(conflict) => debug!(
+      ?conflict,
+      "changes under the shares were missed during a scan; a rescan stays pending"
+    ),
   }
 }
 
@@ -517,6 +544,20 @@ mod tests {
   use notify::event::{CreateKind, DataChange, Flag, ModifyKind, RemoveKind};
 
   use super::*;
+
+  #[test]
+  fn changes_lost_at_or_above_a_share_take_it_in() {
+    let roots = [PathBuf::from("/music"), PathBuf::from("/films")];
+    let lost = |paths: &[&str]| {
+      let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+      lost_a_share(&roots, &paths)
+    };
+    assert!(lost(&[]), "the system did not say where");
+    assert!(lost(&["/music"]));
+    assert!(lost(&["/"]));
+    assert!(!lost(&["/music/Album"]), "scanned again where it is");
+    assert!(!lost(&["/musicals"]));
+  }
 
   #[test]
   fn a_file_opened_or_read_without_writing_changes_nothing() {

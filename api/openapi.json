@@ -21126,7 +21126,8 @@
           "schedule",
           "download",
           "resumed",
-          "user"
+          "user",
+          "watcher"
         ]
       },
       "JobState": {

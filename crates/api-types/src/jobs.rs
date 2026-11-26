@@ -63,6 +63,9 @@ pub enum JobStarterKind {
   Resumed,
   /// a Soulseek user, named by `name`, who sent us files without being asked
   User,
+  /// the share watcher, scanning the shares again after the system dropped its change
+  /// notifications
+  Watcher,
 }
 
 /// Who or what started a job.

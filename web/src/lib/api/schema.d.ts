@@ -5776,7 +5776,7 @@ export interface components {
          * @description Who or what started a job.
          * @enum {string}
          */
-        JobStarterKind: "you" | "schedule" | "download" | "resumed" | "user";
+        JobStarterKind: "you" | "schedule" | "download" | "resumed" | "user" | "watcher";
         /**
          * @description Where a job is.
          * @enum {string}

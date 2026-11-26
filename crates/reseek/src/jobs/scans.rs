@@ -1,7 +1,7 @@
 //! Share scans as jobs. The share engine tells of each scan as it starts and ends: a scan
-//! someone asked for or the one at startup is listed from its start, while a scheduled rescan
-//! is listed at its end only when it did not complete; every scheduled one updates the share
-//! rescan's card.
+//! someone asked for, the one at startup or one after missed changes is listed from its start,
+//! while a scheduled rescan is listed at its end only when it did not complete; every scheduled
+//! one updates the share rescan's card.
 
 use std::sync::{Arc, Mutex};
 
@@ -61,6 +61,7 @@ fn starter(origin: ScanOrigin) -> JobStarter {
     ScanOrigin::Asked => JobStarter::you(),
     ScanOrigin::Scheduled => JobStarter::schedule(ScheduleName::ShareRescan.as_str()),
     ScanOrigin::Startup => JobStarter::of(JobStarterKind::Resumed),
+    ScanOrigin::Missed => JobStarter::of(JobStarterKind::Watcher),
   }
 }
 
