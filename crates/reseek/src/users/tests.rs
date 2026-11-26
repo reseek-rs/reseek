@@ -2103,6 +2103,31 @@ async fn the_privileged_list_does_not_wait_for_the_summaries_it_pushes() {
   assert_eq!(next_pushed(&mut stream).await["isPrivileged"], true);
 }
 
+#[tokio::test]
+async fn a_user_the_next_privileged_list_leaves_out_is_privileged_no_more() {
+  let app = app(CONFIG, &[]).await;
+  let users = &app.state.users;
+  users.set_notes("alice", "kind".into()).await.unwrap();
+  let mut stream = app
+    .stream_from(
+      "127.0.0.1:1",
+      request("GET", "/api/v0/live?topics=users", None),
+    )
+    .await;
+  stream.until("hello").await;
+  users.privileged_listed(&["alice".to_string(), "bob".to_string()]);
+  assert_eq!(next_pushed(&mut stream).await["isPrivileged"], true);
+  users.session_ended();
+  users.privileged_listed(&["bob".to_string()]);
+  assert!(!users.placement("alice").privileged);
+  assert!(users.placement("bob").privileged);
+  assert_eq!(next_pushed(&mut stream).await["isPrivileged"], false);
+  // a grant names one user and takes nothing from the others
+  users.privileges_granted("alice");
+  assert!(users.placement("alice").privileged);
+  assert!(users.placement("bob").privileged);
+}
+
 /// Whether `summary` shows its user among the leechers.
 fn leeches(summary: &Value) -> bool {
   let groups = summary["groups"].as_array().unwrap();

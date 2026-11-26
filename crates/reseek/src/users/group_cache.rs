@@ -866,28 +866,74 @@ impl Directory {
     );
   }
 
-  /// Every user on the server's list of privileged users is privileged from now on. The
+  /// The server's list of privileged users, which it sends whole at login: every user on it is
+  /// privileged from now on, and every other user the cache calls privileged is not. The
   /// summaries of the users with a row whose groups that moves are pushed in the background, as
-  /// the list the server sends at login names thousands, and the client's events wait meanwhile.
-  /// The stop waits for them.
+  /// the list names thousands, and the client's events wait meanwhile. The stop waits for them.
   pub fn privileged_listed(self: &Arc<Self>, usernames: &[String]) {
-    let moved: Vec<String> = usernames
-      .iter()
-      .filter(|username| self.learned(username, true, |facts| facts.privileged = true))
-      .cloned()
-      .collect();
+    let listed: HashSet<&str> = usernames.iter().map(String::as_str).collect();
+    let mut moved = self.privileges_ended(&listed);
+    let unlisted = moved.len();
+    moved.extend(
+      usernames
+        .iter()
+        .filter(|username| self.learned(username, true, |facts| facts.privileged = true))
+        .cloned(),
+    );
     debug!(
       users = usernames.len(),
+      unlisted,
       moved = moved.len(),
       "privileged users listed"
     );
-    if moved.is_empty() {
+    self.push_in_background(moved);
+  }
+
+  /// The server says `username` was granted privileges: they are privileged from now on, and
+  /// their summary is pushed in the background when that moves their groups.
+  pub fn privileges_granted(self: &Arc<Self>, username: &str) {
+    if self.learned(username, true, |facts| facts.privileged = true) {
+      self.push_in_background(vec![username.to_string()]);
+    }
+  }
+
+  /// Takes the privileges away from every user the cache calls privileged whom `listed` does
+  /// not name, in one write so a status taken meanwhile is not undone; returns those with a row
+  /// whose groups that moved, whose cached summaries are dropped.
+  fn privileges_ended(&self, listed: &HashSet<&str>) -> Vec<String> {
+    let options = self.config.current();
+    let moved: Vec<String> = {
+      let mut entries = self.groups.facts.write();
+      entries
+        .by_user
+        .iter_mut()
+        .filter(|(username, entry)| entry.facts.privileged && !listed.contains(username.as_str()))
+        .filter_map(|(username, entry)| {
+          let before = entry.facts.clone();
+          entry.facts.privileged = false;
+          groups::moves(&options.values, &before, &entry.facts).then(|| username.clone())
+        })
+        .collect()
+    };
+    let moved: Vec<String> = moved
+      .into_iter()
+      .filter(|username| self.known.has(username))
+      .collect();
+    for username in &moved {
+      self.forget(username);
+    }
+    moved
+  }
+
+  /// Pushes the summaries of `usernames` in a task of their own. The stop waits for it.
+  fn push_in_background(self: &Arc<Self>, usernames: Vec<String>) {
+    if usernames.is_empty() {
       return;
     }
     let this = self.clone();
     self.tasks.spawn(
       async move {
-        for username in &moved {
+        for username in &usernames {
           this.push(username).await;
         }
       }

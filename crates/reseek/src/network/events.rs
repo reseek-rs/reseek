@@ -476,7 +476,7 @@ fn acknowledge_privileges(app: &AppState, id: u32) {
 /// they are us, our own privileges are read again so the time we have shows at once.
 fn privileges_granted(app: &AppState, username: String) {
   debug!(username, "privileges granted");
-  app.users.privileged_listed(std::slice::from_ref(&username));
+  app.users.privileges_granted(&username);
   if app.network.client().username().as_deref() != Some(username.as_str()) {
     return;
   }
