@@ -12,7 +12,6 @@
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import Tooltip from "#lib/components/ui/Tooltip.svelte";
   import { Busy } from "#lib/feedback/busy.svelte.js";
-  import { toast } from "#lib/feedback/toast.svelte.js";
   import { ago, chatTime, formatCount, formatSpeed, plural } from "#lib/format.js";
   import { userHref } from "#lib/nav.js";
   import { clock } from "#lib/ui/clock.svelte.js";
@@ -43,7 +42,8 @@
 
   // our own name shows what peers are sent now, from our profile
   const own = $derived(!!app.state?.user.username && app.state.user.username === name);
-  // our own presence and share counts are the daemon's, not the directory's
+  // our own presence and share counts come from the daemon's state, which the directory has no
+  // row for
   const presence = $derived.by(() => {
     const p = own ? (app.state?.server.isLoggedIn ? "Online" : "Offline") : user?.presence;
     if (!p) return { dot: "bg-fg-subtle/40", text: "Unknown" };
@@ -87,7 +87,6 @@
     befriending.run(async () => {
       const outcome = await setBuddy(name, !user?.buddy);
       if (outcome.ok) await users.load(name, { fresh: true });
-      else toast(outcome.error, "error");
       return outcome;
     });
 </script>
