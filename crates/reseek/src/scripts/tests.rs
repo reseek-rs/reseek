@@ -191,6 +191,18 @@ async fn an_event_too_large_for_the_environment_is_handed_over_in_a_file() {
 }
 
 #[tokio::test]
+async fn a_download_value_the_environment_cannot_take_is_left_out_and_the_script_runs() {
+  let command = r#"test -z "${RESEEK_SCRIPT_REASON+set}${RESEEK_SCRIPT_REMOTE_PATH+set}" && echo "$RESEEK_SCRIPT_RESULT""#;
+  let (app, mut runs) = with_scripts(&script("odd", r#""DownloadFileFailed""#, command, "")).await;
+  for text in ["a\0b".to_string(), "x".repeat(140 * 1024)] {
+    raise(&app, "DownloadFileFailed", &text).await;
+    let run = next(&mut runs).await;
+    assert!(run.succeeded, "{run:?}");
+    assert_eq!(run.output, "failed");
+  }
+}
+
+#[tokio::test]
 async fn a_script_that_cannot_start_is_recorded_with_why() {
   let config = "[integrations.scripts.missing]\non = [\"Any\"]\n\
                 [integrations.scripts.missing.run]\nexecutable = \"/nonexistent/program\"\n";

@@ -289,7 +289,8 @@ pub struct Integrations {
 /// A program run on events. The event is passed as JSON in `RESEEK_SCRIPT_DATA`, and the
 /// outcome of a download in `RESEEK_SCRIPT_RESULT` and the other `RESEEK_SCRIPT_*` variables.
 /// These variables contain text chosen by other users, such as filenames, usernames and
-/// messages. Quote them, and never place one unquoted in a shell command.
+/// messages. Quote them, and never place one unquoted in a shell command. A download's variable
+/// holding a NUL or over 100 KiB is left out; the JSON still has it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Cascade)]
 #[serde(default)]
 pub struct Script {

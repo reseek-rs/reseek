@@ -159,7 +159,9 @@ impl Invocation {
 }
 
 /// The variables a script finds the event in: the event as JSON, its type and id, and for a
-/// download that ended, how it ended without the JSON.
+/// download that ended, how it ended without the JSON. A value of the download's that the
+/// environment cannot take, one with a NUL or longer than the inline limit, is left out: the
+/// event's JSON still holds it.
 fn variables(
   record: &EventRecord,
   data: String,
@@ -194,13 +196,19 @@ fn variables(
     _ => None,
   };
   if let Some((result, reason, username, remote, local)) = outcome {
-    variables.extend([
-      ("RESEEK_SCRIPT_RESULT", result.to_string()),
-      ("RESEEK_SCRIPT_REASON", reason),
-      ("RESEEK_SCRIPT_USERNAME", username.clone()),
-      ("RESEEK_SCRIPT_REMOTE_PATH", remote.clone()),
-      ("RESEEK_SCRIPT_LOCAL_PATH", local),
-    ]);
+    // the reason, the username and the remote filename are text the other user chose
+    let fits = |(_, value): &(&str, String)| value.len() <= INLINE_LIMIT && !value.contains('\0');
+    variables.extend(
+      [
+        ("RESEEK_SCRIPT_RESULT", result.to_string()),
+        ("RESEEK_SCRIPT_REASON", reason),
+        ("RESEEK_SCRIPT_USERNAME", username.clone()),
+        ("RESEEK_SCRIPT_REMOTE_PATH", remote.clone()),
+        ("RESEEK_SCRIPT_LOCAL_PATH", local),
+      ]
+      .into_iter()
+      .filter(fits),
+    );
   }
   variables
 }
