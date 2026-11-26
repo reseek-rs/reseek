@@ -140,20 +140,31 @@ in
     launchd.agents.reseek = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
       enable = true;
       config = {
-        # launchd reads no environment file, so a shell exports it before starting the daemon
-        ProgramArguments =
-          if cfg.environmentFile == null then
-            arguments
-          else
-            [
-              "/bin/sh"
-              "-c"
-              ''set -a; . ${lib.escapeShellArg cfg.environmentFile}; set +a; exec "$@"''
-              "reseek"
-            ]
-            ++ arguments;
+        # launchd reads no environment file and cannot leave one exit status stopped, so a shell
+        # exports the file, passes a stop on to the daemon and turns a refused configuration (3)
+        # into a clean exit
+        ProgramArguments = [
+          "/bin/sh"
+          "-c"
+          (
+            lib.optionalString (cfg.environmentFile != null) ''
+              set -a; . ${lib.escapeShellArg cfg.environmentFile}; set +a
+            ''
+            + ''
+              "$@" & pid=$!
+              trap 'kill -TERM "$pid"' TERM INT
+              while kill -0 "$pid" 2>/dev/null; do wait "$pid"; code=$?; done
+              [ "$code" -eq 3 ] && exit 0
+              exit "$code"
+            ''
+          )
+          "reseek"
+        ]
+        ++ arguments;
         EnvironmentVariables.RESEEK_CONFIG_MANAGED_BY = "Nix";
-        KeepAlive = true;
+        # started again only after a failed exit: a crash, or 75 when a restart is asked for
+        # through the API
+        KeepAlive.SuccessfulExit = false;
         RunAtLoad = true;
       };
     };
