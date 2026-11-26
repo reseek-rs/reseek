@@ -472,6 +472,46 @@ async fn a_request_in_a_buddys_name_from_another_address_is_a_strangers() {
   );
 }
 
+/// A request in a buddy's name from another address is answered for a file shared only to
+/// buddies as one not shared, though that file is queued to the buddy: the answer would say it
+/// exists, and the request does not stand for the buddy's.
+#[tokio::test]
+async fn a_strangers_request_for_a_buddys_queued_hidden_file_is_not_shared() {
+  let (_files, app, _server) = reported_app("[shares.visible_to]\nMusic = [\"buddies\"]\n").await;
+  let (status, _) = app.call("PUT", "/api/v0/users/bob/buddy", None).await;
+  assert_eq!(status, 204);
+  let mut queued = Row::new(
+    "bob",
+    TransferDirection::Upload,
+    TransferStates::QueuedLocally,
+  );
+  queued.filename = SHARED.to_string();
+  let id = queued.id;
+  insert(&app.state.transfers, vec![queued]).await;
+  let uploads = &app.state.uploads;
+  lock(&uploads.in_flight).insert(
+    id,
+    InFlight {
+      cancel: CancellationToken::new(),
+      remove: false,
+      reason: None,
+      ended: false,
+      asked: false,
+    },
+  );
+  let asked_for = || lock(&uploads.in_flight)[&id].asked;
+
+  assert_eq!(
+    asked_from(&app, "203.0.113.50", "bob", SHARED)
+      .await
+      .as_deref(),
+    Some("File not shared.")
+  );
+  assert!(!asked_for(), "the stranger's request is not bob's");
+  assert_eq!(asked(&app, "bob", SHARED).await, None);
+  assert!(asked_for(), "bob's own request stands on his upload");
+}
+
 #[tokio::test]
 async fn a_running_upload_stands_for_a_new_request_and_an_ended_one_is_superseded() {
   let (_files, app) = shared_app("").await;

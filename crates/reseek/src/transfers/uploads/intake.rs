@@ -6,9 +6,9 @@
 //! so is one finding [`WAITING`] waiting, whatever the pace.
 //! A request of a user not in the queue is refused when the queue holds [`QUEUED_USERS`]
 //! users, or [`QUEUED_PER_ADDRESS`] from the request's address, counting those being decided.
-//! A request for a file queued to its user already is answered as queued. One for a file not
-//! shared, or shared and gone from disk, is refused, and so is one past the limits of its user's
-//! group, unless the user is privileged. A request for a file of a relay agent that cannot say
+//! A request for a file not shared to the request, or shared and gone from disk, is refused.
+//! One for a file it sees that is queued to its user already is answered as queued, and one
+//! past the limits of its user's group is refused, unless the user is privileged. A request for a file of a relay agent that cannot say
 //! now whether it has it, being away, loading its shares or slow to answer, is failed instead,
 //! so the peer asks again.
 
@@ -247,6 +247,14 @@ pub(super) enum Refusal {
   Failed(String),
 }
 
+/// What a decision allows.
+enum Decided {
+  /// an upload of the file to the user is queued or running already, and stands for it
+  Already,
+  /// queuing the file found
+  Accepted(Located),
+}
+
 /// Where a requested file stands.
 pub(super) enum Locating {
   /// shared and on disk
@@ -454,23 +462,21 @@ impl Uploads {
     let Some(_place) = self.hold_place(username, from) else {
       return Err(NotQueued::Refused(QUEUE_FULL.to_string()));
     };
-    // a peer asking again for a file queued to them is answered as queued, not decided again:
-    // the limits count that file, so they could turn it away
-    if self.sending_already(username, filename, true).await? {
-      enqueue.requests_accepted.inc();
-      debug!(
-        username,
-        filename, "upload request for a file already queued"
-      );
-      return Ok(());
-    }
     let started = Instant::now();
     let decision = self.decide(username, Some(from), filename, sees).await;
     let decided = millis(started);
     enqueue.decision_latency.observe(decided);
     enqueue.decision_latency_current.update(decided);
     let located = match decision {
-      Ok(located) => located,
+      Ok(Decided::Accepted(located)) => located,
+      Ok(Decided::Already) => {
+        enqueue.requests_accepted.inc();
+        debug!(
+          username,
+          filename, "upload request for a file already queued"
+        );
+        return Ok(());
+      }
       Err(Refusal::Peer(reason)) => {
         enqueue.requests_rejected.inc();
         if let Some(suppressed) = REFUSED.allow() {
@@ -572,19 +578,16 @@ impl Uploads {
     sent
   }
 
-  /// Sends `filename` to `username`, who sees the shares of `sees`, under their turn. One being
-  /// sent already is not decided again: the limits count it, so they could turn it away.
+  /// Sends `filename` to `username`, who sees the shares of `sees`, under their turn.
   async fn send_one(
     &self,
     username: &str,
     filename: &str,
     sees: &BTreeSet<String>,
   ) -> Result<Enqueued, NotQueued> {
-    if self.sending_already(username, filename, false).await? {
-      return Ok(Enqueued::Already);
-    }
     match self.decide(username, None, filename, sees).await {
-      Ok(located) => Ok(self.enqueue(username, filename, located, false).await?),
+      Ok(Decided::Already) => Ok(Enqueued::Already),
+      Ok(Decided::Accepted(located)) => Ok(self.enqueue(username, filename, located, false).await?),
       Err(Refusal::Peer(reason)) => Err(NotQueued::Refused(reason.to_string())),
       Err(Refusal::Later) => Err(NotQueued::Later),
       Err(Refusal::Failed(error)) => Err(NotQueued::Failed(error)),
@@ -594,18 +597,28 @@ impl Uploads {
   /// Whether `username` may have `filename`: shared with them, on disk, and within the limits
   /// of their group unless they are privileged. A request `from` an address that does not
   /// count as theirs is held to a stranger's limits; `None` is a file we send of our own accord.
+  /// A file they see that is queued or being sent to them already stands for itself, and is not
+  /// held to the limits, which count it and so could turn it away.
   async fn decide(
     &self,
     username: &str,
     from: Option<IpAddr>,
     filename: &str,
     sees: &BTreeSet<String>,
-  ) -> Result<Located, Refusal> {
+  ) -> Result<Decided, Refusal> {
     let located = match self.locate(sees, filename).await.map_err(Refusal::Failed)? {
       Locating::Found(located) => located,
       Locating::NotShared => return Err(Refusal::Peer(NOT_SHARED)),
       Locating::Later => return Err(Refusal::Later),
     };
+    let asked = from.is_some();
+    if self
+      .sending_already(username, filename, asked)
+      .await
+      .map_err(Refusal::Failed)?
+    {
+      return Ok(Decided::Already);
+    }
     let client = self.client().map_err(Refusal::Failed)?;
     let placement = self.users.fetch_placement(&client, username, false).await;
     let placement = match from {
@@ -616,7 +629,7 @@ impl Uploads {
     };
     if placement.privileged {
       debug!(username, "Limits bypassed; the user is privileged");
-      return Ok(located);
+      return Ok(Decided::Accepted(located));
     }
     let now = Utc::now();
     let name = username.to_string();
@@ -633,7 +646,7 @@ impl Uploads {
     let options = self.config.current();
     match limits::refusal(&options.values, &placement.limits, &figures, located.size) {
       Some(reason) => Err(Refusal::Peer(reason)),
-      None => Ok(located),
+      None => Ok(Decided::Accepted(located)),
     }
   }
 
