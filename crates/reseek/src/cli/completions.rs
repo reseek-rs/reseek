@@ -98,10 +98,13 @@ fn zsh(flags: &[FlagDoc]) -> String {
     .iter()
     .map(|flag| {
       let spellings = spellings(flag);
-      let names = if spellings.len() > 1 {
-        format!("'({})'{{{}}}", spellings.join(" "), spellings.join(","))
-      } else {
-        spellings[0].clone()
+      // `*` lets a flag given more than once be offered again; the exclusion list in
+      // parentheses keeps a flag from being offered after its other spelling
+      let names = match (flag.repeats, spellings.as_slice()) {
+        (true, [one]) => format!("'*'{one}"),
+        (true, _) => format!("'*'{{{}}}", spellings.join(",")),
+        (false, [one]) => one.clone(),
+        (false, _) => format!("'({})'{{{}}}", spellings.join(" "), spellings.join(",")),
       };
       let value = match &flag.value {
         None => String::new(),
@@ -209,6 +212,11 @@ mod tests {
         Shell::Fish => downloads.contains("-F"),
       };
       assert!(completes_files, "{program}: {downloads}");
+      if shell == Shell::Zsh {
+        // a list flag stays on offer after it is given once
+        assert!(script.contains("'*'{-s,--shared}'["), "{script}");
+        assert!(script.contains("'*'--config-file'["), "{script}");
+      }
       // a shell that is not installed has nothing to say about the script
       let Ok(mut child) = Command::new(program)
         .arg(check)

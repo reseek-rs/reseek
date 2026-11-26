@@ -3,7 +3,7 @@
 use cascade::{Field, Kind, Schema};
 use serde_json::Value;
 
-use super::{BOOTSTRAP, COMPLETIONS, CONFIG_FILE, HASH_PASSWORD, MAN, Shell};
+use super::{BOOTSTRAP, Bootstrap, COMPLETIONS, CONFIG_FILE, HASH_PASSWORD, MAN, Shell};
 use crate::version;
 
 /// The startup banner: the name, the version, the license and the build's markers.
@@ -33,6 +33,8 @@ pub(super) struct FlagDoc {
   pub value: Option<String>,
   /// what it does, on one line
   pub doc: String,
+  /// whether it may be given more than once, each time adding a value
+  pub repeats: bool,
 }
 
 /// Every command-line flag, the command line's own first, then the options' in the order the
@@ -40,11 +42,12 @@ pub(super) struct FlagDoc {
 pub(super) fn flags(schema: &Schema) -> Vec<FlagDoc> {
   let mut flags: Vec<FlagDoc> = BOOTSTRAP
     .iter()
-    .map(|(_, short, long, value, doc)| FlagDoc {
+    .map(|(flag, short, long, value, doc)| FlagDoc {
       short: *short,
       long: (*long).to_string(),
       value: value.map(str::to_string),
       doc: (*doc).to_string(),
+      repeats: *flag == Bootstrap::Config,
     })
     .collect();
   flags.push(FlagDoc {
@@ -52,6 +55,7 @@ pub(super) fn flags(schema: &Schema) -> Vec<FlagDoc> {
     long: CONFIG_FILE.to_string(),
     value: Some("path".to_string()),
     doc: "Same as --config.".to_string(),
+    repeats: true,
   });
   for field in schema.fields() {
     let Some(long) = &field.cli else {
@@ -66,6 +70,7 @@ pub(super) fn flags(schema: &Schema) -> Vec<FlagDoc> {
       } else {
         described(field)
       },
+      repeats: matches!(field.kind, Kind::List(_)),
     });
   }
   flags
