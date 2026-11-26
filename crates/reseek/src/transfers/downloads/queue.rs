@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use api_types::transfers::TransferStates;
+use api_types::transfers::{TransferDirection, TransferStates};
 use api_types::users::blocking::BlockScope;
 use reseek_shares::lock;
 use soulseek_client::soulseek_proto::queue_count;
@@ -19,7 +19,7 @@ use crate::api::error::ApiError;
 use crate::db::DbError;
 use crate::transfers::categories::{Condition, IN_PROGRESS, QUEUED, UNFINISHED};
 use crate::transfers::state::column;
-use crate::transfers::store;
+use crate::transfers::{direction_text, store};
 
 /// How long a place a peer gave is answered again without asking it.
 const ASK_EVERY: Duration = Duration::from_secs(10);
@@ -140,9 +140,14 @@ impl Downloads {
       .read(move |conn| {
         conn
           .query_row(
-            "SELECT Id FROM Transfers WHERE Username = ?1 AND Filename = ?2 AND Direction = \
-             'Download' AND State = ?3 AND Removed = 0",
-            rusqlite::params![name, file, column(TransferStates::QueuedRemotely)],
+            "SELECT Id FROM Transfers WHERE Username = ?1 AND Filename = ?2 AND Direction = ?4 \
+             AND State = ?3 AND Removed = 0",
+            rusqlite::params![
+              name,
+              file,
+              column(TransferStates::QueuedRemotely),
+              direction_text(TransferDirection::Download)
+            ],
             |row| row.get::<_, String>(0),
           )
           .map(Some)
@@ -201,10 +206,10 @@ impl Downloads {
           conn.query_row(
             &format!(
               "SELECT COUNT(DISTINCT Username), COUNT(*), COALESCE(SUM(Size), 0) FROM Transfers \
-               WHERE Direction = 'Download' AND Removed = 0 AND Paused = 0 AND {UNFINISHED} \
+               WHERE Direction = ?1 AND Removed = 0 AND Paused = 0 AND {UNFINISHED} \
                AND {condition}"
             ),
-            [],
+            [direction_text(TransferDirection::Download)],
             |row| {
               let at =
                 |i| -> rusqlite::Result<u64> { Ok(row.get::<_, i64>(i)?.max(0).unsigned_abs()) };
