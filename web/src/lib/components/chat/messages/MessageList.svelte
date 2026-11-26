@@ -384,6 +384,8 @@
       });
       loadingOlder = false;
     }
+    // the list goes while a page is on its way, as when another chat opens
+    if (!box) return;
     const left = box.scrollHeight - box.scrollTop - box.clientHeight;
     if (left < NEAR * 2 && pane.hasNewer && !loadingNewer && placed) {
       loadingNewer = true;
