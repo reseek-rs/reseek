@@ -207,13 +207,13 @@ impl Seen {
 
   /// Notes what `event` says, and wakes the watcher when it changed one of the files.
   fn note(&self, event: &notify::Event) {
-    if event.need_rescan()
-      && let Some(writers) = &self.writers
-    {
-      // events were lost, so which writers closed is not known; the files are read as they are
+    // events were lost, so any file may have changed and which writers closed is not known; the
+    // files are read as they are
+    let lost = event.need_rescan();
+    if lost && let Some(writers) = &self.writers {
       lock(writers).clear();
     }
-    let mut relevant = false;
+    let mut relevant = lost;
     for path in &event.paths {
       if self.dirs.contains(path) {
         lock(&self.touched).insert(path.clone());
@@ -493,12 +493,18 @@ mod tests {
   }
 
   #[cfg(target_os = "linux")]
-  #[test]
-  fn a_rename_a_removal_or_lost_events_end_a_write() {
+  #[tokio::test]
+  async fn a_rename_a_removal_or_lost_events_end_a_write() {
     use notify::event::{DataChange, Flag, RemoveKind, RenameMode};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    let (_watcher, files, _events) = settling(dir.path(), None);
+    let (_watcher, files, events) = settling(dir.path(), None);
+    // whether the watcher was told to read the files, which takes the permit
+    let woken = async || {
+      tokio::time::timeout(Duration::ZERO, events.notified())
+        .await
+        .is_ok()
+    };
     let told = |kind: EventKind| notify::Event::new(kind).add_path(path.clone());
     let written = told(EventKind::Modify(ModifyKind::Data(DataChange::Any)));
     let ends = [
@@ -515,8 +521,10 @@ mod tests {
     for (what, end) in ends {
       files.seen.note(&written);
       assert_eq!(files.writing(), Writing::Open(vec![path.clone()]), "{what}");
+      assert!(woken().await, "{what}");
       files.seen.note(&end);
       assert_eq!(files.writing(), Writing::Closed, "{what}");
+      assert!(woken().await, "{what}: the files are read again");
     }
   }
 
