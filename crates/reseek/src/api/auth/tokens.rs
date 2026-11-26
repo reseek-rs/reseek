@@ -4,14 +4,14 @@
 
 use std::collections::HashMap;
 
-use crate::api::extract::Json;
+use crate::api::extract::{Id, Json};
 use api_types::auth::Role;
 use api_types::auth::tokens::{
   ConfigApiKey, CreateToken, CreatedToken, ListedToken, Token, UpdateToken,
 };
 use api_types::events::{Event, TokenChanged};
 use axum::Extension;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
@@ -204,7 +204,7 @@ async fn create(
 async fn update(
   State(app): State<AppState>,
   caller: Authorized<AnyRole>,
-  Path(id): Path<Uuid>,
+  Id(id): Id<Uuid>,
   Json(request): Json<UpdateToken>,
 ) -> Result<Json<Token>, ApiError> {
   require_interactive(&caller.principal)?;
@@ -238,7 +238,7 @@ async fn update(
 async fn revoke(
   State(app): State<AppState>,
   caller: Authorized<AnyRole>,
-  Path(id): Path<Uuid>,
+  Id(id): Id<Uuid>,
 ) -> Result<StatusCode, ApiError> {
   let token = visible(&app, &caller, id).await?;
   if !tokens::revoke(&app.auth.db, id)
@@ -370,6 +370,11 @@ mod tests {
       ))
       .await;
     assert_eq!(beyond.status, 400, "an expiry past what is stored in order");
+    let not_an_id = app
+      .send(request("DELETE", "/api/v0/tokens/abc", None))
+      .await;
+    assert_eq!(not_an_id.status, 400);
+    assert_eq!(not_an_id.json()["error"], "Invalid path");
     let revoked = app
       .send(request("DELETE", &format!("/api/v0/tokens/{id}"), None))
       .await;

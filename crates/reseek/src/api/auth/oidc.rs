@@ -6,7 +6,7 @@ use api_types::auth::session::{
 };
 use api_types::events::{Event, LoginFailed, SessionRevokeReason};
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::{Extension, Json};
@@ -18,6 +18,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::api::error::ApiError;
+use crate::api::extract::{Path, Query};
 use crate::app::AppState;
 use crate::auth::cookies::{self, Scope};
 use crate::auth::oidc::flow::{self, LOGIN_TIME, NotSignedIn, is_local_path};
