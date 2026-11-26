@@ -21,7 +21,7 @@ use super::store::{self, Change};
 use super::{Directory, SUMMARY_FOR, blocking, profile, transfers};
 use crate::api::error::ApiError;
 use crate::db::shifted;
-use crate::services::{BlockImport, BlockingService};
+use crate::services::{BlockImport, BlockingService, Imported};
 
 fn internal(error: impl std::fmt::Display) -> ApiError {
   ApiError::internal(error)
@@ -474,11 +474,7 @@ impl BlockingService for Directory {
     Ok(())
   }
 
-  async fn import(
-    &self,
-    by: &Principal,
-    import: BlockImport,
-  ) -> Result<BlockImportResult, ApiError> {
+  async fn import(&self, by: &Principal, import: BlockImport) -> Result<Imported, ApiError> {
     let now = Utc::now();
     let default_scopes = self.default_scopes();
     let (offered, wanted): (usize, Vec<Block>) = match import {
@@ -520,7 +516,7 @@ impl BlockingService for Directory {
           .collect(),
       ),
     };
-    let mut result = BlockImportResult::default();
+    let mut blocks = Vec::new();
     for wanted in wanted {
       let username = &wanted.username;
       if wanted.scopes.is_empty() {
@@ -536,11 +532,15 @@ impl BlockingService for Directory {
         source: BlockSource::Api,
         ..wanted
       };
-      self.put_block(block, by).await?;
-      result.added += 1;
+      self.put_block(block.clone(), by).await?;
+      blocks.push(block);
     }
-    result.skipped = u32::try_from(offered).unwrap_or(u32::MAX) - result.added;
-    Ok(result)
+    let added = u32::try_from(blocks.len()).unwrap_or(u32::MAX);
+    let counts = BlockImportResult {
+      added,
+      skipped: u32::try_from(offered).unwrap_or(u32::MAX) - added,
+    };
+    Ok(Imported { counts, blocks })
   }
 
   async fn export(&self) -> Result<Vec<Block>, ApiError> {

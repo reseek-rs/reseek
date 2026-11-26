@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 pub use analysis::{AnalysisService, Piece};
 pub use application::{ApplicationService, Connected};
-pub use blocking::{BlockImport, BlockingService};
+pub use blocking::{BlockImport, BlockingService, Imported};
 pub use events::EventService;
 pub use files::{ContentRequest, FileService, FileTarget};
 pub use messaging::{Joined, MessagingService};

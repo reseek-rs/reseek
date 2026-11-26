@@ -6,7 +6,7 @@ use std::time::Duration;
 use api_types::messaging::{ExportFormat, ExportQuery};
 use api_types::users::UsernameQuery;
 use api_types::users::blocking::{
-  Block, BlockImportResult, BlockRequest, BlockedQuery, BlockedUsers,
+  Block, BlockImportResult, BlockRequest, BlockScope, BlockedQuery, BlockedUsers,
 };
 use axum::body::Bytes;
 use axum::extract::State;
@@ -80,15 +80,18 @@ async fn block(
     .await?;
   info!(by = caller.principal.subject, username, "user blocked");
   if cancel_transfers {
-    if block
-      .scopes
-      .contains(&api_types::users::blocking::BlockScope::Uploads)
-    {
-      app.uploads.blocked(&username);
-    }
-    app.downloads.blocked(&username, &block.scopes).await;
+    cancel_transfers_of(&app, &block).await;
   }
   Ok(Json(block))
+}
+
+/// Cancels the transfers `block` stops: the user's queued uploads when it blocks uploads, and
+/// their downloads as its scopes say.
+async fn cancel_transfers_of(app: &AppState, block: &Block) {
+  if block.scopes.contains(&BlockScope::Uploads) {
+    app.uploads.blocked(&block.username);
+  }
+  app.downloads.blocked(&block.username, &block.scopes).await;
 }
 
 /// Refuses a reason over 500 characters, an empty list of scopes, both `expiresIn` and
@@ -143,7 +146,8 @@ async fn unblock(
 }
 
 /// Blocks the users of a list: plain text with one username per line and `#` comments, or the
-/// JSON blocks an export wrote. Users blocked already are skipped.
+/// JSON blocks an export wrote. Users blocked already are skipped. Each block made cancels the
+/// user's transfers as a block made alone does by default.
 #[utoipa::path(
   post, path = "/users/blocked/import", tag = "blocking",
   request_body(content((String = "text/plain"), (Vec<Block> = "application/json"))),
@@ -160,18 +164,21 @@ async fn import(
   body: Bytes,
 ) -> Result<Json<BlockImportResult>, ApiError> {
   let import = block_import(&headers, &body)?;
-  let result = app
+  let imported = app
     .services
     .blocking
     .import(&admin.principal, import)
     .await?;
   info!(
     by = admin.principal.subject,
-    added = result.added,
-    skipped = result.skipped,
+    added = imported.counts.added,
+    skipped = imported.counts.skipped,
     "blocks imported"
   );
-  Ok(Json(result))
+  for block in &imported.blocks {
+    cancel_transfers_of(&app, block).await;
+  }
+  Ok(Json(imported.counts))
 }
 
 /// The users an import body names, by its content type.

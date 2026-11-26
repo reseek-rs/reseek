@@ -14314,7 +14314,7 @@
         "tags": [
           "blocking"
         ],
-        "summary": "Blocks the users of a list: plain text with one username per line and `#` comments, or the\nJSON blocks an export wrote. Users blocked already are skipped.",
+        "summary": "Blocks the users of a list: plain text with one username per line and `#` comments, or the\nJSON blocks an export wrote. Users blocked already are skipped. Each block made cancels the\nuser's transfers as a block made alone does by default.",
         "operationId": "import",
         "requestBody": {
           "content": {

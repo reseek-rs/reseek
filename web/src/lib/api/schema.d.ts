@@ -3013,7 +3013,8 @@ export interface paths {
         put?: never;
         /**
          * Blocks the users of a list: plain text with one username per line and `#` comments, or the
-         *     JSON blocks an export wrote. Users blocked already are skipped.
+         *     JSON blocks an export wrote. Users blocked already are skipped. Each block made cancels the
+         *     user's transfers as a block made alone does by default.
          */
         post: operations["import"];
         delete?: never;

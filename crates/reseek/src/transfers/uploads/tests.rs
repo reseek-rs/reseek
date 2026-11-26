@@ -20,7 +20,7 @@ use super::{InFlight, NotQueued};
 use crate::network::resolvers::tests::{edges, exposed, from};
 use crate::network::resolvers::{enqueue_download, place_in_queue, user_info};
 use crate::testing::soulseek::Server;
-use crate::testing::{TestApp, app};
+use crate::testing::{TestApp, app, request};
 use crate::transfers::fixtures::{Row, insert};
 use crate::transfers::state::State;
 use crate::transfers::{Record, store};
@@ -742,7 +742,7 @@ async fn a_group_we_put_a_user_in_takes_effect_at_once() {
 }
 
 #[tokio::test]
-async fn blocking_a_user_cancels_their_queued_uploads() {
+async fn blocking_a_user_or_importing_their_block_cancels_their_queued_uploads() {
   let (_files, app) = shared_app("").await;
   let uploads = &app.state.uploads;
   let (queued, other) = (Uuid::new_v4(), Uuid::new_v4());
@@ -772,6 +772,13 @@ async fn blocking_a_user_cancels_their_queued_uploads() {
     lock(&uploads.in_flight).get(&queued).unwrap().reason,
     Some("Blocked")
   );
+  let mut import = request("POST", "/api/v0/users/blocked/import", None);
+  *import.body_mut() = axum::body::Body::from("alice\n");
+  import
+    .headers_mut()
+    .insert("content-type", "text/plain".parse().unwrap());
+  assert_eq!(app.send(import).await.status, 200);
+  assert!(kept.is_cancelled(), "an imported block cancels them too");
 }
 
 #[tokio::test]

@@ -18,6 +18,15 @@ pub enum BlockImport {
   Blocks(Vec<Block>),
 }
 
+/// What an import did.
+#[derive(Clone, Debug, Default)]
+pub struct Imported {
+  /// how many entries made a block and how many did not
+  pub counts: BlockImportResult,
+  /// the blocks it made
+  pub blocks: Vec<Block>,
+}
+
 /// Blocking and unblocking users, and the lists of who is blocked.
 #[async_trait]
 // the default bodies answer 503 without looking at their arguments
@@ -50,11 +59,7 @@ pub trait BlockingService: Send + Sync {
 
   /// Blocks every user of `import` not blocked yet, as `by`; an expired block, one naming no
   /// scope and one whose reason is too long are skipped.
-  async fn import(
-    &self,
-    by: &Principal,
-    import: BlockImport,
-  ) -> Result<BlockImportResult, ApiError> {
+  async fn import(&self, by: &Principal, import: BlockImport) -> Result<Imported, ApiError> {
     Err(not_yet(DOMAIN))
   }
 
