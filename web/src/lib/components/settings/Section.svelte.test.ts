@@ -300,6 +300,40 @@ describe("a settings section", () => {
     vi.unstubAllGlobals();
   });
 
+  it("leaves every secret out of Copy as Nix, typed, unset or in a table", async () => {
+    const copied: string[] = [];
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      clipboard: { writeText: async (text: string) => void copied.push(text) }
+    });
+    const v = structuredClone(view);
+    (v.values as { web: { authentication: { api_keys: unknown } } }).web.authentication.api_keys = {
+      robot: { key: "robot-key-typed", role: "administrator", cidr: "10.0.0.0/8" }
+    };
+    const auth = render(
+      sections.find((s) => s.id === "authentication")!,
+      v
+    );
+    const key = "web.authentication.password";
+    auth.querySelector<HTMLButtonElement>(`[id="${key}"]`)!.click();
+    flushSync();
+    const input = auth.querySelector<HTMLInputElement>(`input[id="${key}"]`)!;
+    input.value = "hunter2-typed";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    [...auth.querySelectorAll("button")]
+      .find((b) => b.textContent?.includes("Copy as Nix"))!
+      .click();
+    await flush();
+    expect(copied).toHaveLength(1);
+    expect(copied[0]).not.toContain("hunter2-typed");
+    expect(copied[0]).not.toContain("password");
+    expect(copied[0]).not.toContain("api_key =");
+    expect(copied[0]).not.toContain("robot-key-typed");
+    expect(copied[0]).toContain('cidr = "10.0.0.0/8";');
+    vi.unstubAllGlobals();
+  });
+
   it("shows only the options the search finds, keeping the others' edits", () => {
     const target = document.createElement("div");
     document.body.append(target);

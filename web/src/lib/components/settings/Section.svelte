@@ -351,13 +351,32 @@
   let nix = $state<string | null>(null);
   /** the options the last Copy as Nix left out, as their drafts don't parse */
   let skipped = $state<string[]>([]);
+  /** `row` without the field at the dotted `key` */
+  const withoutKey = (row: unknown, key: string): unknown => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return row;
+    const [head, ...rest] = key.split(".");
+    if (!(head in row)) return row;
+    const { [head]: inner, ...others } = row as Record<string, unknown>;
+    return rest.length ? { ...others, [head]: withoutKey(inner, rest.join(".")) } : others;
+  };
+  /** A table's rows, a list of them or a map of named ones, without the fields at `keys` */
+  const rowsWithout = (value: unknown, keys: string[]): unknown => {
+    const strip = (row: unknown) => keys.reduce(withoutKey, row);
+    if (Array.isArray(value)) return value.map(strip);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(Object.entries(value).map(([name, row]) => [name, strip(row)]));
+  };
   const copyNix = async () => {
     const left: string[] = [];
     const entries = fields.flatMap((f): [string, unknown][] => {
-      const parsed = fromDraft(f, controls[f.key], draft[f.key], view.fields[f.key]);
+      const info = view.fields[f.key];
+      // a secret is left out whatever its draft holds: typed, unset or hidden
+      if (info.secret) return [];
+      const parsed = fromDraft(f, controls[f.key], draft[f.key], info);
       if ("error" in parsed) left.push(f.label);
       if (!("set" in parsed) || parsed.set === null) return [];
-      return [[f.key, parsed.set]];
+      const hidden = info.entries.filter((e) => e.secret).map((e) => e.key);
+      return [[f.key, rowsWithout(parsed.set, hidden)]];
     });
     skipped = left;
     const text = asNixSettings(entries);
