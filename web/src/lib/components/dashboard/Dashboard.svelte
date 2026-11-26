@@ -36,11 +36,18 @@
   const span = $derived(windowOf(dashboardPrefs.range, now));
   // a name's card open in the statistics holds the reload that would reorder them
   const freeze = new Freeze();
-  keepCurrent(() => (now = Date.now()), undefined, freeze);
+  let reloaded = 0;
+  const reload = keepCurrent(
+    () => {
+      reloaded = Date.now();
+      now = reloaded;
+    },
+    undefined,
+    freeze
+  );
 
   // a transfer that finishes shows in the reports: a reload follows, at most every 30 s
   let counted: number | null = null;
-  let reloaded = 0;
   let due: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
     const finished = finishedOf(app.metrics);
@@ -51,8 +58,7 @@
       due = setTimeout(
         () => {
           due = undefined;
-          reloaded = Date.now();
-          now = reloaded;
+          reload();
         },
         Math.max(0, reloaded + FINISHED_RELOAD_MS - Date.now())
       );

@@ -148,6 +148,19 @@ describe("the dashboard", () => {
       user: { username: "me" },
       shares: { files: 0, directories: 0, scanning: false, scanPending: false }
     } as never;
+    const finished = (succeeded: number) => ({
+      downloads: {
+        inProgress: { files: 0, users: 0, averageSpeed: 0, totalSpeed: 0 },
+        queued: { files: 0, users: 0, bytes: 0 },
+        completed: { succeeded, failed: 0, bytes: 0 }
+      },
+      uploads: {
+        inProgress: { files: 0, users: 0, averageSpeed: 0, totalSpeed: 0 },
+        queued: { files: 0, users: 0, bytes: 0 },
+        completed: { succeeded: 0, failed: 0, bytes: 0 }
+      }
+    });
+    app.metrics = finished(1) as never;
     const alice = { username: "alice", count: 3, totalBytes: 300, averageSpeed: 100 };
     const net = fakeNetwork((url) => {
       if (url.pathname.endsWith("/summary")) return { Download: {}, Upload: {}, distinctUsers: 0 };
@@ -162,6 +175,10 @@ describe("the dashboard", () => {
     await flush();
     expect(document.querySelector('[role="dialog"][aria-label="Profile of alice"]')).not.toBeNull();
     const asked = reads();
+    // a transfer finishes, which reloads the reports
+    app.metrics = finished(2) as never;
+    await flush();
+    expect(reads()).toBe(asked);
     // the tab comes back into view, which reloads the reports a moment later
     await new Promise((resolve) => setTimeout(resolve, 5));
     document.dispatchEvent(new Event("visibilitychange"));
