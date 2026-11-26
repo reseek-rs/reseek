@@ -54,9 +54,7 @@ pub fn statistics(
   let week = timestamp(now - week);
   let day = timestamp(now - Duration::days(1));
   // the two reasons an upload ended by a stop of the daemon is written with
-  let failed = format!(
-    "{UNDELIVERED} AND (Exception IS NULL OR Exception NOT IN (?5, ?6))"
-  );
+  let failed = format!("{UNDELIVERED} AND (Exception IS NULL OR Exception NOT IN (?5, ?6))");
   conn.query_row(
     &format!(
       "SELECT \

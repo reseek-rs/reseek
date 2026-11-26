@@ -99,21 +99,21 @@ pub async fn remove_unreadable(
   let name = username.to_string();
   let removed = db
     .write(move |conn| {
-    returned(
-      conn,
-      &format!(
-        "UPDATE Transfers SET Removed = 1, RemovedAt = ?4 WHERE Id = ?1 AND Direction = ?2 \
+      returned(
+        conn,
+        &format!(
+          "UPDATE Transfers SET Removed = 1, RemovedAt = ?4 WHERE Id = ?1 AND Direction = ?2 \
          AND Username = ?3 AND Removed = 0 {TAKEN}"
-      ),
-      params![
-        id.to_string(),
-        direction_text(direction),
-        name,
-        timestamp(Utc::now())
-      ],
-    )
-  })
-  .await?;
+        ),
+        params![
+          id.to_string(),
+          direction_text(direction),
+          name,
+          timestamp(Utc::now())
+        ],
+      )
+    })
+    .await?;
   if !removed.is_empty() {
     info!(%id, username, ?direction, %error, "transfer that cannot be read removed");
   }

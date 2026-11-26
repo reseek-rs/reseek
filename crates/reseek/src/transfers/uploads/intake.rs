@@ -205,15 +205,17 @@ impl Intake {
   /// Moves the pace toward `millis`, the time a request held its turn, with a weight of one
   /// half; the first request sets it.
   fn paced(&self, millis: f64) {
-    self.latency.update(Ordering::AcqRel, Ordering::Acquire, |bits| {
-      let pace = f64::from_bits(bits);
-      let next = if pace == 0.0 {
-        millis
-      } else {
-        (pace + millis) / 2.0
-      };
-      next.to_bits()
-    });
+    self
+      .latency
+      .update(Ordering::AcqRel, Ordering::Acquire, |bits| {
+        let pace = f64::from_bits(bits);
+        let next = if pace == 0.0 {
+          millis
+        } else {
+          (pace + millis) / 2.0
+        };
+        next.to_bits()
+      });
   }
 
   /// Drops the turns of users nobody holds or waits for; skipped when a request is taking a
