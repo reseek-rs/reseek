@@ -5879,8 +5879,8 @@ export interface components {
             /** @description our block of the user, or the configuration's; null when not blocked */
             block?: components["schemas"]["Block"] | null;
             /**
-             * @description the user is our buddy, with what that buddy may do and what we hear of them; null for a
-             *     user who is not
+             * @description the user is our buddy, with whether we are told of their presence; null for a user who is
+             *     not
              */
             buddy?: components["schemas"]["Buddy"] | null;
             /** @description our private conversation with the user, null when there is none */

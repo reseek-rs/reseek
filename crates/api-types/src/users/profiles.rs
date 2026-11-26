@@ -347,8 +347,8 @@ pub struct KnownUser {
   pub block: Option<Block>,
   /// chat notifications for the user are off
   pub muted: bool,
-  /// the user is our buddy, with what that buddy may do and what we hear of them; null for a
-  /// user who is not
+  /// the user is our buddy, with whether we are told of their presence; null for a user who is
+  /// not
   pub buddy: Option<Buddy>,
   /// the user's address from the endpoint cache, null when not cached; never a round trip
   pub endpoint: Option<UserEndpoint>,

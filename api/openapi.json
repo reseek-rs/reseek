@@ -21315,7 +21315,7 @@
                 "type": "null"
               }
             ],
-            "description": "the user is our buddy, with what that buddy may do and what we hear of them; null for a\nuser who is not"
+            "description": "the user is our buddy, with whether we are told of their presence; null for a user who is\nnot"
           },
           "conversation": {
             "oneOf": [
