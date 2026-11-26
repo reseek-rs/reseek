@@ -121,6 +121,21 @@ describe("the composer", () => {
     expect(document.body.textContent).not.toContain(note);
   });
 
+  it("saves the draft of a conversation not started yet", async () => {
+    const { type, pane } = open({ kind: "user", name: "bob" });
+    await pane.load();
+    await vi.waitFor(() => expect(pane.draft).toBe(""));
+    type("half a reply");
+    // leaving the pane saves the draft at once
+    unmount(component!);
+    component = null;
+    await vi.waitFor(() =>
+      expect(fetchCalls().filter((r) => r.method === "PUT")).toEqual([
+        expect.objectContaining({ body: { draft: "half a reply" } })
+      ])
+    );
+  });
+
   it("quotes an action as what was done", async () => {
     const { box } = open();
     const quote = (component as unknown as { quote: (m: unknown) => void }).quote;

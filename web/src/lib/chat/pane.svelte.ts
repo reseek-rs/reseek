@@ -1,4 +1,4 @@
-import { api, byRoom, byUser, type Schemas } from "#lib/api/client.js";
+import { api, byRoom, byUser } from "#lib/api/client.js";
 import {
   fromPrivate,
   fromRoom,
@@ -90,8 +90,11 @@ export class MessagePane {
   error = $state("");
   /** where the unread messages started when the pane opened, null when none were unread */
   unreadFrom = $state<number | null>(null);
-  /** the conversation as stored, for its draft; null for a room or a conversation not started */
-  conversation = $state.raw<Schemas["Conversation"] | null>(null);
+  /**
+   * a conversation's draft as stored, empty for a conversation not started; null for a room and
+   * until it is read
+   */
+  draft = $state<string | null>(null);
   /** the message the pane opened at, null when it opened at the newest or went to them since */
   at = $state<number | null>(null);
   #self: () => string;
@@ -482,9 +485,10 @@ export class MessagePane {
         }
       })
     );
-    if (outcome.ok) this.conversation = outcome.data;
+    if (outcome.ok) this.draft = outcome.data.draft;
     // a conversation not started yet has nothing stored, which is no error
-    else if (outcome.status !== 404) this.error = outcome.error;
+    else if (outcome.status === 404) this.draft = "";
+    else this.error = outcome.error;
   }
 
   /** The first unread message: unacknowledged in a conversation, after a room's read marker */

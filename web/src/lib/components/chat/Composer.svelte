@@ -73,9 +73,8 @@
 
   // the saved draft comes back: a room's from this browser, a conversation's from the daemon
   $effect(() => {
-    const draft =
-      target.kind === "room" ? (roomDrafts[target.name] ?? "") : pane.conversation?.draft;
-    if (draft === undefined || restored) return;
+    const draft = target.kind === "room" ? (roomDrafts[target.name] ?? "") : pane.draft;
+    if (draft === null || restored) return;
     restored = true;
     untrack(() => {
       if (!text) text = draft;

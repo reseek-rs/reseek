@@ -334,7 +334,7 @@ describe("a pane opened at a message", () => {
     release();
     await loading;
     await flush();
-    expect(pane.conversation?.draft).toBe("half a thought");
+    expect(pane.draft).toBe("half a thought");
   });
 
   it("opens at the newest when a message is sent before the pages around it come", async () => {
