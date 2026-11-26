@@ -614,7 +614,7 @@ impl Messaging {
     }
     info!(
       rooms = added.join(", "),
-      "Room configuration changed.  Joining any newly added rooms."
+      "rooms added to the configuration; joining them"
     );
     if !self.logged_in_now() {
       return debug!("not logged in; the rooms added are joined at the next login");

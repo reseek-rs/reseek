@@ -102,17 +102,17 @@ impl Messaging {
         room.operators.remove(&username);
       }),
       room::Event::MembershipAdded(room) => {
-        info!(room, "Added to private room");
+        info!(room, "added to a private room");
         self.rooms.tracker().change_private(&room, |_| {});
         self.forget_room_list().await;
         self.push_rooms().await;
       }
       room::Event::MembershipRemoved(room) => {
-        info!(room, "Removed from private room");
+        info!(room, "removed from a private room");
         self.dropped(&room).await;
       }
       room::Event::OperatorshipAdded(room) => {
-        info!(room, "Promoted to moderator in private room");
+        info!(room, "made operator of a private room");
         self.forget_room_list().await;
         if let Some(us) = self.logged_in_as() {
           self.change_private(&room, |private| {
@@ -121,7 +121,7 @@ impl Messaging {
         }
       }
       room::Event::OperatorshipRemoved(room) => {
-        info!(room, "Demoted from moderator in private room");
+        info!(room, "no longer operator of a private room");
         self.forget_room_list().await;
         if let Some(us) = self.logged_in_as() {
           self.change_private(&room, |private| {
@@ -203,7 +203,7 @@ impl Messaging {
     };
     if username == us {
       if self.rooms.tracker().confirmed(&room) {
-        debug!(room, "Joined room");
+        debug!(room, "the server confirmed our join");
         self.rooms_changed();
       }
       return;
@@ -252,7 +252,7 @@ impl Messaging {
   /// off already.
   fn user_left(&self, room: String, username: String) {
     if self.logged_in_as().as_deref() == Some(username.as_str()) {
-      return debug!(room, "Left room");
+      return debug!(room, "the server confirmed our leave");
     }
     if !self.rooms.tracker().user_left(&room, &username) {
       return debug!(room, "a leave from a room we are not in dropped");
