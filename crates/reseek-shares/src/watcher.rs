@@ -245,8 +245,9 @@ async fn apply_changes(
   }
 }
 
-/// Whether the walk's rules let `path` into the index: in a share, not excluded, and neither
-/// it nor a directory between it and its share hidden or filtered.
+/// Whether the walk's rules let `path` into the index: in a share, not excluded, neither it nor
+/// a directory between it and its share hidden or filtered, and, with links followed, not
+/// excluded or filtered where it really is.
 fn allowed<'a>(settings: &'a Settings, path: &Path) -> Option<&'a Share> {
   let owner = share::owner(&settings.shares, path)?;
   if share::excluded(&settings.shares, path) {
@@ -271,6 +272,13 @@ fn allowed<'a>(settings: &'a Settings, path: &Path) -> Option<&'a Share> {
     if settings.filtered(&current) {
       return None;
     }
+  }
+  // a path that is gone has no real path, and is let through so its rows are removed
+  if settings.follow_symlinks
+    && let Ok(real) = path.canonicalize()
+    && walk::Real::of(settings).leaves_out(&real)
+  {
+    return None;
   }
   Some(owner)
 }

@@ -13,6 +13,7 @@ use tracing::debug;
 
 use super::scanner::Settings;
 use super::share;
+use super::walk::Real;
 use crate::entries;
 
 /// The most folders listed from one folder.
@@ -35,11 +36,14 @@ pub enum FolderError {
   Failed(String),
 }
 
-/// Whether a scan leaves out the folder at `path`, named `name`.
+/// Whether a scan leaves out the folder at `path`, named `name`; with links followed, also by
+/// where it really is.
 fn left_out(settings: &Settings, path: &Path, name: &OsStr, metadata: &Metadata) -> bool {
   entries::left_out(name, Some(metadata))
     || share::excluded(&settings.shares, path)
     || settings.filtered(path)
+    || (settings.follow_symlinks
+      && fs::canonicalize(path).map_or(true, |real| Real::of(settings).leaves_out(&real)))
 }
 
 /// Whether every step down to `path` is one a scan takes. The steps are looked at one by one:
