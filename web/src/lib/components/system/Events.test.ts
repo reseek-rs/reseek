@@ -125,6 +125,28 @@ describe("the event log", () => {
     ).toEqual(["old"]);
   });
 
+  it("reads a raised event in only once a press on the list ends", async () => {
+    let log = [event("b", 2), event("a", 1)];
+    const net = fakeNetwork(() => log);
+    live.start();
+    component = mount(Events, {
+      target: document.body,
+      props: { place: { page: 1, size: 2 }, types: [] }
+    });
+    await flushFaked();
+    const lines = () =>
+      [...document.querySelectorAll("[data-line]")].map((l) => l.getAttribute("data-line"));
+    const grid = document.querySelector("[role=grid]")!;
+    grid.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    log = [event("c", 3), ...log];
+    net.frame("events.raised", event("c", 3) as never);
+    await settled();
+    expect(lines()).toEqual(["b", "a"]);
+    window.dispatchEvent(new PointerEvent("pointerup"));
+    await flushFaked();
+    expect(lines()).toEqual(["c", "b"]);
+  });
+
   it("reads the first page once for a burst of raised events", async () => {
     const net = fakeNetwork(() => [event("a", 1)]);
     live.start();

@@ -82,7 +82,7 @@
     },
     (data) => rows.reconcile(data.events)
   );
-  keepCurrent(
+  const reload = keepCurrent(
     () => void listed.load(),
     () => "events",
     rows.freeze
@@ -93,14 +93,15 @@
     void types;
     untrack(() => void listed.load());
   });
-  // the first page follows new events as they are raised, read once for a burst of them
+  // the first page follows new events as they are raised, read once for a burst of them and once
+  // the list is no longer held
   $effect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const stop = live.on("events.raised", () => {
       if (page !== 1 || timer !== undefined) return;
       timer = setTimeout(() => {
         timer = undefined;
-        void listed.load();
+        reload();
       }, RAISED_SETTLE_MS);
     });
     return () => {
