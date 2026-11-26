@@ -190,9 +190,10 @@ impl Paths {
   /// Creates every directory reseek owns and checks it can write where it must. The download
   /// directories are only created when they are the defaults; a configured one must exist.
   pub fn create(&self) -> Result<(), PathError> {
-    // the configuration directory may be read-only, such as a Nix store path
     create(&self.config)?;
-    create(&self.scripts)?;
+    // the configuration directory may be read-only, such as a Nix store path, so scripts/ is
+    // made only where it can be; a script run without it fails with its own error
+    let _ = std::fs::create_dir_all(&self.scripts);
     for dir in [&self.data, &self.cache, &self.logs] {
       create(dir)?;
       writable(dir)?;
@@ -305,6 +306,23 @@ mod tests {
     create_private(&backups).unwrap();
     let mode = std::fs::metadata(&backups).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o700);
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn a_read_only_configuration_directory_needs_no_scripts_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config");
+    std::fs::create_dir(&config).unwrap();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let mut paths = Defaults::new(Some(dir.path()))
+      .resolve(&Options::default())
+      .unwrap();
+    paths.scripts = config.join("scripts");
+    paths.config = config;
+    paths.create().unwrap();
+    assert!(!paths.scripts.exists());
   }
 
   #[test]
