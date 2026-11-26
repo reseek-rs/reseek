@@ -27068,7 +27068,7 @@
       },
       "UploadLimitWindow": {
         "type": "object",
-        "description": "The figures of one limit window. Succeeded uploads count toward `files` and `bytes` of the\ndaily and weekly windows, failed ones toward `failures`.",
+        "description": "The figures of one limit window. Succeeded uploads count toward `files` and `bytes` of the\ndaily and weekly windows. Uploads that timed out, errored or were rejected count toward\n`failures`, unless a stop of the daemon ended them.",
         "required": [
           "files",
           "bytes"
