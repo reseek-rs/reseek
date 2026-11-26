@@ -191,7 +191,7 @@ impl Logging {
       Ok(client) => {
         tracing::info!(
           url = crate::config::redact::url(&url),
-          "Forwarding logs to Grafana Loki instance"
+          "forwarding logs to Grafana Loki"
         );
         Some(sink.start(client))
       }

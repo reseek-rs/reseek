@@ -106,12 +106,12 @@ async fn get_debug(
   let current = app.config.current();
   // debug applies on restart, so the view opens with the mode the daemon runs in
   if !app.startup.values.debug {
-    warn!("Blocked configuration debug view; debug mode is off");
+    warn!("blocked configuration debug view; debug mode is off");
     return Err(ApiError::forbidden("The debug view requires debug mode").logged());
   }
   remote(
     &current,
-    "Blocked configuration debug view; remote configuration is disabled",
+    "blocked configuration debug view; remote configuration is disabled",
   )?;
   require_interactive(&admin.principal)?;
   Ok(Json(view::debug_view(&current)))
@@ -139,7 +139,7 @@ async fn patch_options(
   let current = app.config.current();
   remote(
     &current,
-    "Blocked options overlay application; remote configuration is disabled",
+    "blocked options overlay application; remote configuration is disabled",
   )?;
   if patch.set.is_empty() && patch.unset.is_empty() {
     return Ok(StatusCode::NO_CONTENT.into_response());
@@ -171,7 +171,7 @@ async fn patch_options(
     .await
     .map_err(|e| match e {
       cascade::Error::Invalid(_) | cascade::Error::Value { .. } => {
-        warn!(error = %e, "Options patch validation failed");
+        warn!(error = %e, "options patch validation failed");
         ApiError::from(e).logged()
       }
       other => ApiError::from(other),
@@ -204,7 +204,7 @@ async fn delete_override(
 ) -> Result<Json<OptionsChanged>, ApiError> {
   remote(
     &app.config.current(),
-    "Blocked runtime override removal; remote configuration is disabled",
+    "blocked runtime override removal; remote configuration is disabled",
   )?;
   if is_authentication(&key) {
     require_interactive(&admin.principal)?;
@@ -243,7 +243,7 @@ async fn get_file(
   let current = app.config.current();
   remote(
     &current,
-    "Blocked configuration file read; remote configuration is disabled",
+    "blocked configuration file read; remote configuration is disabled",
   )?;
   require_interactive(&admin.principal)?;
   let file = file(&current, query.file.as_deref())?;
@@ -283,7 +283,7 @@ async fn get_file_location(
   let current = app.config.current();
   remote(
     &current,
-    "Blocked configuration file read; remote configuration is disabled",
+    "blocked configuration file read; remote configuration is disabled",
   )?;
   require_interactive(&admin.principal)?;
   Ok(Json(
@@ -313,7 +313,7 @@ async fn patch_file(
   let current = app.config.current();
   remote(
     &current,
-    "Blocked configuration file write; remote configuration is disabled",
+    "blocked configuration file write; remote configuration is disabled",
   )?;
   require_interactive(&admin.principal)?;
   let name = file(&current, patch.file.as_deref())?.name.clone();
@@ -365,7 +365,7 @@ async fn put_file(
   let current = app.config.current();
   remote(
     &current,
-    "Blocked configuration file write; remote configuration is disabled",
+    "blocked configuration file write; remote configuration is disabled",
   )?;
   require_interactive(&admin.principal)?;
   let name = file(&current, replace.file.as_deref())?.name.clone();
@@ -404,7 +404,7 @@ async fn validate_file(
   let current = app.config.current();
   remote(
     &current,
-    "Blocked configuration validation; remote configuration is disabled",
+    "blocked configuration validation; remote configuration is disabled",
   )?;
   let name = file(&current, request.file.as_deref())?.name.clone();
   let checked = app.config.check_file(&name, &request.text).await?;
