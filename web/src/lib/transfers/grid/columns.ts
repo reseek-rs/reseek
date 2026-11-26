@@ -37,13 +37,13 @@ export type Column = GridColumn<Transfer> & {
 /** How wide the select column is, in rem; a phone leaves it out */
 export const SELECT_REM = 2.5;
 
+/** The room an analysis mark takes after a name: its word, at most "Analyzed", and the gap */
+export const MARK_REM = 5;
+
 /**
  * How far a row's file cell sets its icon and name in at `depth` under group headers, past the
  * tick and toggle of a header at that depth, the select column holding the row's own tick
  */
-/** The room an analysis mark takes after a name: its word, at most "Analyzed", and the gap */
-export const MARK_REM = 5;
-
 export const fileInset = (depth: number) => (depth ? itemStart(depth) + TICK_REM - SELECT_REM : 0);
 
 /** How wide a transfer's speed sparkline is drawn, in pixels, which its column makes room for */
