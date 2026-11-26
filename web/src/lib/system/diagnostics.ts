@@ -3,7 +3,8 @@ import type { Schemas } from "#lib/api/client.js";
 /**
  * What a bug report needs about this reseek, as plain text to paste: versions, the connection and
  * how peers reach us, shares, the distributed network, what waits on a restart, and the latest
- * warnings and errors. The account name, addresses and paths are left out
+ * warnings and errors. The lines built from the state leave out the account name, addresses and
+ * paths; the last options reload error and the log lines are carried as the daemon wrote them
  */
 export const diagnostics = (
   s: Schemas["State"],

@@ -42,7 +42,7 @@ const record = (n: number, level: Schemas["LogLevel"]): Schemas["LogRecord"] => 
 });
 
 describe("the diagnostics to paste in a bug report", () => {
-  it("say how this reseek stands, leaving out the account and addresses", () => {
+  it("say how this reseek stands, the state's lines leaving out the account and addresses", () => {
     const text = diagnostics(state, "Chrome 140", [record(1, "Warning")]);
     expect(text).toContain("reseek 0.1.0+abc (latest 0.2.0)");
     expect(text).toContain("server: Connected, LoggedIn, reconnects on");
