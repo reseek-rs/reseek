@@ -231,14 +231,20 @@ struct Silent {
   files: tempfile::TempDir,
   app: TestApp,
   _server: Server,
-  /// where every user's client is: a socket that takes connections and never answers, so the
-  /// one upload running waits for its answer and keeps the queue as it is
-  _clients: tokio::net::TcpListener,
+  /// where every user's client is: a socket that takes connections and never answers unless
+  /// the test does, so the one upload running waits for its answer and keeps the queue as it is
+  clients: tokio::net::TcpListener,
 }
 
 /// [`shared_app`] with one upload slot, logged in to a scripted server that says every user is
 /// online, shares enough not to be a leecher, and is at a client that never answers.
 async fn silent_app() -> Silent {
+  silent_app_in(tempfile::tempdir().unwrap()).await
+}
+
+/// [`silent_app`] sharing `files`, which holds what [`config`] writes and what the test put
+/// there before.
+async fn silent_app_in(files: tempfile::TempDir) -> Silent {
   use soulseek_proto::server::{
     GetPeerAddressResponse, UserStatistics, UserStats, UserStatus, WatchUserResponse, WatchedUser,
   };
@@ -246,7 +252,6 @@ async fn silent_app() -> Silent {
 
   let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
   let port = silent.local_addr().unwrap().port();
-  let files = tempfile::tempdir().unwrap();
   let extra = "[transfers.upload]\nslots = 1\n\
                [soulseek.connection.timeout]\ntransfer_response = \"1h\"\n";
   let app = crate::testing::soulseek::app(&config(files.path(), extra)).await;
@@ -291,8 +296,174 @@ async fn silent_app() -> Silent {
     files,
     app,
     _server: server,
-    _clients: silent,
+    clients: silent,
   }
+}
+
+/// Answers the offer of `filename` that `silent`'s daemon makes to alice on `messages`, the
+/// message connection it opened, and returns the transfer connection it opens then, past the
+/// position asked for, the start.
+async fn allowed(
+  silent: &Silent,
+  messages: &mut (tokio::net::TcpStream, Vec<u8>),
+  filename: &str,
+) -> tokio::net::TcpStream {
+  use soulseek_proto::frame::FrameKind;
+  use soulseek_proto::peer::{TransferRequest, TransferResponse};
+  use soulseek_proto::{InitMessage, PeerMessage};
+  use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+  let next_frame = crate::testing::soulseek::next_frame;
+  let within = std::time::Duration::from_secs(10);
+  let token = tokio::time::timeout(within, async {
+    loop {
+      let frame = next_frame(&mut messages.0, &mut messages.1, FrameKind::Peer).await;
+      if let PeerMessage::TransferRequest(TransferRequest::Upload {
+        token,
+        filename: offered,
+        ..
+      }) = PeerMessage::decode(&frame).unwrap()
+      {
+        assert_eq!(offered.as_str(), filename);
+        return token;
+      }
+    }
+  })
+  .await
+  .expect("the daemon offers the file");
+  let allowed = PeerMessage::TransferResponse(TransferResponse::Allowed {
+    token,
+    file_size: None,
+  });
+  messages.0.write_all(&allowed.encode()).await.unwrap();
+  let (mut transfer, _) = tokio::time::timeout(within, silent.clients.accept())
+    .await
+    .expect("the daemon opens the transfer connection")
+    .unwrap();
+  let mut buffer = Vec::new();
+  let init = next_frame(&mut transfer, &mut buffer, FrameKind::Init).await;
+  assert!(matches!(
+    InitMessage::decode(&init).unwrap(),
+    InitMessage::PeerInit(_)
+  ));
+  while buffer.len() < 4 {
+    let mut chunk = [0; 4];
+    let read = transfer.read(&mut chunk).await.unwrap();
+    assert!(read > 0, "the daemon closed the transfer connection");
+    buffer.extend_from_slice(&chunk[..read]);
+  }
+  assert_eq!(buffer[..4], token.to_le_bytes(), "{buffer:?}");
+  transfer.write_all(&0u64.to_le_bytes()).await.unwrap();
+  transfer
+}
+
+/// Waits until the upload of `filename` to alice has completed, and returns it.
+async fn completed(app: &TestApp, filename: &'static str) -> Record {
+  tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    loop {
+      let ended = app
+        .state
+        .transfers
+        .read(move |conn| {
+          conn
+            .query_row(
+              "SELECT Id FROM Transfers WHERE Username = 'alice' AND Filename = ?1",
+              [filename],
+              |row| row.get::<_, String>(0),
+            )
+            .and_then(|id| store::get(conn, id.parse().unwrap()))
+        })
+        .await;
+      if let Ok(Some(record)) = ended
+        && record.is_completed()
+      {
+        return record;
+      }
+      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+  })
+  .await
+  .expect("the upload ends")
+}
+
+/// Waits until the speed of a transfer of `app`'s is kept, which its first progress does.
+async fn speed_kept(app: &TestApp) {
+  let shown = app.state.network.shown_speeds();
+  tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    while shown.kept() == 0 {
+      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+  })
+  .await
+  .expect("the upload's progress keeps a speed");
+}
+
+/// An upload keeps the speed it shows while it moves and lets go of it once it ended, whether
+/// the downloader took every byte or closed halfway.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_ended_upload_lets_go_of_its_speed() {
+  use soulseek_proto::InitMessage;
+  use soulseek_proto::frame::FrameKind;
+  use tokio::io::AsyncReadExt;
+
+  const LARGE: &str = "Music\\Album\\large.mp3";
+  let files = tempfile::tempdir().unwrap();
+  let album = files.path().join("music").join("Album");
+  std::fs::create_dir_all(&album).unwrap();
+  // more than the socket buffers hold, so the upload is still writing when its peer closes
+  std::fs::File::create(album.join("large.mp3"))
+    .unwrap()
+    .set_len(64 << 20)
+    .unwrap();
+  let silent = silent_app_in(files).await;
+  let app = &silent.app;
+  let shown = app.state.network.shown_speeds();
+
+  let sent = app
+    .state
+    .uploads
+    .send("alice", vec![SHARED.to_string()])
+    .await;
+  assert_eq!(sent.queued, [SHARED]);
+  let within = std::time::Duration::from_secs(10);
+  let (stream, _) = tokio::time::timeout(within, silent.clients.accept())
+    .await
+    .expect("the daemon connects to alice")
+    .unwrap();
+  let mut messages = (stream, Vec::new());
+  let init =
+    crate::testing::soulseek::next_frame(&mut messages.0, &mut messages.1, FrameKind::Init).await;
+  assert!(matches!(
+    InitMessage::decode(&init).unwrap(),
+    InitMessage::PeerInit(_)
+  ));
+  let mut transfer = allowed(&silent, &mut messages, SHARED).await;
+  let mut file = [0; 3];
+  transfer.read_exact(&mut file).await.unwrap();
+  assert_eq!(&file, b"one");
+  speed_kept(app).await;
+  drop(transfer);
+  let done = completed(app, SHARED).await;
+  assert_eq!(
+    done.state,
+    State::Completed(TransferOutcome::Succeeded),
+    "{:?}",
+    done.exception
+  );
+  assert_eq!(shown.kept(), 0, "a delivered upload left its speed behind");
+
+  let sent = app
+    .state
+    .uploads
+    .send("alice", vec![LARGE.to_string()])
+    .await;
+  assert_eq!(sent.queued, [LARGE]);
+  let transfer = allowed(&silent, &mut messages, LARGE).await;
+  speed_kept(app).await;
+  drop(transfer);
+  let failed = completed(app, LARGE).await;
+  assert_ne!(failed.state, State::Completed(TransferOutcome::Succeeded));
+  assert_eq!(shown.kept(), 0, "an upload cut off left its speed behind");
 }
 
 /// What `username` asking `app` for [`SHARED`] from [`REPORTED`] is told: `None` when it is

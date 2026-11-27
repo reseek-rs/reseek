@@ -1672,7 +1672,20 @@ async fn a_login_has_the_downloads_waiting_for_an_offline_user_try_them_again() 
   assert!(back.is_ok(), "the login left bob offline");
 }
 
-/// A user who goes offline while their file moves does not stop it: it arrives.
+/// Waits until the speed of a transfer of `app`'s is kept, which its first progress does.
+async fn speed_kept(app: &TestApp) {
+  let shown = app.state.network.shown_speeds();
+  tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    while shown.kept() == 0 {
+      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+  })
+  .await
+  .expect("the transfer's progress keeps a speed");
+}
+
+/// A user who goes offline while their file moves does not stop it: it arrives, and its speed
+/// is let go of.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_file_moving_when_its_user_goes_offline_keeps_moving() {
   use soulseek_proto::peer::TransferResponse;
@@ -1690,6 +1703,7 @@ async fn a_file_moving_when_its_user_goes_offline_keeps_moving() {
   ));
   let mut transfer = sending(&app, "alice", 1, 4).await;
   read_until(&app, id, |r| r.state == State::InProgress).await;
+  speed_kept(&app).await;
   peers.presence("alice", false);
   tokio::time::sleep(std::time::Duration::from_secs(1)).await;
   let moving = read(&app, id).await;
@@ -1699,10 +1713,12 @@ async fn a_file_moving_when_its_user_goes_offline_keeps_moving() {
     r.state == State::Completed(TransferOutcome::Succeeded)
   })
   .await;
+  assert_eq!(app.state.network.shown_speeds().kept(), 0);
 }
 
 /// A file whose transfer breaks because its user logged off, before the server says so, does
-/// not count the try: the server is asked, and the download waits for them.
+/// not count the try: the server is asked, and the download waits for them. Its speed is let go
+/// of.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_file_cut_off_by_its_user_logging_off_waits_for_them_without_counting() {
   use soulseek_proto::peer::TransferResponse;
@@ -1720,10 +1736,12 @@ async fn a_file_cut_off_by_its_user_logging_off_waits_for_them_without_counting(
   ));
   let transfer = sending(&app, "alice", 1, 4).await;
   read_until(&app, id, |r| r.state == State::InProgress).await;
+  speed_kept(&app).await;
   reseek_shares::lock(&peers.online).remove("alice");
   drop(transfer);
   let waiting = read_until(&app, id, Record::waits_for_user).await;
   assert_eq!(waiting.attempts, 1, "the try cut off does not count");
+  assert_eq!(app.state.network.shown_speeds().kept(), 0);
 }
 
 /// With two download slots and five idle users, each offering a file as it is asked for: two

@@ -410,13 +410,14 @@ impl Downloads {
             }
             snapshot = changes.next() => {
               let Some(snapshot) = snapshot else { break };
-              if snapshot.state.is_terminal() {
+              let terminal = snapshot.state.is_terminal();
+              if terminal {
                 shown.ended(&snapshot);
               }
               if written != Some(snapshot.state) {
                 written = Some(snapshot.state);
                 self.state_changed(record, snapshot, gate, &mut moving, &mut ended).await;
-              } else if !throttled {
+              } else if !terminal && !throttled {
                 let speed = shown.progressed(&snapshot);
                 self.progressed(record, snapshot.bytes_transferred, speed).await;
                 throttled = true;

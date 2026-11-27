@@ -41,6 +41,12 @@ impl ShownSpeeds {
   pub fn ended(&self, transfer: &Transfer) {
     lock(&self.0).remove(&(transfer.direction, transfer.token));
   }
+
+  /// How many transfers have a speed kept.
+  #[cfg(test)]
+  pub fn kept(&self) -> usize {
+    lock(&self.0).len()
+  }
 }
 
 /// What a progress report of a transfer says about its speed.
