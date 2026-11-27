@@ -264,8 +264,8 @@ impl Downloads {
   /// when the peer names another size than the record's, which is the one its offer was checked
   /// for; any other takes the peer's size. With `ask`, the client is given the download once
   /// the ones of its user granted before it were. `away` follows whether its user is offline:
-  /// their going offline stops a try that has not started moving, and a try they are offline
-  /// for does not count.
+  /// their going offline since the download last read it stops a try that has not started
+  /// moving, and a try they are offline for does not count.
   #[allow(
     clippy::too_many_arguments,
     reason = "a try takes its record, its file, its stops, its turns, how it asks and its user"
@@ -376,8 +376,6 @@ impl Downloads {
     let mut moving: Option<Slot> = None;
     // the question of its place, which ends its ask once the peer has it queued
     let mut settling: Option<std::pin::Pin<Box<dyn Future<Output = Settled> + Send>>> = None;
-    // only word that comes during the try stops it
-    away.borrow_and_update();
     let result = match started {
       Err(error) => Err(error),
       Ok(handle) => {
