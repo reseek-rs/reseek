@@ -62,8 +62,24 @@ pub struct Rooms {
   joins: Turns,
   /// held from reading the rooms we are in to pushing them, so the last push has the newest
   pushing: tokio::sync::Mutex<()>,
-  /// canceled to stop the rooms being joined again after a loss of client events
-  reading_again: Mutex<CancellationToken>,
+  /// the rooms waiting to be joined again after a loss of client events
+  reading_again: Mutex<ReadingAgain>,
+}
+
+/// The rooms joined again after losses of client events, by one pass at a time.
+#[derive(Default)]
+struct ReadingAgain {
+  /// the rooms still to be read, in turn
+  waiting: VecDeque<String>,
+  /// the room the pass reads next, until its leave is sent; a loss meanwhile is read by that
+  /// join
+  taken: Option<String>,
+  /// the session row the newest loss began
+  row: i64,
+  /// the number of the pass under way, and its token, a child of its session's
+  pass: Option<(u64, CancellationToken)>,
+  /// how many passes were started
+  passes: u64,
 }
 
 /// The server's room list served for the next while, and the answers to our own asks for it.
@@ -554,29 +570,64 @@ impl Messaging {
   /// their presence and the tickers may be out of date, and only a join makes the server send
   /// them again: each room the server has us in is left and joined again, one after another.
   /// Once they all are, the session is taken to begin then, as we were out of the rooms until
-  /// then, and its gap is pushed again. A loss after this one stops these joins between two
-  /// rooms and starts its own; so does the end of the session.
+  /// then, and its gap is pushed again. A loss while they are joined adds the rooms not waiting
+  /// already to the same pass, so a room is left and joined once more at most for any number
+  /// of losses during the pass. The end of the session stops the pass between two rooms.
   pub(super) fn read_rooms_again(&self, row: i64) {
     let rooms = self.rooms.tracker().joined_names();
-    let reading = {
-      let mut reading = lock(&self.rooms.reading_again);
-      reading.cancel();
-      *reading = lock(&self.session_ends).child_token();
-      reading.clone()
-    };
     let session = lock(&self.session_ends).clone();
+    let (pass, reading) = {
+      let mut again = lock(&self.rooms.reading_again);
+      if again
+        .pass
+        .as_ref()
+        .is_some_and(|(_, reading)| reading.is_cancelled())
+      {
+        // the pass of a session that ended, not stopped yet
+        again.waiting.clear();
+        again.taken = None;
+        again.pass = None;
+      }
+      for room in rooms {
+        if !again.waiting.contains(&room) && again.taken.as_ref() != Some(&room) {
+          again.waiting.push_back(room);
+        }
+      }
+      again.row = row;
+      if again.pass.is_some() {
+        return debug!("rooms read again by the pass under way");
+      }
+      again.passes += 1;
+      let reading = session.child_token();
+      again.pass = Some((again.passes, reading.clone()));
+      (again.passes, reading)
+    };
     let this = self.this();
     self.tasks.spawn(
       async move {
-        for room in rooms {
-          if reading.is_cancelled() {
-            return debug!("rooms no longer read again; the session ended or more was lost");
-          }
+        let row = loop {
+          let room = {
+            let mut again = lock(&this.rooms.reading_again);
+            if reading.is_cancelled() {
+              if again.pass.as_ref().is_some_and(|(at, _)| *at == pass) {
+                again.waiting.clear();
+                again.taken = None;
+                again.pass = None;
+              }
+              return debug!("rooms no longer read again; the session ended");
+            }
+            again.taken = again.waiting.pop_front();
+            let Some(room) = again.taken.clone() else {
+              again.pass = None;
+              break again.row;
+            };
+            room
+          };
           this
             .join_again(&room, &session)
             .instrument(info_span!("room", room))
             .await;
-        }
+        };
         this.rooms_read_again(row).await;
       }
       .in_current_span(),
@@ -588,6 +639,8 @@ impl Messaging {
   /// short by the end of `session` is left to the next login.
   async fn join_again(&self, name: &str, session: &CancellationToken) {
     let _turn = self.rooms.joins.take(name).await;
+    // what is lost in the room from here on is read by this join
+    lock(&self.rooms.reading_again).taken = None;
     let leaves = {
       let tracker = self.rooms.tracker();
       if !tracker.get(name).is_some_and(|room| room.joined) {
@@ -1405,14 +1458,21 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn a_second_loss_stops_the_first_ones_joins_between_two_rooms() {
-    let (app, mut server, script) = in_rooms(&["a", "b"]).await;
-    script.lock().unwrap().joins_held.push("a");
+  async fn a_loss_during_a_read_adds_to_it_and_each_room_is_read_once_after_the_last_loss() {
+    let (app, mut server, _script) = in_rooms(&["a", "b", "c"]).await;
     let messaging = &app.state.messaging;
+    // the read waits for b's turn, after a was read
+    let turn = messaging.rooms.joins.take("b").await;
     messaging.missed().await;
     server.received(joins("a")).await;
-    // more is lost while the first reading waits on a's join; the second reading finds a out of
-    // the rooms we are in, and reads b alone
+    tokio::time::timeout(Duration::from_secs(5), async {
+      while turn.alone() {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+      }
+    })
+    .await
+    .expect("the read never got to b");
+    // more is lost meanwhile: a was read before it, and b and c are read after it
     messaging.missed().await;
     tokio::time::timeout(Duration::from_secs(5), async {
       while messaging.history_gaps().await.len() < 2 {
@@ -1421,15 +1481,26 @@ mod tests {
     })
     .await
     .expect("the second loss was never marked");
-    server.received(joins("b")).await;
-    let answer = JoinRoomRequest {
-      room: "a".into(),
-      room_type: RoomType::Public,
+    drop(turn);
+    let touched = |request: &ServerRequest| match request {
+      ServerRequest::JoinRoom(join) => Some(format!("join {}", join.room)),
+      ServerRequest::LeaveRoom(leave) => Some(format!("leave {}", leave.room)),
+      _ => None,
     };
-    server.send(vec![let_in(&answer)]);
-    let b = |request: &ServerRequest| joins("b")(request).or(leaves("b")(request)).is_some();
-    let touched_b = server.receives(Duration::from_secs(1), b).await;
-    assert!(!touched_b, "the first reading went on to b");
+    let mut read = Vec::new();
+    for _ in 0..6 {
+      read.push(server.received(touched).await);
+    }
+    assert_eq!(
+      read,
+      [
+        "leave b", "join b", "leave c", "join c", "leave a", "join a"
+      ]
+    );
+    let more = server
+      .receives(Duration::from_secs(1), |request| touched(request).is_some())
+      .await;
+    assert!(!more, "a room was read more than once after the last loss");
   }
 
   #[tokio::test]
