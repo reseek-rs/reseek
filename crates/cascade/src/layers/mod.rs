@@ -18,6 +18,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use tracing::{info, warn};
 
+use crate::describe::Kind;
 use crate::files::{self, Entry, LoadedFile};
 use crate::loaded::Loaded;
 use crate::overrides::{Override, Overrides, without_refused};
@@ -84,12 +85,19 @@ pub struct Layers<T> {
 /// that far, to tell which keys the failure held back.
 pub(crate) struct Failure {
   pub(crate) error: Error,
-  pub(crate) tree: Option<Value>,
+  /// boxed, so a failure stays small enough to return
+  pub(crate) tree: Option<Box<Value>>,
+  /// the entry of a user-keyed map, as `map.name`, holding a value that does not fit its type
+  pub(crate) entry: Option<Key>,
 }
 
 impl From<Error> for Failure {
   fn from(error: Error) -> Self {
-    Self { error, tree: None }
+    Self {
+      error,
+      tree: None,
+      entry: None,
+    }
   }
 }
 
@@ -298,8 +306,12 @@ impl<T: Root> Layers<T> {
         Err(failure) => failure,
       };
       // an override saved by an older version can stop fitting its key, and an entry of a map
-      // set at run time can stop passing the checks once the files change
-      let keys = error_keys(&failure.error);
+      // set at run time can stop passing the checks once the files change; an entry that does
+      // not fit its type is given up alone
+      let keys = match &failure.entry {
+        Some(entry) => BTreeSet::from([entry.as_str()]),
+        None => error_keys(&failure.error),
+      };
       let (kept, dropped) = without_refused(&self.schema, self.overrides.items(), &keys);
       if dropped.is_empty() {
         return Err(failure);
@@ -346,10 +358,15 @@ impl<T: Root> Layers<T> {
       Ok(values) => values,
       Err(e) => {
         let path = e.path().to_string();
-        let key = self
-          .schema
-          .field_under(&path)
-          .map_or(path.clone(), |f| f.key.clone());
+        let field = self.schema.field_under(&path);
+        let key = field.map_or(path.clone(), |f| f.key.clone());
+        // the segment after a map's own is the entry's name, which may hold dots
+        let entry = field.filter(|f| f.kind == Kind::Map).and_then(|f| {
+          match e.path().iter().nth(f.key.split('.').count()) {
+            Some(serde_path_to_error::Segment::Map { key: name }) => Some(format!("{key}.{name}")),
+            _ => None,
+          }
+        });
         let by = sources
           .get(&key)
           .map_or("the defaults", Source::describe)
@@ -364,7 +381,8 @@ impl<T: Root> Layers<T> {
         }
         return Err(Failure {
           error: Error::Value { key, by, message },
-          tree: Some(tree),
+          tree: Some(Box::new(tree)),
+          entry,
         });
       }
     };
@@ -373,7 +391,8 @@ impl<T: Root> Layers<T> {
     {
       return Err(Failure {
         error: Error::Invalid(invalid),
-        tree: Some(tree),
+        tree: Some(Box::new(tree)),
+        entry: None,
       });
     }
     Ok(Loaded {
@@ -532,6 +551,8 @@ mod tests {
           value: json!({
             "a": { "key": "a1", "role": "writer" },
             "b": { "key": "b1", "role": "reader" },
+            // as an older store or a hand edit may hold it
+            "d": { "key": "d1", "role": 5 },
           }),
           declared: json!({ "a": { "key": "a1", "role": "reader" } }),
           set_by: "admin".into(),
@@ -578,6 +599,7 @@ mod tests {
       (&json!("writer"), &json!("reader")),
       "the override keeps its own entries"
     );
+    assert_eq!(kept.get("d"), None, "but one that does not fit its type");
 
     write(
       dir.path(),
