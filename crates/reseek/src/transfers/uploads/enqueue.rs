@@ -10,7 +10,6 @@ use api_types::transfers::TransferDirection;
 use reseek_shares::lock;
 use rusqlite::{Connection, params};
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
 use uuid::Uuid;
 
 use super::intake::Located;
@@ -25,7 +24,7 @@ const DUPLICATE: &str =
   "A duplicate upload of the same file to the same user is already registered";
 
 /// Why a record is not written when an upload of the file to the user is queued or running,
-/// which the caller looked for under the same turn.
+/// which the caller looked for under the same turn
 const OUTSIDE_TURN: &str = "an upload of the file was queued outside the user's turn";
 
 /// What the transaction found or wrote.
@@ -192,8 +191,7 @@ impl Uploads {
       Ok(Written::Inserted(superseded)) => superseded,
       Ok(Written::Running(ids)) => {
         lock(&self.in_flight).remove(&id);
-        warn!(username, filename, ?ids, "{OUTSIDE_TURN}");
-        return Err(OUTSIDE_TURN.to_string());
+        return Err(format!("{OUTSIDE_TURN}: {}", ids.join(", ")));
       }
       Ok(Written::Duplicate) => {
         lock(&self.in_flight).remove(&id);
