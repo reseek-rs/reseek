@@ -1096,7 +1096,7 @@
       "envVar": "RESEEK_LOG_SQL",
       "cliFlag": "--log-sql",
       "kind": "bool",
-      "doc": "Logs every SQL statement with its values. The log then contains usernames, filenames and messages, and the authentication rows: sessions, password fingerprints and ID tokens.",
+      "doc": "Logs every SQL statement with its values. The log then contains usernames, filenames and messages. The statements of the authentication database are logged without their values.",
       "choices": null,
       "default": false,
       "apply": "restart",

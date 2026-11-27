@@ -99,7 +99,7 @@ pub struct Location {
   pub backups: PathBuf,
   /// keep the databases in memory
   pub volatile: bool,
-  /// log every statement with its values at info
+  /// log every statement with its values at info, but those of a private database
   pub log_sql: bool,
 }
 
@@ -438,6 +438,8 @@ fn open_blocking(
   file: &str,
 ) -> Result<Database, DbError> {
   let path = location.data.join(file);
+  // a private database holds secrets, so its statements are logged without their values
+  let log_sql = location.log_sql && !schema.private;
   // a name of its own per opening, so two databases in one process never share memory
   let memory = format!("file:{}-{}?mode=memory", schema.name, uuid::Uuid::new_v4());
   let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -452,7 +454,7 @@ fn open_blocking(
     }
     Connection::open_with_flags(&path, flags)?
   };
-  configure(&mut writer, location.log_sql)?;
+  configure(&mut writer, log_sql)?;
   if !location.volatile {
     writer.pragma_update(None, "journal_mode", "WAL")?;
     check_pragmas(schema.name, &writer)?;
@@ -468,7 +470,7 @@ fn open_blocking(
     Some(Readers::open(Source {
       target: path.clone(),
       flags: OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-      log_sql: location.log_sql,
+      log_sql,
     })?)
   };
   let place = if location.volatile {
@@ -659,6 +661,52 @@ mod tests {
         .permissions()
         .mode();
       assert_eq!(mode & 0o777, 0o600, "{file}");
+    }
+  }
+
+  /// The databases of the private test schema and of the same migrations not private, opened
+  /// in `dir` with `log_sql`.
+  fn logging_sql(dir: &std::path::Path) -> [(bool, Database); 2] {
+    static SHARED: Schema = crate::schema!("auth", ["0001_initial"]);
+    let location = Location {
+      log_sql: true,
+      ..Location::on_disk(dir)
+    };
+    [&migrate::tests::PRIVATE, &SHARED].map(|schema| {
+      let file = format!("{}.db", if schema.private { "private" } else { "shared" });
+      (
+        schema.private,
+        open_blocking(schema, &location, &file).unwrap(),
+      )
+    })
+  }
+
+  #[test]
+  fn a_private_database_logs_its_statements_without_values() {
+    let dir = tempfile::tempdir().unwrap();
+    for (private, db) in logging_sql(dir.path()) {
+      let insert = "INSERT INTO keys (name, secret, created_at) VALUES ('session', ?1, 'now')";
+      let ((), writes) = crate::testing::logged(|| {
+        let writer = db.inner.writer.blocking_lock();
+        writer.execute(insert, ["s3cret-key"]).unwrap();
+      });
+      let reader = crate::lock(&db.inner.readers.as_ref().unwrap().idle)
+        .pop()
+        .unwrap();
+      let (secret, reads) = crate::testing::logged(|| {
+        reader
+          .query_row(
+            "SELECT secret FROM keys WHERE secret = ?1",
+            ["s3cret-key"],
+            |row| row.get::<_, String>(0),
+          )
+          .unwrap()
+      });
+      assert_eq!(secret, "s3cret-key");
+      for logged in [writes, reads] {
+        assert!(logged.contains("SQL statement"), "{logged}");
+        assert_eq!(logged.contains("s3cret-key"), !private, "{logged}");
+      }
     }
   }
 

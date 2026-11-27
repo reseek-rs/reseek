@@ -37,7 +37,7 @@ pub struct Flags {
   #[cascade(env = "RESEEK_NO_VERSION_CHECK", cli = "--no-version-check")]
   pub no_version_check: bool,
   /// Logs every SQL statement with its values. The log then contains usernames, filenames and
-  /// messages, and the authentication rows: sessions, password fingerprints and ID tokens.
+  /// messages. The statements of the authentication database are logged without their values.
   #[cascade(env = "RESEEK_LOG_SQL", cli = "--log-sql")]
   pub log_sql: bool,
   /// Keeps every database in memory. Nothing is saved across restarts.
