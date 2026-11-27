@@ -2717,3 +2717,16 @@ async fn the_place_of_a_download_the_client_does_not_run_is_not_asked_of_its_pee
     "no active download of @@share\\dir\\file.mp3 from alice"
   );
 }
+
+#[tokio::test]
+async fn a_user_downloaded_from_and_watched_for_uploads_stays_watched_after_them() {
+  let app = crate::testing::soulseek::app(TRUSTED).await;
+  let mut server = crate::testing::soulseek::Server::watching().await;
+  server.login(&app).await;
+  let (client, users) = (app.state.network.client(), &app.state.users);
+  users.watch_for_uploads(client, "alice").await;
+  app.state.downloads.watch_user("alice");
+  users.uploads_ended(client, "alice").await;
+  assert!(users.is_watched("alice"));
+  assert!(!server.unwatches("alice").await);
+}

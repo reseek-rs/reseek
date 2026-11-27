@@ -418,7 +418,7 @@ impl Downloads {
   /// user the server says does not exist ends their downloads, said once.
   pub(super) fn watch_user(&self, username: &str) {
     let client = self.network.client();
-    if !client.state().is_logged_in() || self.users.is_watched(username) {
+    if !client.state().is_logged_in() || self.users.kept_watched(username) {
       return;
     }
     let this = self.this();

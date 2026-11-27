@@ -1324,37 +1324,14 @@ async fn an_upload_whose_row_cannot_be_read_is_taken_out_by_a_cancel_that_remove
 
 #[tokio::test]
 async fn a_user_watched_for_uploads_alone_is_unwatched_once_the_queue_holds_none_of_theirs() {
-  use soulseek_proto::server::{UserStats, UserStatus, WatchUserResponse, WatchedUser};
-  use soulseek_proto::{ServerRequest, ServerResponse};
-
   let app = crate::testing::soulseek::app("").await;
-  let mut server = Server::start(|request| match request {
-    ServerRequest::WatchUser(asked) => vec![ServerResponse::WatchUser(WatchUserResponse {
-      username: asked.username.clone(),
-      user: Some(WatchedUser {
-        status: soulseek_proto::UserPresence::Online,
-        stats: UserStats::default(),
-        country_code: Some(String::new()),
-      }),
-    })],
-    ServerRequest::GetStatus(asked) => vec![ServerResponse::GetStatus(UserStatus {
-      username: asked.username.clone(),
-      presence: soulseek_proto::UserPresence::Online,
-      is_privileged: false,
-    })],
-    _ => Vec::new(),
-  })
-  .await;
+  let mut server = Server::watching().await;
   server.login(&app).await;
   let (client, users, queue) = (
     app.state.network.client(),
     &app.state.users,
     &app.state.uploads.queue,
   );
-  fn unwatched(name: &'static str) -> impl Fn(&ServerRequest) -> bool {
-    move |request| matches!(request, ServerRequest::UnwatchUser(asked) if asked.username == name)
-  }
-  let within = std::time::Duration::from_millis(200);
   // erin's second upload is queued before the first ends
   let (first, second) = (Uuid::new_v4(), Uuid::new_v4());
   queue.enqueue(first, "erin", "a");
@@ -1367,7 +1344,7 @@ async fn a_user_watched_for_uploads_alone_is_unwatched_once_the_queue_holds_none
   queue.complete(second);
   users.uploads_ended(client, "erin").await;
   assert!(!users.is_watched("erin"));
-  assert!(server.receives(within, unwatched("erin")).await);
+  assert!(server.unwatches("erin").await);
   // alice uploads and is watched for something else as well, after the upload and before it
   for watched_first in [false, true] {
     let upload = Uuid::new_v4();
@@ -1382,6 +1359,6 @@ async fn a_user_watched_for_uploads_alone_is_unwatched_once_the_queue_holds_none
     queue.complete(upload);
     users.uploads_ended(client, "alice").await;
     assert!(users.is_watched("alice"), "watched first: {watched_first}");
-    assert!(!server.receives(within, unwatched("alice")).await);
+    assert!(!server.unwatches("alice").await);
   }
 }

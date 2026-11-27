@@ -10,7 +10,8 @@ use std::time::Duration;
 use soulseek_client::session::State as ClientState;
 use soulseek_proto::frame::{self, FrameKind};
 use soulseek_proto::server::{
-  CheckPrivilegesResponse, LoginResponse, UserData, UserStatistics, UserStats,
+  CheckPrivilegesResponse, LoginResponse, UserData, UserStatistics, UserStats, UserStatus,
+  WatchUserResponse, WatchedUser,
 };
 use soulseek_proto::{Limits, Secret, ServerRequest, ServerResponse, UserPresence};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -92,6 +93,36 @@ impl Server {
   /// A server that answers nothing but what every server here does.
   pub async fn silent() -> Self {
     Self::start(|_| Vec::new()).await
+  }
+
+  /// A server that watches every user asked for and says each is online.
+  pub async fn watching() -> Self {
+    Self::start(|request| match request {
+      ServerRequest::WatchUser(asked) => vec![ServerResponse::WatchUser(WatchUserResponse {
+        username: asked.username.clone(),
+        user: Some(WatchedUser {
+          status: UserPresence::Online,
+          stats: UserStats::default(),
+          country_code: Some(String::new()),
+        }),
+      })],
+      ServerRequest::GetStatus(asked) => vec![ServerResponse::GetStatus(UserStatus {
+        username: asked.username.clone(),
+        presence: UserPresence::Online,
+        is_privileged: false,
+      })],
+      _ => Vec::new(),
+    })
+    .await
+  }
+
+  /// Whether `username` is unwatched within a moment, skipping the other requests.
+  pub async fn unwatches(&mut self, username: &str) -> bool {
+    self
+      .receives(Duration::from_millis(200), |request| {
+        matches!(request, ServerRequest::UnwatchUser(asked) if asked.username == username)
+      })
+      .await
   }
 
   /// Logs the client of `app` in as [`US`].

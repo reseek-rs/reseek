@@ -781,8 +781,9 @@ impl Directory {
 
   /// Whether `username` is watched, kept watched for the session from here on when they are,
   /// decided with the watched users held, as [`Directory::uploads_ended`] unwatches with them
-  /// held.
-  fn kept_watched(&self, username: &str) -> bool {
+  /// held. A caller that watches a user only when they are not watched asks this, so a user
+  /// watched for their uploads alone stays watched for it.
+  pub fn kept_watched(&self, username: &str) -> bool {
     let watched = self.groups.watched();
     lock(&self.groups.for_uploads).remove(username);
     watched.contains(username)

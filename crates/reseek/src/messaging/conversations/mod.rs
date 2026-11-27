@@ -197,7 +197,7 @@ impl Messaging {
 
   /// Watches the peer of an open conversation, so its presence is known, while logged in.
   fn watch_peer(&self, username: &str) {
-    if !self.logged_in_now() || self.users.is_watched(username) {
+    if !self.logged_in_now() || self.users.kept_watched(username) {
       return;
     }
     let (users, client, username) = (
@@ -717,6 +717,19 @@ mod tests {
     })
     .await;
     assert!(stored.is_ok(), "the message sent was never stored");
+  }
+
+  #[tokio::test]
+  async fn the_peer_of_a_conversation_watched_for_uploads_stays_watched_after_them() {
+    let app = crate::testing::soulseek::app("").await;
+    let mut server = crate::testing::soulseek::Server::watching().await;
+    server.login(&app).await;
+    let (client, users) = (app.state.network.client(), &app.state.users);
+    users.watch_for_uploads(client, "alice").await;
+    app.state.messaging.watch_peer("alice");
+    users.uploads_ended(client, "alice").await;
+    assert!(users.is_watched("alice"));
+    assert!(!server.unwatches("alice").await);
   }
 
   #[test]
