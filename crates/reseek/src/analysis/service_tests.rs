@@ -10,13 +10,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use api_types::events::EventType;
+use api_types::events::{Event, EventType};
 use api_types::transfers::TransferOutcome;
 use axum::body::Body;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use choon::fixtures::{Bitrate, music, pink, write_mp3};
 use serde_json::{Value, json};
+use tokio::sync::mpsc;
+use uuid::Uuid;
 
 use crate::testing::{TRUSTED, TestApp, app, request};
 use crate::transfers::{Record, store as transfers};
@@ -73,6 +75,30 @@ async fn settled(app: &TestApp) {
     tokio::time::sleep(Duration::from_millis(50)).await;
   }
   panic!("the analyses did not finish");
+}
+
+/// The ids of the jobs that end from now on, as `JobFinished` tells them.
+fn job_ends(app: &TestApp) -> mpsc::UnboundedReceiver<Uuid> {
+  let (sender, ends) = mpsc::unbounded_channel();
+  app
+    .state
+    .events
+    .subscribe("job-ends", Some(EventType::JobFinished), move |record| {
+      if let Event::JobFinished(job) = &record.event {
+        sender.send(job.id).unwrap();
+      }
+      async { Ok(()) }
+    });
+  ends
+}
+
+/// Waits until the job `job` has ended.
+async fn ended(ends: &mut mpsc::UnboundedReceiver<Uuid>, job: &str) {
+  let job: Uuid = job.parse().unwrap();
+  let waited = tokio::time::timeout(Duration::from_secs(60), async {
+    while ends.recv().await.unwrap() != job {}
+  });
+  waited.await.expect("the job ended");
 }
 
 /// Counts the `FileAnalysisComplete` events raised.
@@ -532,6 +558,7 @@ async fn a_batch_is_one_job_whose_files_are_analyzed_in_turn_and_kept_by_name() 
   for name in &names {
     music_file(&app, name);
   }
+  let mut ends = job_ends(&app);
   let file = |path: &str| json!({ "kind": "file", "root": "downloads", "path": path });
   let files: Vec<Value> = [file("../escape.mp3"), file("batch/missing.mp3")]
     .into_iter()
@@ -560,7 +587,7 @@ async fn a_batch_is_one_job_whose_files_are_analyzed_in_turn_and_kept_by_name() 
   assert_eq!(refused, [0, 1], "{answer}");
   let job = answer["jobId"].as_str().unwrap().to_string();
 
-  settled(&app).await;
+  ended(&mut ends, &job).await;
   for name in &names {
     let (status, report) = app.call("GET", &route(name), None).await;
     assert_eq!(status, 200, "{name} was not analyzed: {report}");
@@ -592,6 +619,7 @@ async fn clearing_the_queue_cancels_the_waiting_files_and_the_running_one_goes_o
     .iter()
     .map(|path| json!({ "kind": "file", "root": "downloads", "path": path }))
     .collect();
+  let mut ends = job_ends(&app);
   let (status, answer) = app
     .call(
       "POST",
@@ -609,10 +637,10 @@ async fn clearing_the_queue_cancels_the_waiting_files_and_the_running_one_goes_o
     jobs.iter().all(|job| job["state"] == "running"),
     "only the running analysis goes on: {queue}"
   );
-  settled(&app).await;
+  let job = answer["jobId"].as_str().unwrap();
+  ended(&mut ends, job).await;
   let (status, _) = app.call("GET", &route(names.last().unwrap()), None).await;
   assert_eq!(status, 404, "a waiting file was not analyzed");
-  let job = answer["jobId"].as_str().unwrap();
   let (_, detail) = app.call("GET", &format!("/api/v0/jobs/{job}"), None).await;
   let counts = &detail["job"]["counts"];
   assert_eq!(detail["job"]["state"], "ended", "{detail}");
