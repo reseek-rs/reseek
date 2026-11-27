@@ -126,9 +126,10 @@ test "$RESEEK_SCRIPT_RESULT" = succeeded || exit 3"#;
 async fn a_script_past_its_timeout_is_killed_with_what_it_started() {
   let command = r#"sleep 30 & echo $! > started.pid; echo waiting; sleep 30"#;
   let (app, mut runs) =
-    with_scripts(&script("slow", r#""Any""#, command, "timeout = \"300ms\"")).await;
-  raise(&app, "Noop", "").await;
+    with_scripts(&script("slow", r#""Noop""#, command, "timeout = \"300ms\"")).await;
+  let id = raise(&app, "Noop", "").await;
   let run = next(&mut runs).await;
+  assert_eq!(run.event_id, id);
   assert!(run.timed_out && !run.succeeded);
   assert_eq!(run.exit_code, None);
   assert_eq!(run.error.as_deref(), Some("timed out after 300ms"));
@@ -207,8 +208,14 @@ async fn a_script_that_cannot_start_is_recorded_with_why() {
   let config = "[integrations.scripts.missing]\non = [\"Any\"]\n\
                 [integrations.scripts.missing.run]\nexecutable = \"/nonexistent/program\"\n";
   let (app, mut runs) = with_scripts(config).await;
-  raise(&app, "Noop", "").await;
-  let run = next(&mut runs).await;
+  let id = raise(&app, "Noop", "").await;
+  // the startup share scan's `JobFinished` runs the script too
+  let run = loop {
+    let run = next(&mut runs).await;
+    if run.event_id == id {
+      break run;
+    }
+  };
   assert!(!run.succeeded && !run.timed_out);
   assert_eq!(run.exit_code, None);
   assert!(
@@ -220,7 +227,13 @@ async fn a_script_that_cannot_start_is_recorded_with_why() {
     "{run:?}"
   );
   tokio::time::sleep(Duration::from_millis(200)).await;
-  assert!(runs.try_recv().is_err(), "its own record runs no script");
+  while let Ok(run) = runs.try_recv() {
+    assert_ne!(
+      run.event_type,
+      EventType::ScriptRunCompleted,
+      "its own record runs no script"
+    );
+  }
 }
 
 /// A run of nothing for the event numbered `n`.
