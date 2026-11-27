@@ -8,6 +8,7 @@
 //! forwards for the same user and role.
 
 use std::net::IpAddr;
+use std::ops::Range;
 
 use api_types::auth::{Principal, Role, Via};
 use api_types::events::{Event, SessionCreated, SessionRevokeReason, SessionRevoked};
@@ -498,19 +499,23 @@ pub async fn end_sessions_without_role(app: &AppState) -> Result<(), ApiError> {
   end_sessions(app, ids, None, SessionRevokeReason::Configuration).await
 }
 
-/// Ends the active sessions of the local account `account`, whose password last changed at
-/// `changed_at`, that began before then, but the one of `kept` that set it.
+/// Ends the active sessions of the local account `account` that began in one of `ended`, while
+/// it had a password other than the one that stands, but the one of `kept` that set a password.
 pub async fn end_sessions_for_new_password(
   app: &AppState,
   account: &str,
-  changed_at: DateTime<Utc>,
+  ended: &[Range<DateTime<Utc>>],
   kept: &[Setter],
 ) -> Result<(), ApiError> {
   let ids = sessions::active(&app.auth.db, Some(account.to_string()), idle(app))
     .await
     .map_err(ApiError::internal)?
     .into_iter()
-    .filter(|session| session.created_at < changed_at)
+    .filter(|session| {
+      ended
+        .iter()
+        .any(|range| range.contains(&session.created_at))
+    })
     .map(|session| session.id)
     .filter(|id| !kept.iter().any(|setter| setter.set(id, account)))
     .collect();

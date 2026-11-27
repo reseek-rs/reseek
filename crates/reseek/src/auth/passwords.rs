@@ -5,6 +5,7 @@
 //! through the API.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use chrono::{DateTime, Utc};
 use rusqlite::params;
@@ -90,27 +91,74 @@ pub fn given(previous: &Authentication, current: &Authentication) -> Vec<String>
   subjects
 }
 
+/// The passwords the local accounts were given since the options last stood, each from the time
+/// it was given until the next. A session begun while an account had a password other than the
+/// one that stands ends.
+#[derive(Default)]
+pub struct History(HashMap<String, Given>);
+
+/// The passwords one account was given, each with when, none for its removal.
+type Given = Vec<(DateTime<Utc>, Option<Password>)>;
+
+impl History {
+  /// The history of a start at `started` with `authentication`, which may be a file read half
+  /// written: each account has its password from then.
+  pub fn started(started: DateTime<Utc>, authentication: &Authentication) -> Self {
+    Self(
+      accounts(authentication)
+        .into_iter()
+        .map(|(subject, password)| (subject, vec![(started, Some(password))]))
+        .collect(),
+    )
+  }
+
+  /// Notes the change at `at` from `previous` to `current`: the accounts given another password,
+  /// added, renamed or removed.
+  pub fn note(&mut self, at: DateTime<Utc>, previous: &Authentication, current: &Authentication) {
+    let mut before = accounts(previous);
+    for (subject, password) in accounts(current) {
+      if before.remove(&subject).as_ref() != Some(&password) {
+        self
+          .0
+          .entry(subject)
+          .or_default()
+          .push((at, Some(password)));
+      }
+    }
+    for subject in before.into_keys() {
+      self.0.entry(subject).or_default().push((at, None));
+    }
+  }
+
+  /// Forgets all but the accounts of `kept`, whose sessions are still to be ended.
+  pub fn keep_only(&mut self, kept: &[String]) {
+    self.0.retain(|subject, _| kept.contains(subject));
+  }
+}
+
 /// A local account's password compared with the one kept for it.
 pub struct Compared {
   /// the account
   pub subject: String,
-  /// whether one was kept for it and it is another; its sessions begun before `changed_at` end
+  /// whether the password kept for it is another, or nothing was kept and it was given one
+  /// while the options did not stand
   pub changed: bool,
-  /// when it changed, for a changed one
+  /// when it was given the password that stands, for a changed one
   pub changed_at: DateTime<Utc>,
+  /// the times a session that ends began in: before the wait for a changed one, and while it
+  /// had another password
+  pub ended: Vec<Range<DateTime<Utc>>>,
   /// what is to be kept for it now, `None` when the kept one stands
   fingerprint: Option<String>,
 }
 
 /// The local accounts of `authentication` compared with the passwords kept for them, those
-/// with nothing kept as well. `given_at` says when an account was last given a password while
-/// the options did not stand; one given none then changed before `started`, while stopped. An
-/// account with nothing kept that was given a password then counts as changed, so the sessions
-/// of a password it had before in the same wait end.
+/// with nothing kept as well. `history` says which passwords they were given while the options
+/// did not stand; a changed account given none changed before `started`, while stopped.
 pub async fn compare(
   db: &Database,
   authentication: &Authentication,
-  given_at: impl Fn(&str) -> Option<DateTime<Utc>>,
+  history: &History,
   started: DateTime<Utc>,
 ) -> Result<Vec<Compared>, DbError> {
   let kept: HashMap<String, String> = db
@@ -121,28 +169,38 @@ pub async fn compare(
         .collect()
     })
     .await?;
-  let accounts: Vec<(String, Password, Option<DateTime<Utc>>)> = accounts(authentication)
+  let accounts: Vec<(String, Password, Given)> = accounts(authentication)
     .into_iter()
     .map(|(subject, password)| {
-      let at = given_at(&subject);
-      (subject, password, at)
+      let given = history.0.get(&subject).cloned().unwrap_or_default();
+      (subject, password, given)
     })
     .collect();
   // argon2 takes a while for each plain password
   tokio::task::spawn_blocking(move || {
     accounts
       .into_iter()
-      .map(|(subject, password, given_at)| {
-        let changed_at = given_at.unwrap_or(started);
+      .map(|(subject, password, given)| {
         let (changed, fingerprint) = match kept.get(&subject) {
           Some(kept) if password.kept_as(kept) => (false, None),
           Some(_) => (true, Some(password.fingerprint())),
-          None => (given_at.is_some(), Some(password.fingerprint())),
+          None => (!given.is_empty(), Some(password.fingerprint())),
         };
+        let first = given.first().map_or(started, |(at, _)| *at);
+        let mut ended = Vec::new();
+        if changed {
+          ended.push(DateTime::<Utc>::MIN_UTC..first);
+        }
+        for ((from, had), (to, _)) in given.iter().zip(given.iter().skip(1)) {
+          if had.as_ref() != Some(&password) {
+            ended.push(*from..*to);
+          }
+        }
         Compared {
           subject,
           changed,
-          changed_at,
+          changed_at: given.last().map_or(started, |(at, _)| *at),
+          ended,
           fingerprint,
         }
       })
@@ -152,11 +210,13 @@ pub async fn compare(
   .map_err(|e| DbError::Task(e.to_string()))
 }
 
-/// Keeps what `compared` has to keep, with the time each changed, or now for one kept first.
-pub async fn keep(db: &Database, compared: &[Compared]) -> Result<(), DbError> {
+/// Keeps what `compared` has to keep, with the time each changed, or now for one kept first,
+/// but for the accounts of `failed`, whose old password stays kept.
+pub async fn keep(db: &Database, compared: &[Compared], failed: &[String]) -> Result<(), DbError> {
   let now = Utc::now();
   let rows: Vec<(String, String, String)> = compared
     .iter()
+    .filter(|c| !failed.contains(&c.subject))
     .filter_map(|c| {
       let at = if c.changed { c.changed_at } else { now };
       Some((c.subject.clone(), c.fingerprint.clone()?, timestamp(at)))
@@ -388,10 +448,15 @@ mod tests {
     let at: DateTime<Utc> = "2026-11-14T12:00:00Z".parse().unwrap();
     // `given`: the accounts were given their passwords at `at`, while the options did not stand
     let compare = async |authentication: &Authentication, given: bool| {
-      let compared = compare(&db, authentication, |_| given.then_some(at), started)
+      let history = if given {
+        History::started(at, authentication)
+      } else {
+        History::default()
+      };
+      let compared = compare(&db, authentication, &history, started)
         .await
         .unwrap();
-      keep(&db, &compared).await.unwrap();
+      keep(&db, &compared, &[]).await.unwrap();
       let mut compared: Vec<_> = compared
         .iter()
         .map(|c| (c.subject.clone(), c.changed))

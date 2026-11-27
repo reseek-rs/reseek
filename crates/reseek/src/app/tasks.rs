@@ -5,12 +5,11 @@
 //! scheduler runs the rest: ending the sessions that expired and deleting old ended sessions and
 //! tokens.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use api_types::events::{Event, SessionRevokeReason, SessionRevoked};
 use api_types::live::LiveFrame;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use reseek_shares::LogLimiter;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{Instrument, debug, info, info_span, warn};
@@ -64,17 +63,15 @@ async fn follow_configuration(app: AppState) {
 
 /// Each time the authentication options have stood unchanged for [`SETTLE`], the ones the daemon
 /// starts with included, ends the sessions of users they give no role, and those of the local
-/// accounts whose password is not the one kept for them in `auth.db`, but the sessions that set
-/// it, then keeps the new passwords. Only these options give a session its role, so another
+/// accounts begun with a password other than the one that stands: one no longer kept for them
+/// in `auth.db`, or one they had for a while in the wait. The sessions that set a password go
+/// on. Then it keeps the new passwords. Only these options give a session its role, so another
 /// change does not start the wait over.
 async fn settle_sessions(app: AppState) {
   let started = Utc::now();
   let mut loads = app.config.subscribe();
   let mut standing = loads.borrow_and_update().values.web.authentication.clone();
-  // when each local account was last given a password since the options last stood; a session
-  // of the account begun after that may have the new password. One with none changed while the
-  // daemon was stopped, so before it started
-  let mut given_at: HashMap<String, DateTime<Utc>> = HashMap::new();
+  let mut history = passwords::History::started(started, &standing);
   if let Err(e) = passwords::keep_first(&app.auth.db, &standing).await {
     warn!(error = %e, "the local accounts' passwords were not kept");
   }
@@ -97,10 +94,7 @@ async fn settle_sessions(app: AppState) {
         }
         let loaded = loads.borrow_and_update();
         if loaded.values.web.authentication != standing {
-          let now = Utc::now();
-          for account in passwords::given(&standing, &loaded.values.web.authentication) {
-            given_at.insert(account, now);
-          }
+          history.note(Utc::now(), &standing, &loaded.values.web.authentication);
           standing = loaded.values.web.authentication.clone();
           since = tokio::time::Instant::now();
           settled = false;
@@ -123,36 +117,34 @@ async fn settle_sessions(app: AppState) {
         if let Err(e) = crate::auth::end_sessions_without_role(&app).await {
           warn!(error = ?e, "the sessions of users with no role now were not ended");
         }
-        let at = |account: &str| given_at.get(account).copied();
-        let mut compared = match passwords::compare(&app.auth.db, &standing, at, started).await {
+        let compared = match passwords::compare(&app.auth.db, &standing, &history, started).await {
           Ok(compared) => compared,
           Err(e) => {
             warn!(error = %e, "the local accounts' passwords were not checked");
             continue;
           }
         };
-        // an account whose sessions were not ended keeps the old password kept, so the next
-        // settle tries again
+        // an account whose sessions were not ended keeps the old password kept and its history,
+        // so the next settle tries again
         let mut failed = Vec::new();
-        for account in compared.iter().filter(|c| c.changed) {
+        for account in compared.iter().filter(|c| !c.ended.is_empty()) {
           let subject = &account.subject;
-          info!(account = subject, "local account password changed; its other sessions end");
-          let ended = crate::auth::end_sessions_for_new_password(
-            &app,
-            subject,
-            account.changed_at,
-            &setters,
-          );
+          if account.changed {
+            info!(account = subject, "local account password changed; its other sessions end");
+          } else {
+            info!(account = subject, "local account password changed back; the sessions begun with another end");
+          }
+          let ended =
+            crate::auth::end_sessions_for_new_password(&app, subject, &account.ended, &setters);
           if let Err(e) = ended.await {
             warn!(error = ?e, account = subject, "the sessions of an account with a new password were not ended");
             failed.push(subject.clone());
           }
         }
-        compared.retain(|c| !failed.contains(&c.subject));
-        if let Err(e) = passwords::keep(&app.auth.db, &compared).await {
+        if let Err(e) = passwords::keep(&app.auth.db, &compared, &failed).await {
           warn!(error = %e, "the local accounts' new passwords were not kept");
         }
-        given_at.retain(|account, _| failed.contains(account));
+        history.keep_only(&failed);
       }
     }
   }
@@ -786,6 +778,49 @@ mod tests {
     pass(SETTLE).await;
     assert!(!ended(&app, &cookie).await);
     assert_eq!(status(&app, &cookie).await, 200);
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn a_session_begun_with_a_password_set_back_in_the_wait_ends() {
+    let app = app("remote_configuration = true\n", &[]).await;
+    let setter = admin(&app, "reseek").await;
+    let older = admin(&app, "reseek").await;
+    pass(SETTLE).await;
+    let changed = app.send_from(OUTSIDE, new_password(&setter, "mid")).await;
+    assert_eq!(changed.status, 200, "{:?}", changed.body);
+    pass(Duration::from_secs(2)).await;
+    let between = admin(&app, "mid").await;
+    pass(Duration::from_secs(2)).await;
+    let changed = app
+      .send_from(OUTSIDE, new_password(&setter, "reseek"))
+      .await;
+    assert_eq!(changed.status, 200, "{:?}", changed.body);
+    pass(Duration::from_secs(1)).await;
+    let after = admin(&app, "reseek").await;
+    pass(SETTLE).await;
+    until_ended(&app, &between).await;
+    for cookie in [&setter, &older, &after] {
+      assert!(!ended(&app, cookie).await);
+    }
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn a_session_begun_with_the_default_password_of_a_half_read_start_ends() {
+    let whole = "[web.authentication]\npassword = \"s3cret\"\n";
+    let app = app(whole, &[]).await;
+    let older = admin(&app, "s3cret").await;
+    pass(SETTLE).await;
+    // the start reads the file without the password line, then whole a moment later
+    std::fs::write(app.dir.path().join("config.toml"), "").unwrap();
+    let app = app.restarted(&[]).await;
+    pass(Duration::from_secs(1)).await;
+    let half = admin(&app, "reseek").await;
+    pass(Duration::from_secs(1)).await;
+    reload(&app, whole).await;
+    pass(SETTLE).await;
+    until_ended(&app, &half).await;
+    assert!(!ended(&app, &older).await);
+    assert_eq!(status(&app, &older).await, 200);
   }
 
   #[tokio::test(start_paused = true)]
