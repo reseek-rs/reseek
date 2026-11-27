@@ -249,20 +249,28 @@ fn is_under(about: &str, key: &str) -> bool {
 }
 
 /// What an error says about one of its keys, a problem of one of its entries after the entry's
-/// name.
+/// name unless the message names it.
 fn reason_for(error: &Error, key: &str) -> String {
   match error {
     Error::Invalid(invalid) => invalid
       .iter()
       .filter(|i| is_under(&i.key, key))
       .map(|i| match i.key[key.len()..].strip_prefix('.') {
-        Some(entry) => format!("{entry}: {}", i.message),
-        None => i.message.clone(),
+        Some(entry) if !names(&i.message, entry) => format!("{entry}: {}", i.message),
+        _ => i.message.clone(),
       })
       .collect::<Vec<_>>()
       .join("; "),
     other => other.to_string(),
   }
+}
+
+/// Whether `message` holds `name` as a word of its own, or as one part of a dotted key.
+fn names(message: &str, name: &str) -> bool {
+  let part = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-');
+  message.match_indices(name).any(|(at, _)| {
+    !part(message[..at].chars().next_back()) && !part(message[at + name.len()..].chars().next())
+  })
 }
 
 /// The keys of class `apply` whose value in `tree` differs from `base`.
@@ -349,8 +357,11 @@ mod tests {
       let invalid: Vec<Invalid> = o
         .api_keys
         .keys()
-        .filter(|name| name.as_str() == "bad")
-        .map(|name| Invalid::new(format!("api_keys.{name}"), "not a good name"))
+        .filter_map(|name| match name.as_str() {
+          "bad" => Some(Invalid::new("api_keys.bad", "not a good name")),
+          "worse" => Some(Invalid::new("api_keys.worse", "the key worse is no better")),
+          _ => None,
+        })
         .collect();
       if invalid.is_empty() {
         Ok(())
@@ -359,11 +370,16 @@ mod tests {
       }
     });
     let watcher = Watcher::new(layers).unwrap();
-    fs::write(&path, "[api_keys.bad]\nkey = \"k\"\n").unwrap();
+    fs::write(
+      &path,
+      "[api_keys.bad]\nkey = \"k\"\n[api_keys.worse]\nkey = \"k\"\n",
+    )
+    .unwrap();
     assert!(watcher.reload().await.is_err());
     assert_eq!(
       watcher.current().not_applied["api_keys"].reason,
-      "bad: not a good name"
+      "bad: not a good name; the key worse is no better",
+      "named before a message that does not name it"
     );
   }
 
