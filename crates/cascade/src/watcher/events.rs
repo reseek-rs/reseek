@@ -141,6 +141,16 @@ impl FileEvents {
     self.seen.writing()
   }
 
+  /// Stops waiting for the writers of `paths`: their next write marks them open again.
+  pub(super) fn forget_writers(&self, paths: &[PathBuf]) {
+    if let Some(writers) = &self.seen.writers {
+      let mut open = lock(writers);
+      for path in paths {
+        open.remove(path);
+      }
+    }
+  }
+
   /// Whether a file has a writer that has not closed it, asked whenever it is called.
   pub(super) fn writer_open(&self) -> impl Fn() -> bool + use<> {
     let seen = self.seen.clone();
@@ -752,6 +762,54 @@ mod tests {
       current.load_error
     );
     drop(held);
+  }
+
+  /// A drop-in emptied with `truncate(2)` by its path is modified and never closed.
+  #[cfg(target_os = "linux")]
+  #[tokio::test]
+  async fn a_file_modified_and_never_closed_holds_back_only_one_wait() {
+    use notify::event::DataChange;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[server]\nport = 2000\n").unwrap();
+    let drop_in = dir.path().join("config.d/10-a.toml");
+    fs::create_dir(drop_in.parent().unwrap()).unwrap();
+    fs::write(&drop_in, "[shares]\ndirectories = [\"/music\"]\n").unwrap();
+    let (watcher, mut files, events) = settling(dir.path(), None);
+    let cancel = CancellationToken::new();
+
+    let modified = notify::Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Any)));
+    files.seen.note(&modified.add_path(drop_in.clone()));
+    assert!(
+      watcher
+        .reload_settled(&mut files, &events, &cancel, SHORT)
+        .await
+    );
+    assert!(
+      watcher
+        .current()
+        .load_error
+        .as_deref()
+        .unwrap()
+        .starts_with("config.d/10-a.toml still open to the program writing it"),
+      "{:?}",
+      watcher.current().load_error
+    );
+
+    // a whole save of another file, written aside and renamed over it
+    let aside = dir.path().join("config.toml.new");
+    fs::write(&aside, "[server]\nport = 3000\n").unwrap();
+    fs::rename(&aside, &path).unwrap();
+    let started = tokio::time::Instant::now();
+    assert!(
+      watcher
+        .reload_settled(&mut files, &events, &cancel, SHORT)
+        .await
+    );
+    assert!(started.elapsed() < SHORT.limit, "{:?}", started.elapsed());
+    let current = watcher.current();
+    assert_eq!(current.values.server.port, 3000);
+    assert_eq!(current.load_error, None);
   }
 
   #[tokio::test]
