@@ -76,8 +76,18 @@ impl std::fmt::Display for NotQueued {
 pub const QUEUED_USERS: usize = 10_000;
 
 /// How many of the users in the queue may have asked from one address. A peer names itself as it
-/// likes, so without it one host could hold every place under names it makes up.
+/// likes, so without it one host could hold every place under names it makes up. IPv6 addresses
+/// count by their /64, which one host often holds whole.
 pub const QUEUED_PER_ADDRESS: usize = 100;
+
+/// The address `ip` counts against in [`QUEUED_PER_ADDRESS`]: an IPv4 address, mapped or not,
+/// as itself, and an IPv6 address as its first 64 bits.
+fn counted_as(ip: IpAddr) -> IpAddr {
+  match ip.to_canonical() {
+    IpAddr::V6(v6) => IpAddr::V6((u128::from(v6) & !u128::from(u64::MAX)).into()),
+    v4 => v4,
+  }
+}
 
 /// The longest the requests waiting may take, at the pace of the last ones, in milliseconds.
 const BACKLOG_MILLIS: f64 = 180_000.0;
@@ -373,7 +383,11 @@ impl Uploads {
         .keys()
         .filter(|&&user| !queued.contains(user))
         .count();
-    let from_there = counted.values().filter(|&&ip| ip == from).count();
+    let from = counted_as(from);
+    let from_there = counted
+      .values()
+      .filter(|&&ip| counted_as(ip) == from)
+      .count();
     (users >= QUEUED_USERS || from_there >= QUEUED_PER_ADDRESS).then_some((users, from_there))
   }
 

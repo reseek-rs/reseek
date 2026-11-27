@@ -226,6 +226,29 @@ async fn one_address_holds_no_more_than_its_share_of_the_queue() {
   assert!(queued.is_ok(), "{queued:?}");
 }
 
+#[tokio::test]
+async fn an_ipv6_prefix_holds_no_more_than_one_addresses_share_of_the_queue() {
+  let (_files, app) = shared_app("").await;
+  let uploads = &app.state.uploads;
+  let ip = |address: &str| address.parse::<std::net::IpAddr>().unwrap();
+  // names one host made up, each from an address of its own in one /64
+  for n in 0..QUEUED_PER_ADDRESS {
+    let username = format!("made-up{n}");
+    uploads.queue.enqueue(Uuid::new_v4(), &username, "file");
+    uploads.queued_from(&username, ip(&format!("2001:db8:0:7::{n:x}")));
+  }
+  assert!(uploads.queue_full("another", ip("2001:db8:0:7:ffff::1")));
+  assert!(!uploads.queue_full("another", ip("2001:db8:0:8::1")));
+  // the IPv4 peers of a dual-stack listener each count as their own address
+  for n in 0..QUEUED_PER_ADDRESS {
+    let username = format!("mapped{n}");
+    uploads.queue.enqueue(Uuid::new_v4(), &username, "file");
+    uploads.queued_from(&username, ip("::ffff:198.51.100.7"));
+  }
+  assert!(uploads.queue_full("another", ip("198.51.100.7")));
+  assert!(!uploads.queue_full("another", ip("::ffff:198.51.100.8")));
+}
+
 /// What [`silent_app`] runs: the shared files, the daemon, its server and the users' clients.
 struct Silent {
   files: tempfile::TempDir,
