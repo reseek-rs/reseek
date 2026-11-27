@@ -12,8 +12,8 @@ pub mod tracker;
 pub use events::room_of;
 
 use soulseek_client::soulseek_proto;
-use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::collections::{BTreeSet, VecDeque};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
 use api_types::live::LiveFrame;
@@ -29,7 +29,7 @@ use soulseek_client::{Client, Error as ClientError, ErrorKind};
 use soulseek_proto::RoomType;
 use soulseek_proto::server::{RoomData, RoomList};
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, info, info_span, warn};
+use tracing::{Instrument, debug, info, info_span, trace, warn};
 
 use super::Messaging;
 use super::conversations::unsent;
@@ -42,6 +42,10 @@ use tracker::{Tracker, country_of};
 /// How long the server's room list is served again before it is asked for anew.
 const LIST_FOR: Duration = Duration::from_secs(60);
 
+/// How many of the answers to our own asks for the room list are told apart from a list the
+/// server sends on its own, while their events wait to be followed.
+const ASKED_KEPT: usize = 8;
+
 /// How many of a room's latest messages a room is shown with.
 const LATEST: u32 = 250;
 
@@ -53,13 +57,23 @@ const REJOIN_AGAIN: [Duration; 2] = [Duration::from_secs(10), Duration::from_sec
 #[derive(Default)]
 pub struct Rooms {
   tracker: Mutex<Tracker>,
-  available: tokio::sync::Mutex<Option<(Instant, Arc<RoomList>)>>,
+  available: tokio::sync::Mutex<Available>,
   /// one join of a room at a time, by room name
   joins: Turns,
   /// held from reading the rooms we are in to pushing them, so the last push has the newest
   pushing: tokio::sync::Mutex<()>,
   /// canceled to stop the rooms being joined again after a loss of client events
   reading_again: Mutex<CancellationToken>,
+}
+
+/// The server's room list served for the next while, and the answers to our own asks for it.
+#[derive(Default)]
+struct Available {
+  list: Option<(Instant, Arc<RoomList>)>,
+  /// the answers asked for whose event has not come yet, oldest first; the client raises each
+  /// answer as an event too, which is not stored again, as it can come after a change that
+  /// forgot the list
+  asked: VecDeque<Weak<RoomList>>,
 }
 
 impl Rooms {
@@ -358,20 +372,30 @@ impl Messaging {
   /// Forgets the server's room list after a change to our rooms it predates, so the next look
   /// at it asks the server.
   async fn forget_room_list(&self) {
-    *self.rooms.available.lock().await = None;
+    self.rooms.available.lock().await.list = None;
   }
 
-  /// Keeps the room list the server sent, asked for or not, as the list served for the next
-  /// while. The server sends one on its own after a login and after a change to our private
-  /// rooms, and that one lists the change already.
+  /// Keeps a room list the server sent on its own as the list served for the next while. The
+  /// server sends one after a login and after a change to our private rooms, and that one lists
+  /// the change already. The answer to our own ask, kept when it came, is not kept again.
   pub async fn room_list_received(&self, list: Arc<RoomList>) {
+    let mut available = self.rooms.available.lock().await;
+    let asked = available
+      .asked
+      .iter()
+      .position(|answer| std::ptr::eq(answer.as_ptr(), Arc::as_ptr(&list)));
+    if let Some(at) = asked {
+      // answers come in the order they were asked, so the ones before it lost their event
+      available.asked.drain(..=at);
+      return trace!("room list asked for received");
+    }
     debug!(
       public = list.public.len(),
       owned = list.owned.len(),
       member = list.private.len(),
       "room list received"
     );
-    *self.rooms.available.lock().await = Some((Instant::now(), list));
+    available.list = Some((Instant::now(), list));
   }
 
   /// Pushes the rooms we are in. One push at a time, each reading the rooms after the one
@@ -842,13 +866,20 @@ impl Messaging {
 
   pub(super) async fn available_rooms(&self) -> Result<Vec<RoomInfo>, ApiError> {
     let list = {
-      let mut cached = self.rooms.available.lock().await;
-      match cached.as_ref().filter(|(at, _)| at.elapsed() < LIST_FOR) {
+      let mut available = self.rooms.available.lock().await;
+      match available
+        .list
+        .as_ref()
+        .filter(|(at, _)| at.elapsed() < LIST_FOR)
+      {
         Some((_, list)) => list.clone(),
         None => {
-          // the answer is kept here at once, and once more as a list received
           let list = self.client().rooms().list().await.map_err(unsent)?;
-          *cached = Some((Instant::now(), list.clone()));
+          available.list = Some((Instant::now(), list.clone()));
+          if available.asked.len() == ASKED_KEPT {
+            available.asked.pop_front();
+          }
+          available.asked.push_back(Arc::downgrade(&list));
           list
         }
       }
@@ -1555,5 +1586,36 @@ mod tests {
       .map(|room| (room.name.as_str(), room.is_owned))
       .collect();
     assert_eq!(shown, [("indie", false), ("ours", true)]);
+  }
+
+  #[tokio::test]
+  async fn a_room_list_asked_for_is_not_kept_again_after_a_change_forgot_it() {
+    let app = soulseek::app(TRUSTED).await;
+    let mut server = Server::silent().await;
+    server.login(&app).await;
+    let messaging = &app.state.messaging;
+    let ask = messaging.available_rooms();
+    let forget = messaging.forget_room_list();
+    tokio::pin!(ask, forget);
+    tokio::select! {
+      _ = &mut ask => panic!("the list was served before the server was asked"),
+      () = server.received(|r| matches!(r, ServerRequest::RoomList).then_some(())) => {}
+    }
+    // the forget waits for the list behind the ask, so it runs before the answer's event
+    tokio::select! {
+      biased;
+      () = &mut forget => panic!("the list was forgotten while the ask held it"),
+      () = std::future::ready(()) => {}
+    }
+    server.send(vec![ServerResponse::RoomList(RoomList::default())]);
+    let (asked, ()) = tokio::join!(ask, forget);
+    asked.unwrap();
+    let followed = tokio::time::timeout(Duration::from_secs(5), async {
+      while !messaging.rooms.available.lock().await.asked.is_empty() {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+      }
+    });
+    assert!(followed.await.is_ok(), "the answer's event never came");
+    assert!(messaging.rooms.available.lock().await.list.is_none());
   }
 }
