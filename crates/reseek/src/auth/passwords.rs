@@ -210,8 +210,9 @@ pub async fn compare(
   .map_err(|e| DbError::Task(e.to_string()))
 }
 
-/// Keeps what `compared` has to keep, with the time each changed, or now for one kept first,
-/// but for the accounts of `failed`, whose old password stays kept.
+/// Keeps what `compared`, every account the options give, has to keep, with the time each
+/// changed, or now for one kept first, but for the accounts of `failed`, whose old password
+/// stays kept. What was kept for an account the options no longer have is deleted.
 pub async fn keep(db: &Database, compared: &[Compared], failed: &[String]) -> Result<(), DbError> {
   let now = Utc::now();
   let rows: Vec<(String, String, String)> = compared
@@ -222,11 +223,18 @@ pub async fn keep(db: &Database, compared: &[Compared], failed: &[String]) -> Re
       Some((c.subject.clone(), c.fingerprint.clone()?, timestamp(at)))
     })
     .collect();
-  if rows.is_empty() {
-    return Ok(());
-  }
+  let standing: Vec<String> = compared.iter().map(|c| c.subject.clone()).collect();
   db.write(move |conn| {
     let tx = conn.transaction()?;
+    let kept: Vec<String> = {
+      let mut statement = tx.prepare("SELECT subject FROM passwords")?;
+      statement
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    for subject in kept.iter().filter(|s| !standing.contains(s)) {
+      tx.execute("DELETE FROM passwords WHERE subject = ?1", params![subject])?;
+    }
     for (subject, fingerprint, at) in rows {
       tx.execute(
         "INSERT INTO passwords (subject, fingerprint, changed_at) VALUES (?1, ?2, ?3) ON \
@@ -512,6 +520,19 @@ mod tests {
         ("local:viewer".to_string(), true)
       ]
     );
+
+    // removed, an account has nothing kept
+    assert_eq!(compare(&plain, false).await, unchanged);
+    let subjects: Vec<String> = db
+      .read(|conn| {
+        conn
+          .prepare("SELECT subject FROM passwords")?
+          .query_map([], |row| row.get(0))?
+          .collect()
+      })
+      .await
+      .unwrap();
+    assert_eq!(subjects, ["local:reseek"]);
   }
 
   fn changer(session: &str) -> Changer {
