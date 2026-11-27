@@ -676,19 +676,15 @@ impl Downloads {
     }
   }
 
-  /// Whether the server says `username` is offline now, kept for their downloads; none when it
-  /// cannot be asked or does not answer.
+  /// Whether the server says `username` is offline now; none when it cannot be asked or does
+  /// not answer. The answer reaches their downloads as the status event every reply makes.
   pub(super) async fn status_offline(&self, username: &str) -> Option<bool> {
     let client = self.network.client();
     if !client.state().is_logged_in() {
       return None;
     }
     match self.users.status_of(client, username).await {
-      Ok(status) => {
-        let offline = status.presence == api_types::users::UserPresence::Offline;
-        self.away.heard(username, offline);
-        Some(offline)
-      }
+      Ok(status) => Some(status.presence == api_types::users::UserPresence::Offline),
       Err(e) => {
         debug!(username, error = %e, "status of a download's user not read");
         None

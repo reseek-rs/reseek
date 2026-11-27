@@ -1478,6 +1478,54 @@ async fn a_download_whose_user_goes_offline_waits_for_them_without_spending_its_
   assert!(!retrying.waits_for_user());
 }
 
+/// A status check that resumes only after the server's answer and newer word on the user were
+/// both taken leaves the newer word: the server says bob is offline, then that he is back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_status_check_resumed_late_leaves_the_newer_word_on_the_user() {
+  use super::away::Heard;
+  use soulseek_proto::server::UserStatus;
+  use soulseek_proto::{ServerRequest, ServerResponse, UserPresence};
+
+  let app = crate::testing::soulseek::app(TRUSTED).await;
+  let mut server = crate::testing::soulseek::Server::silent().await;
+  server.login(&app).await;
+  let downloads = &app.state.downloads;
+  let _bob = downloads.away.follow("bob");
+  let mut carol = downloads.away.follow("carol");
+  let mut asking = Box::pin(downloads.status_offline("bob"));
+  let asked = |request: &ServerRequest| {
+    matches!(request, ServerRequest::GetStatus(asked) if asked.username == "bob").then_some(())
+  };
+  tokio::select! {
+    biased;
+    () = server.received(asked) => {}
+    answer = &mut asking => panic!("answered before the server was asked: {answer:?}"),
+  }
+  // the check is not polled again until every status below was taken; carol's, sent last, says
+  // when
+  let status = |username: &str, presence| {
+    ServerResponse::GetStatus(UserStatus {
+      username: username.into(),
+      presence,
+      is_privileged: false,
+    })
+  };
+  server.send(vec![
+    status("bob", UserPresence::Offline),
+    status("bob", UserPresence::Online),
+    status("carol", UserPresence::Offline),
+  ]);
+  tokio::time::timeout(
+    std::time::Duration::from_secs(5),
+    carol.wait_for(|heard| *heard == Heard::Offline),
+  )
+  .await
+  .expect("the statuses are taken")
+  .unwrap();
+  assert_eq!(asking.await, Some(true), "the answer to the check");
+  assert_eq!(downloads.away.now("bob"), Heard::Nothing);
+}
+
 /// A try that finds its user offline does not count: the download waits for them to come back,
 /// and is asked of them then.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

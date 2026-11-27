@@ -375,7 +375,7 @@ impl Downloads {
       let every = retry_wait(checks, retry.delay, retry.max_delay);
       let checked = async {
         tokio::time::sleep(every).await;
-        // the answer is kept for every download of theirs, which it ends the wait of
+        // the reply's status event ends the wait
         self.check_user(&record.username, every).await;
       };
       tokio::select! {
