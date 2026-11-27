@@ -2361,6 +2361,29 @@ async fn a_status_touch_dropped_for_a_full_writer_still_pushes_the_groups_it_mov
 }
 
 #[tokio::test]
+async fn a_dropped_touch_of_our_own_asks_reply_still_pushes_what_the_asker_took_first() {
+  let (app, _server, mut stream) = alice_watched_sharing().await;
+  let users = &app.state.users;
+  while users.toucher.send("someone", Touch::RoomMessage).await {}
+  // the asker takes the reply before the follower takes its event, and leaves the push to it
+  let before = users.reported().of("alice").unwrap();
+  let moved = users.status_fetched("alice", UserPresence::Away, true, &before);
+  assert!(!moved);
+  let received = users
+    .status_received("alice", UserPresence::Away, true, true)
+    .await;
+  let touch = Touch::Status {
+    presence: UserPresence::Away,
+    is_privileged: true,
+  };
+  users.touch_watched("alice", &received, touch).await;
+  users.touch("bob", Touch::Transfer).await;
+  let pushed = pushed_before(&mut stream, "alice", "bob").await;
+  assert_eq!(pushed.len(), 1, "{pushed:?}");
+  assert_eq!(pushed[0]["isPrivileged"], true);
+}
+
+#[tokio::test]
 async fn a_profile_refresh_pushes_the_users_summary_once() {
   use soulseek_proto::frame::FrameKind;
   use soulseek_proto::peer::UserInfo;

@@ -403,7 +403,8 @@ pub struct StatusReceived {
   pub watched: bool,
   /// the user's presence before it, when it was known in this server session
   pub previous: Option<UserPresence>,
-  /// it moved the groups of a watched user with a row, whose summary the touch pushes
+  /// it moved the groups of a watched user with a row, whose summary the touch pushes, or may
+  /// have: the reply to our own ask, which the asker may have taken first
   moved: bool,
 }
 
@@ -999,13 +1000,13 @@ impl Directory {
     StatusReceived {
       watched,
       previous,
-      moved: moved && watched,
+      moved: watched && (moved || (asked && self.known.has(username))),
     }
   }
 
   /// Touches the watched `username`'s row with the status `received` came from, which pushes
   /// their summary. A touch dropped because the writer is behind pushes nothing, so the summary
-  /// of a user whose groups the status moved is pushed here then.
+  /// of a user whose groups the status moved, or may have moved, is pushed here then.
   pub async fn touch_watched(&self, username: &str, received: &StatusReceived, touch: Touch) {
     if !self.toucher.send(username, touch).await && received.moved {
       debug!(
