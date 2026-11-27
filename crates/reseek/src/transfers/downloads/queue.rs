@@ -86,9 +86,7 @@ impl Downloads {
         )));
       }
     };
-    if self.running(id) {
-      lock(&self.asked).insert(id, Instant::now());
-    }
+    self.asked_now(id);
     self.heard_from(username);
     self.place(record.id, place).await;
     info!(%id, username, ?place, "place in the peer's queue");
@@ -222,9 +220,14 @@ impl Downloads {
       .await
   }
 
-  /// Whether the download `id` has a task running.
-  fn running(&self, id: Uuid) -> bool {
-    lock(&self.in_flight).contains_key(&id)
+  /// Notes that the download `id` asked its peer for its place now, while its task runs. The
+  /// note is made under the lock of the tasks, which [`Downloads::forget`] takes before it drops
+  /// the note, so no note outlasts its task.
+  fn asked_now(&self, id: Uuid) {
+    let in_flight = lock(&self.in_flight);
+    if in_flight.contains_key(&id) {
+      lock(&self.asked).insert(id, Instant::now());
+    }
   }
 }
 

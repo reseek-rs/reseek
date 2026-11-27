@@ -531,9 +531,9 @@ impl Downloads {
   /// Lets go of the download `id` once its task has written how it ended, removing it from the
   /// listings when that was asked for meanwhile.
   async fn forget(&self, id: Uuid) {
+    let entry = lock(&self.in_flight).remove(&id);
     lock(&self.asked).remove(&id);
     self.starts.forget(id);
-    let entry = lock(&self.in_flight).remove(&id);
     if entry.is_some_and(|entry| entry.removing()) {
       let download = api_types::transfers::TransferDirection::Download;
       match removal::remove(&self.db, download, id).await {
