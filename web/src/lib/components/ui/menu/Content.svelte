@@ -10,11 +10,10 @@
   let {
     sideOffset = 4,
     class: className,
-    onInteractOutside,
     onCloseAutoFocus,
     customAnchor,
     ...rest
-  }: DropdownMenu.ContentProps = $props();
+  }: Omit<DropdownMenu.ContentProps, "onInteractOutside"> = $props();
 
   // in a LazyRoot there is no trigger of the menu's own: it hangs from the button that opened
   // it, which gets focus back on close
@@ -33,10 +32,9 @@
     )}
     customAnchor={hangsFrom()}
     onInteractOutside={(e) => {
-      onInteractOutside?.(e);
       // a press on the button the menu hangs from only closes it
       const from = hangsFrom();
-      if (!e.defaultPrevented) switchOnPress(e, from instanceof HTMLElement ? from : null);
+      switchOnPress(e, from instanceof HTMLElement ? from : null);
     }}
     onCloseAutoFocus={(e) => {
       if (onCloseAutoFocus) onCloseAutoFocus(e);
