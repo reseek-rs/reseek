@@ -23,8 +23,9 @@
     const now = fill;
     const finished = now === "done" && before !== null && before !== "done";
     before = now;
+    if (!finished) return;
     const ms = motionFlash();
-    if (!finished || !ms) return;
+    if (!ms) return;
     flash = true;
     const timer = setTimeout(() => (flash = false), ms);
     return () => clearTimeout(timer);
