@@ -16,7 +16,7 @@ use uuid::Uuid;
 use super::categories::UNFINISHED;
 use super::downloads::{FileRequest, Group};
 use super::state::column;
-use super::{ASKED_ORDER, COLUMNS, Record, direction_at, direction_text, readable};
+use super::{ASKED_ORDER, COLUMNS, Record, direction_text, readable};
 use crate::db::{Database, DbError, timestamp};
 
 /// Why a transfer left unfinished at the last stop ended.
@@ -35,13 +35,17 @@ pub async fn end_unfinished(db: &Database) -> Result<usize, DbError> {
   let ended = db
     .write(move |conn| {
       let tx = conn.transaction()?;
+      // read as stored, for the log only, so a row no build wrote ends like the others
       let unfinished = {
         let mut select = tx.prepare(&format!(
           "SELECT Id, Direction FROM Transfers WHERE {UNFINISHED} AND Paused = 0"
         ))?;
         select
           .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, direction_at(row, 1)?))
+            Ok((
+              row.get::<_, Option<String>>(0)?,
+              row.get::<_, Option<String>>(1)?,
+            ))
           })?
           .collect::<rusqlite::Result<Vec<_>>>()?
       };
@@ -71,7 +75,11 @@ pub async fn end_unfinished(db: &Database) -> Result<usize, DbError> {
     })
     .await?;
   for (id, direction) in &ended {
-    debug!(id, ?direction, "unfinished transfer ended");
+    debug!(
+      id = id.as_deref(),
+      direction = direction.as_deref(),
+      "unfinished transfer ended"
+    );
   }
   if !ended.is_empty() {
     info!(transfers = ended.len(), "unfinished transfers ended");
@@ -232,6 +240,11 @@ mod tests {
         TransferStates::Completed(TransferOutcome::Succeeded),
       )
     };
+    let odd = Row::new(
+      "dave",
+      TransferDirection::Upload,
+      TransferStates::InProgress,
+    );
     insert(
       &db,
       vec![
@@ -239,10 +252,21 @@ mod tests {
         removed.clone(),
         uploading.clone(),
         done.clone(),
+        odd.clone(),
       ],
     )
     .await;
-    assert_eq!(end_unfinished(&db).await.unwrap(), 3);
+    // a direction no build writes
+    let odd_id = odd.id.to_string();
+    db.write(move |conn| {
+      conn.execute(
+        "UPDATE Transfers SET Direction = 'Sideways' WHERE Id = ?1",
+        [odd_id],
+      )
+    })
+    .await
+    .unwrap();
+    assert_eq!(end_unfinished(&db).await.unwrap(), 4);
     let rows: Vec<(String, TransferStates, Option<String>, bool)> = db
       .read(|conn| {
         conn
@@ -266,7 +290,7 @@ mod tests {
         );
       }
     }
-    for row in [&queued, &removed, &uploading] {
+    for row in [&queued, &removed, &uploading, &odd] {
       let id = row.id;
       let history = db.read(move |conn| store::history(conn, id)).await.unwrap();
       let states: Vec<TransferStates> = history.iter().map(|change| change.state).collect();
