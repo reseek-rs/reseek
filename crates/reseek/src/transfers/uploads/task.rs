@@ -120,7 +120,7 @@ impl Drop for Held {
 
 impl Uploads {
   /// Starts the task of the upload `record` of the file `located`, which stops when `cancel`
-  /// is canceled.
+  /// is canceled. Its user is watched while the upload queue holds an upload of theirs.
   pub(super) fn spawn(&self, record: Record, located: Located, cancel: CancellationToken) {
     let this = self.this();
     let span = info_span!(
@@ -131,9 +131,15 @@ impl Uploads {
     );
     self.tasks.spawn(
       async move {
-        let id = record.id;
+        let (id, username) = (record.id, record.username.clone());
         this.run(record, located, &cancel).await;
         this.forget(id).await;
+        // without the network the daemon is stopping, which ends every watch
+        if !this.shutdown.is_cancelled()
+          && let Ok(client) = this.client()
+        {
+          this.users.uploads_ended(&client, &username).await;
+        }
       }
       .instrument(span),
     );
@@ -145,7 +151,10 @@ impl Uploads {
       Ok(client) => client,
       Err(e) => return self.fail(&mut record, &Failed::Here(e), None).await,
     };
-    self.users.watch(&client, &record.username).await;
+    self
+      .users
+      .watch_for_uploads(&client, &record.username)
+      .await;
     debug!(filename = record.filename, "upload task started");
     let username = record.username.clone();
     let users = self.users.clone();

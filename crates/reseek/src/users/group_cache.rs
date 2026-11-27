@@ -206,6 +206,9 @@ pub struct GroupCache {
   /// by hand since it was asked for, so its answer does not watch them; taken with `watched`
   /// held
   asking: Mutex<HashMap<String, bool>>,
+  /// the watched users watched for their uploads alone, unwatched once the last ends; taken with
+  /// `watched` held
+  for_uploads: Mutex<HashSet<String>>,
   /// one watch of a user at a time
   watching: Turns,
   /// how many watches of each user completed while another caller waited for their turn, so
@@ -283,6 +286,15 @@ impl GroupCache {
   pub async fn regrouping(&self) -> tokio::sync::MutexGuard<'_, ()> {
     self.regrouping.lock().await
   }
+}
+
+/// Why a user is watched, as far as when the watch ends goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reason {
+  /// their uploads alone: the watch ends with the last of them
+  Uploads,
+  /// anything else, which keeps them watched for the session
+  Kept,
 }
 
 /// Why a user's status was not read.
@@ -380,9 +392,14 @@ impl<'a> WatchTurn<'a> {
   /// The watch made under this turn completed: counted when someone waits for the turn.
   fn completed(&self) {
     let mut watches = lock(&self.groups.watches);
-    if self.turn.as_ref().is_some_and(|turn| !turn.alone()) {
+    if self.waited_for() {
       *watches.entry(self.username.to_string()).or_default() += 1;
     }
+  }
+
+  /// Whether someone waits for the turn held.
+  fn waited_for(&self) -> bool {
+    self.turn.as_ref().is_some_and(|turn| !turn.alone())
   }
 }
 
@@ -723,12 +740,12 @@ impl Directory {
 
   /// Asks the server to tell us when `username`'s status changes, and takes their statistics
   /// and status now. A user the server watches already in this session is left as is; a
-  /// failure is logged and changes nothing else.
+  /// failure is logged and changes nothing else. The watch lasts the session.
   pub async fn watch(&self, client: &Client, username: &str) {
-    if self.is_watched(username) {
+    if self.kept_watched(username) {
       return;
     }
-    if let Err(e) = self.watch_once(client, username, false).await {
+    if let Err(e) = self.watch_once(client, username, false, Reason::Kept).await {
       warn!(username, error = %e, "user not watched");
     }
   }
@@ -736,37 +753,65 @@ impl Directory {
   /// Watches `username` as [`Directory::watch`] does, and says how it went, for a caller that
   /// handles a failure itself.
   pub async fn try_watch(&self, client: &Client, username: &str) -> Result<(), ClientError> {
-    if self.is_watched(username) {
+    if self.kept_watched(username) {
       return Ok(());
     }
-    self.watch_once(client, username, false).await
+    self.watch_once(client, username, false, Reason::Kept).await
   }
 
   /// Watches `username` as [`Directory::watch`] does, asking the server again even when it
   /// watches them already, and says how it went.
   pub async fn watch_again(&self, client: &Client, username: &str) -> Result<(), ClientError> {
-    self.watch_once(client, username, true).await
+    // kept for the session whether it watched them already or not
+    self.kept_watched(username);
+    self.watch_once(client, username, true, Reason::Kept).await
+  }
+
+  /// Watches `username` as [`Directory::watch`] does for an upload of theirs. A user watched
+  /// for nothing else is unwatched by [`Directory::uploads_ended`] once the upload queue holds
+  /// none of theirs.
+  pub async fn watch_for_uploads(&self, client: &Client, username: &str) {
+    if let Err(e) = self
+      .watch_once(client, username, false, Reason::Uploads)
+      .await
+    {
+      warn!(username, error = %e, "user not watched");
+    }
+  }
+
+  /// Whether `username` is watched, kept watched for the session from here on when they are,
+  /// decided with the watched users held, as [`Directory::uploads_ended`] unwatches with them
+  /// held.
+  fn kept_watched(&self, username: &str) -> bool {
+    let watched = self.groups.watched();
+    lock(&self.groups.for_uploads).remove(username);
+    watched.contains(username)
   }
 
   /// The watch itself, one per user at a time: a caller that waited while another watched the
   /// user takes that watch for its own, and one that finds the user watched already is done
-  /// unless `again`.
+  /// unless `again`. A watch for a `reason` other than uploads keeps the user watched for the
+  /// session.
   async fn watch_once(
     &self,
     client: &Client,
     username: &str,
     again: bool,
+    reason: Reason,
   ) -> Result<(), ClientError> {
     let (mut turn, before) = self.groups.line_up(username);
     turn.take().await;
     if self.groups.watch_count(username) != before || (!again && self.is_watched(username)) {
+      if reason == Reason::Kept {
+        lock(&self.groups.for_uploads).remove(username);
+      }
       return Ok(());
     }
     let asking = Asking::new(&self.groups, username);
     let watched = client.users().watch(username).await?;
     // the server watches them from its answer on, so the status asked for next, which the
     // follower of the client's events may take before this task does, finds them watched
-    if !self.watch_taken(asking) {
+    if !self.watch_taken(asking, reason) {
       debug!(
         username,
         "user forgotten while the watch was asked for; not watched"
@@ -789,9 +834,49 @@ impl Directory {
     let (mut turn, _) = self.groups.line_up(username);
     turn.take().await;
     client.users().unwatch(username).await?;
-    self.groups.watched().remove(username);
+    let mut watched = self.groups.watched();
+    watched.remove(username);
+    lock(&self.groups.for_uploads).remove(username);
     debug!(username, "user no longer watched");
     Ok(())
+  }
+
+  /// An upload task of `username` ended: a user watched for their uploads alone of whom the
+  /// upload queue holds none is unwatched, so the cache may forget them. Decided in their watch
+  /// turn, so an upload queued before it keeps the watch, and one whose task starts after it
+  /// watches them again. A user someone else waits to watch stays watched, as that caller may
+  /// take a watch completed before as its own.
+  pub async fn uploads_ended(&self, client: &Client, username: &str) {
+    let (mut turn, _) = self.groups.line_up(username);
+    turn.take().await;
+    if turn.waited_for() {
+      return;
+    }
+    // read before any lock of the cache's, as the queue looks up groups here with its own held
+    let queued = self
+      .groups
+      .facts
+      .queued
+      .get()
+      .is_some_and(|users| users().iter().any(|user| user == username));
+    if queued {
+      return;
+    }
+    {
+      let mut watched = self.groups.watched();
+      if !lock(&self.groups.for_uploads).remove(username) {
+        return;
+      }
+      watched.remove(username);
+    }
+    match client.users().unwatch(username).await {
+      Ok(()) => debug!(username, "user watched for their uploads no longer watched"),
+      Err(e) => debug!(
+        username,
+        error = %e,
+        "the server was not told to stop watching a user whose uploads ended"
+      ),
+    }
   }
 
   /// Whether the server knows `username`: watching them is the one question it answers no to.
@@ -821,11 +906,16 @@ impl Directory {
   /// were forgotten since it was asked for; says whether they were. Decided with the watched
   /// users held, as [`Directory::forget_watched`] forgets with them held, so the two never
   /// cross.
-  fn watch_taken(&self, asking: Asking<'_>) -> bool {
+  fn watch_taken(&self, asking: Asking<'_>, reason: Reason) -> bool {
     let mut watched = self.groups.watched();
     if asking.forgotten() {
       return false;
     }
+    let mut for_uploads = lock(&self.groups.for_uploads);
+    match reason {
+      Reason::Uploads => for_uploads.insert(asking.username.clone()),
+      Reason::Kept => for_uploads.remove(&asking.username),
+    };
     watched.insert(asking.username.clone());
     true
   }
@@ -1065,7 +1155,11 @@ impl Directory {
   /// on them is told of.
   pub fn session_ended(&self) {
     self.stop_reading_presence();
-    self.groups.watched().clear();
+    {
+      let mut watched = self.groups.watched();
+      watched.clear();
+      lock(&self.groups.for_uploads).clear();
+    }
     let known: HashMap<String, UserPresence> = self
       .buddy_names()
       .into_iter()

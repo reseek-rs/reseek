@@ -238,7 +238,7 @@ impl Uploads {
       return;
     };
     for username in self.queue.users() {
-      self.users.watch(&client, &username).await;
+      self.users.watch_for_uploads(&client, &username).await;
     }
   }
 
