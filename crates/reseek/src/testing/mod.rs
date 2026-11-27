@@ -390,3 +390,15 @@ pub async fn grants(bucket: &crate::transfers::bucket::TokenBucket) -> u32 {
   tokio::time::resume();
   granted.expect("nothing cancels it")
 }
+
+/// Waits until the speed of a transfer of `app`'s is kept, which its first progress does.
+pub async fn speed_kept(app: &TestApp) {
+  let shown = app.state.network.shown_speeds();
+  tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    while shown.kept() == 0 {
+      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+  })
+  .await
+  .expect("the transfer's progress keeps a speed");
+}

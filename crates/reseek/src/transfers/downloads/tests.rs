@@ -10,7 +10,7 @@ use api_types::transfers::{TransferOutcome, TransferStates, UserResponse};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::testing::{TRUSTED, TestApp, app, request};
+use crate::testing::{TRUSTED, TestApp, app, request, speed_kept};
 use crate::transfers::state::State;
 use crate::transfers::{Record, store};
 
@@ -1670,18 +1670,6 @@ async fn a_login_has_the_downloads_waiting_for_an_offline_user_try_them_again() 
   )
   .await;
   assert!(back.is_ok(), "the login left bob offline");
-}
-
-/// Waits until the speed of a transfer of `app`'s is kept, which its first progress does.
-async fn speed_kept(app: &TestApp) {
-  let shown = app.state.network.shown_speeds();
-  tokio::time::timeout(std::time::Duration::from_secs(5), async {
-    while shown.kept() == 0 {
-      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-  })
-  .await
-  .expect("the transfer's progress keeps a speed");
 }
 
 /// A user who goes offline while their file moves does not stop it: it arrives, and its speed

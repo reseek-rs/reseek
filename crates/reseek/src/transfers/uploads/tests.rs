@@ -20,7 +20,7 @@ use super::{InFlight, NotQueued};
 use crate::network::resolvers::tests::{edges, exposed, from};
 use crate::network::resolvers::{enqueue_download, place_in_queue, user_info};
 use crate::testing::soulseek::Server;
-use crate::testing::{TestApp, app, request};
+use crate::testing::{TestApp, app, request, speed_kept};
 use crate::transfers::fixtures::{Row, insert};
 use crate::transfers::state::State;
 use crate::transfers::{Record, store};
@@ -384,18 +384,6 @@ async fn completed(app: &TestApp, filename: &'static str) -> Record {
   })
   .await
   .expect("the upload ends")
-}
-
-/// Waits until the speed of a transfer of `app`'s is kept, which its first progress does.
-async fn speed_kept(app: &TestApp) {
-  let shown = app.state.network.shown_speeds();
-  tokio::time::timeout(std::time::Duration::from_secs(5), async {
-    while shown.kept() == 0 {
-      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-  })
-  .await
-  .expect("the upload's progress keeps a speed");
 }
 
 /// An upload keeps the speed it shows while it moves and lets go of it once it ended, whether
