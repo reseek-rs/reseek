@@ -497,9 +497,8 @@ impl Uploads {
       }
       Err(Refusal::Failed(error)) => return Err(NotQueued::Failed(error)),
     };
-    if self.enqueue(username, filename, located, true).await? == Enqueued::Queued {
-      self.queued_from(username, from);
-    }
+    self.enqueue(username, filename, located, true).await?;
+    self.queued_from(username, from);
     let total = millis(started);
     enqueue.latency.observe(total);
     enqueue.latency_current.update(total);
@@ -585,7 +584,10 @@ impl Uploads {
   ) -> Result<Enqueued, NotQueued> {
     match self.decide(username, None, filename, sees).await {
       Ok(Decided::Already) => Ok(Enqueued::Already),
-      Ok(Decided::Accepted(located)) => Ok(self.enqueue(username, filename, located, false).await?),
+      Ok(Decided::Accepted(located)) => {
+        self.enqueue(username, filename, located, false).await?;
+        Ok(Enqueued::Queued)
+      }
       Err(Refusal::Peer(reason)) => Err(NotQueued::Refused(reason.to_string())),
       Err(Refusal::Later) => Err(NotQueued::Later),
       Err(Refusal::Failed(error)) => Err(NotQueued::Failed(error)),

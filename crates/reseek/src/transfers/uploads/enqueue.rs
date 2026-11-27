@@ -1,8 +1,7 @@
-//! Recording an accepted upload request: unless an upload of the same file to the same user is
-//! queued or running already, a record is written, the user's earlier records of the file are
-//! taken out of the listings, the upload enters the queue, and its task starts. An upload whose
-//! client side has ended does not stand for a new request, though its task may not have written
-//! how it ended yet: a peer told the upload failed asks again at once.
+//! Recording an accepted upload request: a record is written, the user's earlier records of the
+//! file are taken out of the listings, the upload enters the queue, and its task starts. An
+//! upload whose client side has ended does not stand for a new request, though its task may not
+//! have written how it ended yet: a peer told the upload failed asks again at once.
 
 use std::collections::{HashMap, HashSet};
 
@@ -11,7 +10,7 @@ use api_types::transfers::TransferDirection;
 use reseek_shares::lock;
 use rusqlite::{Connection, params};
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::warn;
 use uuid::Uuid;
 
 use super::intake::Located;
@@ -25,6 +24,10 @@ use crate::users::Touch;
 const DUPLICATE: &str =
   "A duplicate upload of the same file to the same user is already registered";
 
+/// Why a record is not written when an upload of the file to the user is queued or running,
+/// which the caller looked for under the same turn.
+const OUTSIDE_TURN: &str = "an upload of the file was queued outside the user's turn";
+
 /// What the transaction found or wrote.
 enum Written {
   /// an upload of the file to the user is queued or running already: these
@@ -35,7 +38,7 @@ enum Written {
   Inserted(Vec<Removed>),
 }
 
-/// What an enqueue did with the file.
+/// What a send did with a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Enqueued {
   /// a record was written and its upload queued
@@ -140,8 +143,8 @@ impl Uploads {
   }
 
   /// Records the upload of `filename` to `username` from `located`, queues it and starts its
-  /// task; an upload of the file to the user queued or running already stands for it. Runs
-  /// under the user's turn, on the task of the request or send that holds it; `asked` when the
+  /// task. Runs under the user's turn, on the task of the request or send that holds it, after
+  /// [`Uploads::sending_already`] found no upload of the file to the user; `asked` when the
   /// user asked for the file, rather than our sending it.
   pub(super) async fn enqueue(
     &self,
@@ -149,7 +152,7 @@ impl Uploads {
     filename: &str,
     located: Located,
     asked: bool,
-  ) -> Result<Enqueued, String> {
+  ) -> Result<(), String> {
     let client = self.client()?;
     let record = Record::upload(username, filename, located.size);
     let id = record.id;
@@ -189,13 +192,8 @@ impl Uploads {
       Ok(Written::Inserted(superseded)) => superseded,
       Ok(Written::Running(ids)) => {
         lock(&self.in_flight).remove(&id);
-        info!(
-          username,
-          filename,
-          ?ids,
-          "upload already queued or in progress"
-        );
-        return Ok(Enqueued::Already);
+        warn!(username, filename, ?ids, "{OUTSIDE_TURN}");
+        return Err(OUTSIDE_TURN.to_string());
       }
       Ok(Written::Duplicate) => {
         lock(&self.in_flight).remove(&id);
@@ -213,6 +211,6 @@ impl Uploads {
       .publish(LiveFrame::TransfersAdded(Box::new(record.transfer())));
     self.queue.enqueue(id, username, filename);
     self.spawn(record, located, cancel);
-    Ok(Enqueued::Queued)
+    Ok(())
   }
 }
