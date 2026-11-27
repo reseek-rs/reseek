@@ -259,7 +259,8 @@ describe("browse progress", () => {
     }
   });
 
-  it("forgets a folder line's tick once anything unticks a file under it", async () => {
+  /** Shows alice's share of `files` in `@@abcde\\Artist\\Album`, every folder open */
+  const album = async (files: string[]) => {
     const net = fakeNetwork((url) => {
       if (url.pathname.endsWith("/transfers/downloads/jobs")) return { id: "j", groups: [] };
       if (!url.pathname.endsWith("/users/alice/browse")) return undefined;
@@ -271,7 +272,7 @@ describe("browse progress", () => {
       const directories = [
         dir("@@abcde"),
         dir("@@abcde\\Artist"),
-        dir("@@abcde\\Artist\\Album", ["1.flac", "2.flac"]),
+        dir("@@abcde\\Artist\\Album", files),
         dir("@@abcde\\Other", ["x.flac"])
       ];
       return {
@@ -308,24 +309,41 @@ describe("browse progress", () => {
       const body = jobs.at(-1)!.body as { groups: { folder: string | null }[] };
       return body.groups.map((g) => g.folder);
     };
-    const album = "@@abcde\\Artist\\Album";
+    return { click, download };
+  };
+
+  it("forgets a folder line's tick once a click on a file's row replaces the selection", async () => {
+    const { click, download } = await album(["1.flac"]);
+    click("Select every file in Artist");
+    const row = [...document.querySelectorAll<HTMLElement>("[data-line]")].find((l) =>
+      l.dataset.line?.endsWith("1.flac")
+    )!;
+    row.click();
+    flushSync();
+    expect(browser.selected.size).toBe(1);
+    expect(await download()).toEqual(["@@abcde\\Artist\\Album"]);
+  });
+
+  it("forgets a folder line's tick once anything unticks a file under it", async () => {
+    const { click, download } = await album(["1.flac", "2.flac"]);
+    const albumPath = "@@abcde\\Artist\\Album";
 
     // the artist's line, then the album's after a Clear
     click("Select every file in Artist");
     expect(await download()).toEqual(["@@abcde\\Artist"]);
     click("Select every file in Album");
-    expect(await download(), "after a Clear").toEqual([album]);
+    expect(await download(), "after a Clear").toEqual([albumPath]);
 
     // the album unticked by its line and ticked again
     click("Select every file in Artist");
     click("Select every file in Album");
     click("Select every file in Album");
-    expect(await download(), "the album's line unticked").toEqual([album]);
+    expect(await download(), "the album's line unticked").toEqual([albumPath]);
 
     // the album's files unticked one by one and ticked again
     click("Select every file in Artist");
     for (const file of ["1.flac", "2.flac", "1.flac", "2.flac"]) click(`Select ${file}`);
-    expect(await download(), "the files unticked").toEqual([album]);
+    expect(await download(), "the files unticked").toEqual([albumPath]);
 
     // everything unticked through Select all, then the album
     click("Select every file in Artist");
@@ -333,7 +351,7 @@ describe("browse progress", () => {
     click("Select all");
     expect(browser.selected.size, "Select all unticks").toBe(0);
     click("Select every file in Album");
-    expect(await download(), "Select all").toEqual([album]);
+    expect(await download(), "Select all").toEqual([albumPath]);
   });
 
   it("leaves the next user's tree where it is when the one before answers late", async () => {

@@ -40,6 +40,22 @@ type Meta = {
 
 const EMPTY_TREE: Listing = { roots: [], byPath: new Map() };
 
+/** Full paths of ticked files, whose clearing drops the folder marks `marks` with them */
+class Selection extends SvelteSet<string> {
+  readonly #marks: SvelteSet<string>;
+
+  constructor(marks: SvelteSet<string>) {
+    super();
+    this.#marks = marks;
+  }
+
+  // a selection replaced by a click or a range starts with a clear, and so takes the marks too
+  override clear() {
+    super.clear();
+    this.#marks.clear();
+  }
+}
+
 /**
  * What the Shares tab shows: one user's shares at a time, fetched whole, kept as a tree with the
  * folders open and the files ticked in it, and remembered in this browser until another user is
@@ -56,14 +72,15 @@ class Browse {
   info = $state.raw<BrowseInfo | null>(null);
   /** which folders are open */
   expansion = new Expansion(false);
-  /** full paths of the ticked files */
-  selected = new SvelteSet<string>();
   /**
    * the folders ticked by their own line, which a selection is sent from: a folder that holds
    * nothing but the one ticked reads ticked too, and its counts alone can't tell the two apart.
-   * The page drops a folder's mark once it no longer reads ticked whole
+   * The page drops a folder's mark once it no longer reads ticked whole, and a cleared selection
+   * drops them all
    */
   linesTicked = new SvelteSet<string>();
+  /** full paths of the ticked files */
+  selected = new Selection(this.linesTicked);
   /** a folder the tab goes to once it shows the listing, then forgets */
   target = $state<string | null>(null);
   /** a saved listing is being read back */

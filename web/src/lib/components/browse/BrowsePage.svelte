@@ -226,9 +226,8 @@
     return { on, of: node.unlocked, files: () => itemsUnder(node).filter((f) => !f.locked) };
   };
 
-  // a folder's line keeps its mark only while it reads ticked whole: whatever unticks a file
-  // under it, or a filter that shows more of it, takes the mark, so ticking its files again does
-  // not bring it back
+  // a folder keeps its mark only while it reads ticked whole: a file unticked under it, or a
+  // filter showing more of it, drops the mark, and ticking the files again does not restore it
   $effect(() => {
     for (const path of browser.linesTicked) {
       if (!lineTicked(browser.tree.byPath, tickOf, path)) browser.linesTicked.delete(path);
