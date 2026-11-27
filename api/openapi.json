@@ -26148,8 +26148,6 @@
         "description": "The info stored for a user, without the description.",
         "required": [
           "hasPicture",
-          "uploadSlots",
-          "queueLength",
           "hasFreeUploadSlot",
           "fetchedAt",
           "stale"
@@ -26177,9 +26175,12 @@
             "example": "/api/v0/users/alice/picture?v=2cea274d0bedc39ec4ab6ba9e59ec889e3ed6fb56a1cf088a64d9b383378dc97"
           },
           "queueLength": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int32",
-            "description": "how many uploads the peer had queued",
+            "description": "how many uploads the peer had queued; null when it sent -1",
             "minimum": 0
           },
           "stale": {
@@ -26187,9 +26188,12 @@
             "description": "the refresh asked for failed, so these are the values from before"
           },
           "uploadSlots": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int32",
-            "description": "the peer's upload slots",
+            "description": "the peer's upload slots; null when it sent -1, as some clients do for a count they don't\nknow",
             "minimum": 0
           }
         }
@@ -27413,8 +27417,6 @@
         "required": [
           "description",
           "hasPicture",
-          "uploadSlots",
-          "queueLength",
           "hasFreeUploadSlot"
         ],
         "properties": {
@@ -27438,9 +27440,12 @@
             "description": "the picture's bytes as the peer sent them, base64; null without one"
           },
           "queueLength": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int32",
-            "description": "how many uploads the peer has queued",
+            "description": "how many uploads the peer has queued; null when it sent -1",
             "minimum": 0
           },
           "uploadPermitted": {
@@ -27453,9 +27458,12 @@
             "minimum": 0
           },
           "uploadSlots": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int32",
-            "description": "the peer's upload slots",
+            "description": "the peer's upload slots; null when it sent -1, as some clients do for a count they don't\nknow",
             "minimum": 0
           }
         }

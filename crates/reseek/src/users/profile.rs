@@ -170,8 +170,8 @@ mod tests {
       info: Some(Info {
         description: "Jazz.\nVinyl rips.\nAsk first.\nNo bots.".to_string(),
         has_picture: false,
-        upload_slots: 2,
-        queue_length: 0,
+        upload_slots: Some(2),
+        queue_length: Some(0),
         has_free_slot: true,
         at,
         picture_tag: None,

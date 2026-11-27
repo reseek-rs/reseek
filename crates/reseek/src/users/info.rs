@@ -19,10 +19,10 @@ pub struct PeerInfo {
   pub description: String,
   /// the picture's bytes, when it sent one
   pub picture: Option<Vec<u8>>,
-  /// its upload slots
-  pub upload_slots: u32,
-  /// how many uploads it has queued
-  pub queue_length: u32,
+  /// its upload slots, none when it sent -1
+  pub upload_slots: Option<u32>,
+  /// how many uploads it has queued, none when it sent -1
+  pub queue_length: Option<u32>,
   /// it has an upload slot free
   pub has_free_slot: bool,
 }

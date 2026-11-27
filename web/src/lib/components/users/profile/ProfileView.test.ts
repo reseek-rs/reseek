@@ -11,16 +11,16 @@ describe("a profile as a peer is sent it", () => {
     document.body.innerHTML = "";
   });
 
-  const show = (description: string, figure = 3) => {
+  const show = (description: string, uploadSlots: number | null = 3, queueLength = uploadSlots) => {
     component = mount(ProfileView, {
       target: document.body,
       props: {
         name: "alice",
         pictureUrl: null,
         description,
-        uploadSlots: figure,
+        uploadSlots,
         freeUploadSlot: false,
-        queueLength: figure
+        queueLength
       }
     });
   };
@@ -42,9 +42,9 @@ describe("a profile as a peer is sent it", () => {
     expect(document.querySelector("p")!.textContent!.split("\n").length).toBeLessThan(60);
   });
 
-  it("writes its figures with the digits grouped", () => {
-    show("hi", 4_294_967_295);
-    expect(document.querySelector("dl")!.textContent).toMatch(/Upload slots\s*4,294,967,295/);
-    expect(document.querySelector("dl")!.textContent).toMatch(/Queue length\s*4,294,967,295/);
+  it("writes its figures with the digits grouped, and a dash for one the peer does not say", () => {
+    show("hi", 2_147_483_647, null);
+    expect(document.querySelector("dl")!.textContent).toMatch(/Upload slots\s*2,147,483,647/);
+    expect(document.querySelector("dl")!.textContent).toMatch(/Queue length\s*—/);
   });
 });

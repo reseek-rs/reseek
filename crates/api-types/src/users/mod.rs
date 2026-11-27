@@ -70,10 +70,11 @@ pub struct UserInfo {
   pub has_picture: bool,
   /// the picture's bytes as the peer sent them, base64; null without one
   pub picture: Option<String>,
-  /// the peer's upload slots
-  pub upload_slots: u32,
-  /// how many uploads the peer has queued
-  pub queue_length: u32,
+  /// the peer's upload slots; null when it sent -1, as some clients do for a count they don't
+  /// know
+  pub upload_slots: Option<u32>,
+  /// how many uploads the peer has queued; null when it sent -1
+  pub queue_length: Option<u32>,
   /// the peer has an upload slot free
   pub has_free_upload_slot: bool,
   /// who may upload to the peer: 0 no one, 1 everyone, 2 users in their list, 3 users they

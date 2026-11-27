@@ -22,10 +22,10 @@ pub struct Info {
   pub description: String,
   /// it sent a picture
   pub has_picture: bool,
-  /// its upload slots
-  pub upload_slots: u32,
-  /// how many uploads it had queued
-  pub queue_length: u32,
+  /// its upload slots, none when it sent -1
+  pub upload_slots: Option<u32>,
+  /// how many uploads it had queued, none when it sent -1
+  pub queue_length: Option<u32>,
   /// it had an upload slot free
   pub has_free_slot: bool,
   /// when it said so
@@ -148,8 +148,8 @@ pub fn stored(row: &Row) -> rusqlite::Result<Stored> {
     Some(at) => Some(Info {
       description: row.get::<_, Option<String>>(12)?.unwrap_or_default(),
       has_picture: row.get::<_, Option<bool>>(13)?.unwrap_or(false),
-      upload_slots: row.get::<_, Option<u32>>(14)?.unwrap_or(0),
-      queue_length: row.get::<_, Option<u32>>(15)?.unwrap_or(0),
+      upload_slots: row.get(14)?,
+      queue_length: row.get(15)?,
       has_free_slot: row.get::<_, Option<bool>>(16)?.unwrap_or(false),
       at,
       picture_tag: row.get(21)?,

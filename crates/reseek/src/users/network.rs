@@ -75,8 +75,8 @@ fn info(info: &soulseek_proto::peer::UserInfo) -> UserInfo {
       .picture
       .as_ref()
       .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
-    upload_slots: info.upload_slots,
-    queue_length: info.queue_length,
+    upload_slots: soulseek_proto::queue_count(info.upload_slots),
+    queue_length: soulseek_proto::queue_count(info.queue_length),
     has_free_upload_slot: info.has_free_upload_slot,
     upload_permitted: info.upload_permitted,
   }
@@ -153,8 +153,8 @@ impl Users {
     let said = PeerInfo {
       description: fetched.description.clone(),
       picture: fetched.picture,
-      upload_slots: fetched.upload_slots,
-      queue_length: fetched.queue_length,
+      upload_slots: shown.upload_slots,
+      queue_length: shown.queue_length,
       has_free_slot: fetched.has_free_upload_slot,
     };
     let stored = self.directory.store_info(username, said, creates).await;

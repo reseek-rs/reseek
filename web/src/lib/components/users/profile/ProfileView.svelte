@@ -3,7 +3,7 @@
   import CircleXIcon from "@lucide/svelte/icons/circle-x";
 
   import Avatar from "#lib/components/users/Avatar.svelte";
-  import { formatCount } from "#lib/format.js";
+  import { formatCount, NONE } from "#lib/format.js";
   import { fold } from "#lib/text.js";
 
   import Linked from "./Linked.svelte";
@@ -18,9 +18,11 @@
     /** what the picture shows, when the page does not name whose it is */
     alt?: string;
     description: string;
-    uploadSlots: number;
+    /** null when the peer does not say */
+    uploadSlots: number | null | undefined;
     freeUploadSlot: boolean;
-    queueLength: number;
+    /** null when the peer does not say */
+    queueLength: number | null | undefined;
   };
 
   let { name, pictureUrl, src, alt, description, uploadSlots, freeUploadSlot, queueLength }: Props =
@@ -28,6 +30,9 @@
 
   /** A description longer than about a screenful, which is folded until the rest is asked for */
   const LONG = { chars: 4000, lines: 40 };
+
+  const figure = (n: number | null | undefined) =>
+    n === null || n === undefined ? NONE : formatCount(n);
 
   let unfolded = $state(false);
   const folded = $derived(unfolded ? null : fold(description, LONG.chars, LONG.lines));
@@ -60,11 +65,11 @@
       </div>
       <div class="flex items-center gap-1">
         <dt class="text-fg-muted">Upload slots</dt>
-        <dd class="tabular-nums">{formatCount(uploadSlots)}</dd>
+        <dd class="tabular-nums">{figure(uploadSlots)}</dd>
       </div>
       <div class="flex items-center gap-1">
         <dt class="text-fg-muted">Queue length</dt>
-        <dd class="tabular-nums">{formatCount(queueLength)}</dd>
+        <dd class="tabular-nums">{figure(queueLength)}</dd>
       </div>
     </dl>
   </div>

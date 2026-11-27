@@ -734,8 +734,8 @@ async fn a_picture_too_large_or_not_cached_has_no_url() {
   let sent = |picture: &[u8]| info::PeerInfo {
     description: String::new(),
     picture: Some(picture.to_vec()),
-    upload_slots: 1,
-    queue_length: 0,
+    upload_slots: Some(1),
+    queue_length: Some(0),
     has_free_slot: true,
   };
   let profile_info = async |app: &crate::testing::TestApp, name: &str| {
@@ -783,8 +783,8 @@ async fn info_that_only_fills_in_makes_no_row() {
   let said = || info::PeerInfo {
     description: "hello".into(),
     picture: None,
-    upload_slots: 1,
-    queue_length: 0,
+    upload_slots: Some(1),
+    queue_length: Some(0),
     has_free_slot: true,
   };
   users.store_info("alice", said(), false).await;
@@ -2531,4 +2531,62 @@ async fn a_watched_buddys_status_lost_with_client_events_is_asked_again() {
   })
   .await
   .expect("her row never took the status asked again");
+}
+
+#[tokio::test]
+async fn info_of_minus_one_for_slots_and_queue_is_null() {
+  use soulseek_proto::frame::FrameKind;
+  use soulseek_proto::peer::UserInfo;
+  use soulseek_proto::server::GetPeerAddressResponse;
+  use soulseek_proto::{PeerMessage, ServerRequest, ServerResponse};
+  use tokio::io::AsyncWriteExt;
+
+  let peer = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let port = peer.local_addr().unwrap().port();
+  let app = crate::testing::soulseek::app(CONFIG).await;
+  let server = crate::testing::soulseek::Server::start(move |request| match request {
+    ServerRequest::GetPeerAddress(asked) => {
+      vec![ServerResponse::GetPeerAddress(GetPeerAddressResponse {
+        username: asked.username.clone(),
+        ip: std::net::Ipv4Addr::LOCALHOST,
+        port: port.into(),
+        obfuscation: None,
+      })]
+    }
+    ServerRequest::GetStatus(_) => vec![alice_is(soulseek_proto::UserPresence::Online).0],
+    _ => Vec::new(),
+  })
+  .await;
+  server.login(&app).await;
+  app
+    .state
+    .users
+    .set_notes("alice", "kind".into())
+    .await
+    .unwrap();
+  let asking = app.call("GET", "/api/v0/users/alice/info", None);
+  let answering = async {
+    let (mut alice_client, _) = peer.accept().await.unwrap();
+    let mut buffer = Vec::new();
+    let next = crate::testing::soulseek::next_frame;
+    next(&mut alice_client, &mut buffer, FrameKind::Init).await;
+    next(&mut alice_client, &mut buffer, FrameKind::Peer).await;
+    let info = PeerMessage::InfoResponse(UserInfo {
+      description: "hello".into(),
+      picture: None,
+      upload_slots: u32::MAX,
+      queue_length: u32::MAX,
+      has_free_upload_slot: false,
+      upload_permitted: None,
+    });
+    alice_client.write_all(&info.encode()).await.unwrap();
+    alice_client
+  };
+  let ((status, body), _alice_client) = tokio::join!(asking, answering);
+  assert_eq!(status, 200);
+  assert_eq!(body["uploadSlots"], Value::Null);
+  assert_eq!(body["queueLength"], Value::Null);
+  let stored = &alice(&app).await["info"];
+  assert_eq!(stored["uploadSlots"], Value::Null);
+  assert_eq!(stored["queueLength"], Value::Null);
 }

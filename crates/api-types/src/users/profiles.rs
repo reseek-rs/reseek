@@ -200,10 +200,11 @@ pub struct StoredInfoSummary {
     example = "/api/v0/users/alice/picture?v=2cea274d0bedc39ec4ab6ba9e59ec889e3ed6fb56a1cf088a64d9b383378dc97"
   )]
   pub picture_url: Option<String>,
-  /// the peer's upload slots
-  pub upload_slots: u32,
-  /// how many uploads the peer had queued
-  pub queue_length: u32,
+  /// the peer's upload slots; null when it sent -1, as some clients do for a count they don't
+  /// know
+  pub upload_slots: Option<u32>,
+  /// how many uploads the peer had queued; null when it sent -1
+  pub queue_length: Option<u32>,
   /// the peer had an upload slot free
   pub has_free_upload_slot: bool,
   /// when the info was fetched

@@ -8159,16 +8159,17 @@ export interface components {
             pictureUrl?: string | null;
             /**
              * Format: int32
-             * @description how many uploads the peer had queued
+             * @description how many uploads the peer had queued; null when it sent -1
              */
-            queueLength: number;
+            queueLength?: number | null;
             /** @description the refresh asked for failed, so these are the values from before */
             stale: boolean;
             /**
              * Format: int32
-             * @description the peer's upload slots
+             * @description the peer's upload slots; null when it sent -1, as some clients do for a count they don't
+             *     know
              */
-            uploadSlots: number;
+            uploadSlots?: number | null;
         };
         /** @description A room with stored messages, joined now or not. */
         StoredRoom: {
@@ -8871,9 +8872,9 @@ export interface components {
             picture?: string | null;
             /**
              * Format: int32
-             * @description how many uploads the peer has queued
+             * @description how many uploads the peer has queued; null when it sent -1
              */
-            queueLength: number;
+            queueLength?: number | null;
             /**
              * Format: int32
              * @description who may upload to the peer: 0 no one, 1 everyone, 2 users in their list, 3 users they
@@ -8882,9 +8883,10 @@ export interface components {
             uploadPermitted?: number | null;
             /**
              * Format: int32
-             * @description the peer's upload slots
+             * @description the peer's upload slots; null when it sent -1, as some clients do for a count they don't
+             *     know
              */
-            uploadSlots: number;
+            uploadSlots?: number | null;
         };
         /** @description One page of the known-users directory. */
         UserList: {

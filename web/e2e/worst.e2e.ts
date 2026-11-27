@@ -155,7 +155,8 @@ for (const [width, height] of [
     test("the worst user's profile holds its screen", async ({ page }) => {
       await worstProfile(page);
       await fits(page, `/users/${encodeURIComponent(NAMES.long)}`, shows("Upload slots"));
-      await expect(page.getByText(/Upload slots\s*4,294,967,295/)).toBeVisible();
+      await expect(page.getByText(/Upload slots\s*2,147,483,647/)).toBeVisible();
+      await expect(page.getByText(/Queue length\s*—/)).toBeVisible();
       // the header's lines break between figures, never inside one
       const figures = [
         "9,999,999 files",

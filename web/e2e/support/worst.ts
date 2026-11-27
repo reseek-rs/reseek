@@ -218,9 +218,9 @@ export const worstUser = (name: string = NAMES.long) =>
       hasFreeUploadSlot: false,
       hasPicture: name === NAMES.long,
       pictureUrl: name === NAMES.long ? PICTURE : null,
-      queueLength: U32,
+      queueLength: null,
       stale: false,
-      uploadSlots: U32
+      uploadSlots: 2_147_483_647
     },
     groups: [
       "jazz",
