@@ -11,15 +11,20 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use api_types::events::{Event, EventType};
+use api_types::files::FileRoot;
 use api_types::transfers::TransferOutcome;
 use axum::body::Body;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use choon::fixtures::{Bitrate, music, pink, write_mp3};
+use reseek_shares::lock;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use super::jobs::Running;
+use crate::services::FileTarget;
 use crate::testing::{TRUSTED, TestApp, app, request};
 use crate::transfers::{Record, store as transfers};
 
@@ -99,6 +104,38 @@ async fn ended(ends: &mut mpsc::UnboundedReceiver<Uuid>, job: &str) {
     while ends.recv().await.unwrap() != job {}
   });
   waited.await.expect("the job ended");
+}
+
+/// The relative path of the file `hold_the_worker` keeps running.
+const HELD: &str = "held.mp3";
+
+/// Takes the one worker with a file of no job, so every file queued until `release` waits.
+async fn hold_the_worker(app: &TestApp) -> Uuid {
+  music_file(app, HELD);
+  let analysis = &app.state.analysis;
+  let target = FileTarget::File {
+    root: FileRoot::Downloads,
+    path: HELD.to_string(),
+  };
+  let part = Uuid::new_v4();
+  let running = Running {
+    part,
+    job: Uuid::new_v4(),
+    file: analysis.files.local_file(&target).await.unwrap(),
+    queued_at: chrono::Utc::now(),
+    started_at: chrono::Utc::now(),
+    cancel: CancellationToken::new(),
+    progress: Arc::default(),
+  };
+  lock(&analysis.running).push(running);
+  part
+}
+
+/// Frees the worker `hold_the_worker` took as `part`.
+fn release(app: &TestApp, part: Uuid) {
+  let analysis = &app.state.analysis;
+  lock(&analysis.running).retain(|running| running.part != part);
+  analysis.wake.notify_one();
 }
 
 /// Counts the `FileAnalysisComplete` events raised.
@@ -450,13 +487,13 @@ async fn a_queued_analysis_can_be_canceled_and_a_window_read() {
   for name in ["a.mp3", "b.mp3", "c.mp3"] {
     music_file(&app, name);
   }
+  let held = hold_the_worker(&app).await;
   let mut ids = Vec::new();
   for name in ["a.mp3", "b.mp3", "c.mp3"] {
     let (status, created) = app.call("POST", &route(name), None).await;
     assert_eq!(status, 202);
     ids.push(created["jobId"].as_str().unwrap().to_string());
   }
-  // one worker: the last is still waiting
   let (status, _) = app
     .call("DELETE", &format!("/api/v0/analysis/jobs/{}", ids[2]), None)
     .await;
@@ -469,8 +506,9 @@ async fn a_queued_analysis_can_be_canceled_and_a_window_read() {
     .iter()
     .map(|j| j["relativePath"].as_str().unwrap())
     .collect();
-  assert!(
-    !listed.contains(&"c.mp3"),
+  assert_eq!(
+    listed,
+    [HELD, "a.mp3", "b.mp3"],
     "the canceled job's file left the queue: {jobs}"
   );
   // a file in the queue is named as the request named it, so any client can find it
@@ -484,6 +522,7 @@ async fn a_queued_analysis_can_be_canceled_and_a_window_read() {
   assert_eq!(waiting["state"], "queued");
   let unknown = format!("/api/v0/analysis/jobs/{}", uuid::Uuid::new_v4());
   assert_eq!(app.call("DELETE", &unknown, None).await.0, 404);
+  release(&app, held);
   settled(&app).await;
   let (status, _) = app.call("GET", &route("c.mp3"), None).await;
   assert_eq!(status, 404, "the canceled file was not analyzed");
