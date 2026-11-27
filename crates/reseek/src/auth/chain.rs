@@ -326,6 +326,7 @@ pub async fn page_session(
       id_token: None,
       ip: Some(presented.client.ip.to_string()),
       user_agent: presented.user_agent(),
+      created_at: Utc::now(),
     },
     // a valid cookie would have been kept above
     None,

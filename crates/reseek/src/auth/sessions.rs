@@ -248,6 +248,8 @@ pub struct NewSession {
   pub ip: Option<String>,
   /// their browser
   pub user_agent: Option<String>,
+  /// when they signed in
+  pub created_at: DateTime<Utc>,
 }
 
 const COLUMNS: &str = "s.id, s.subject, coalesce(i.name, s.subject), i.claims_json, i.email, \
@@ -303,7 +305,7 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<StoredSession> {
 
 /// Records the sign-in of `new.subject` and makes a session for it.
 pub async fn create(db: &Database, new: NewSession) -> Result<StoredSession, DbError> {
-  let now = Utc::now();
+  let now = new.created_at;
   let claims = new
     .groups
     .as_ref()

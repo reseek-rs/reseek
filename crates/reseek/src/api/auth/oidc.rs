@@ -230,6 +230,7 @@ async fn callback(
       id_token: Some(app.auth.secret.seal(claims.id_token.as_bytes())),
       ip: Some(client.ip.to_string()),
       user_agent: presented.user_agent(),
+      created_at: chrono::Utc::now(),
     },
     replaced.map(|Extension(RequestSession(replaced))| replaced),
   )

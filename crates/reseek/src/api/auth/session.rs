@@ -112,7 +112,9 @@ async fn login(
   let username = login.username.clone();
   // the session is made from the options the password was checked against, which must still be
   // in effect after the check, so after a reload during it the login is checked again
-  let checked = loop {
+  // the session begins before the options are read the last time, so a password change
+  // published after that read is stamped later and ends it with the old password's sessions
+  let (checked, at) = loop {
     let checked = app
       .auth
       .accounts
@@ -122,9 +124,10 @@ async fn login(
         login.password.clone(),
       )
       .await;
+    let at = chrono::Utc::now();
     let now = app.config.current();
     if now.revision == current.revision {
-      break checked;
+      break (checked, at);
     }
     current = now;
     if let Err(e) = password_login_offered(&current.values, client) {
@@ -166,6 +169,7 @@ async fn login(
       id_token: None,
       ip: Some(client.ip.to_string()),
       user_agent: presented.user_agent(),
+      created_at: at,
     },
     replaced.map(|Extension(RequestSession(replaced))| replaced),
   )
@@ -1110,6 +1114,7 @@ mod tests {
         id_token: Some(auth.secret.seal(b"header.claims.signature")),
         ip: None,
         user_agent: None,
+        created_at: chrono::Utc::now(),
       },
     )
     .await
