@@ -36,6 +36,8 @@ type Meta = {
   expansion: ExpansionSnapshot | null;
   /** full paths of the ticked files */
   selected: string[];
+  /** the folders ticked by their own line */
+  linesTicked: string[];
 };
 
 const EMPTY_TREE: Listing = { roots: [], byPath: new Map() };
@@ -221,6 +223,7 @@ class Browse {
       this.#show(listing.username, listing.directories, listing.separator, listing.info);
       if (meta.expansion) this.expansion.restore(meta.expansion);
       for (const f of meta.selected) this.selected.add(f);
+      for (const path of meta.linesTicked) this.linesTicked.add(path);
     } else {
       this.separator = meta.separator;
       this.info = meta.info;
@@ -229,7 +232,10 @@ class Browse {
     this.save();
   };
 
-  /** Keeps the browse as it is in this browser: the user, the open folders, the ticked files */
+  /**
+   * Keeps the browse as it is in this browser: the user, the open folders, the ticked files and
+   * folder lines
+   */
   save = () => {
     const meta: Meta = {
       username: this.username,
@@ -238,7 +244,8 @@ class Browse {
       separator: this.separator,
       info: this.info,
       expansion: this.expansion.snapshot(),
-      selected: [...this.selected]
+      selected: [...this.selected],
+      linesTicked: [...this.linesTicked]
     };
     try {
       localStorage.setItem(META_KEY, JSON.stringify(meta));
@@ -277,7 +284,8 @@ const readMeta = (saved: unknown): Meta | null => {
       typeof expansion.openByDefault === "boolean"
         ? { openByDefault: expansion.openByDefault, flipped: strings(expansion.flipped) }
         : null,
-    selected: strings(s.selected)
+    selected: strings(s.selected),
+    linesTicked: strings(s.linesTicked)
   };
 };
 

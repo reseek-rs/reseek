@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Schemas } from "#lib/api/client.js";
+import { sharedFile } from "#lib/testing/fixtures.js";
 import { fakeNetwork } from "#lib/testing/network.js";
 
 import { browser } from "./browse.svelte";
+import type { Listing } from "./cache";
+
+// the listing is read back from IndexedDB, which the tests have none of
+vi.mock("./cache", () => ({ readListing: vi.fn(), writeListing: vi.fn(async () => {}) }));
 
 describe("the kept browse", () => {
   afterEach(() => {
@@ -80,5 +85,37 @@ describe("the kept browse", () => {
     expect(browser.username).toBe("dj shadow  ");
     const asked = net.requests.filter((r) => r.url.pathname.endsWith("/browse"));
     expect(asked.map((r) => r.url.searchParams.get("username"))).toEqual(["dj shadow  "]);
+  });
+
+  it("brings back the folders ticked by their own line with the ticked files", async () => {
+    const listing: Listing = {
+      username: "alice",
+      directories: [
+        { name: "Artist", fileCount: 0, files: [] },
+        { name: "Artist\\Album", fileCount: 1, files: [sharedFile("1.flac")] }
+      ],
+      separator: "\\",
+      info: { directories: 2, files: 1, lockedDirectories: 0, lockedFiles: 0, bytes: 0 }
+    };
+    const saved = {
+      username: "alice",
+      phase: "complete",
+      separator: "\\",
+      selected: ["Artist\\Album\\1.flac"]
+    };
+    /** a page load that restores `kept` */
+    const restored = async (kept: object) => {
+      localStorage.setItem("reseek-browse-state", JSON.stringify(kept));
+      vi.resetModules();
+      const cache = await import("./cache");
+      vi.mocked(cache.readListing).mockResolvedValueOnce(listing);
+      const { browser } = await import("./browse.svelte");
+      await browser.restore("alice");
+      expect([...browser.selected]).toEqual(saved.selected);
+      return [...browser.linesTicked];
+    };
+
+    expect(await restored({ ...saved, linesTicked: ["Artist"] })).toEqual(["Artist"]);
+    expect(await restored(saved), "a saved browse with no marks").toEqual([]);
   });
 });

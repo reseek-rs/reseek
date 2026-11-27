@@ -146,10 +146,12 @@
     return () => clearTimeout(timer);
   });
 
-  // the open folders and the ticked files are kept a moment after they change
+  // the open folders, the ticked files and the ticked folder lines are kept a moment after they
+  // change
   $effect(() => {
     void expansion.snapshot();
     void [...browser.selected];
+    void [...browser.linesTicked];
     const timer = setTimeout(browser.save, 300);
     return () => clearTimeout(timer);
   });
