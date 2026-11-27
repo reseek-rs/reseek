@@ -246,6 +246,7 @@ impl Directory {
 
   /// Waits, at shutdown, for the statistics being fetched again and the buddies being watched.
   pub async fn stop(&self) {
+    self.stop_reading_presence();
     self.tasks.close();
     if tokio::time::timeout(STOPPING, self.tasks.wait())
       .await

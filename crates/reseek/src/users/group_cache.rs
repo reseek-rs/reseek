@@ -30,6 +30,7 @@ use reseek_shares::LogLimiter;
 use reseek_shares::lock;
 use soulseek_client::{Client, Error as ClientError, ErrorKind};
 use soulseek_proto::server::UserStats;
+use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, trace, warn};
 
 use super::groups::{self, Facts, Placement};
@@ -215,6 +216,8 @@ pub struct GroupCache {
   /// the presence of each buddy as we knew it when a server session ended, until a status of
   /// theirs arrives in the next
   missed: Mutex<HashMap<String, UserPresence>>,
+  /// canceled to stop asking the watched users' status again after a loss of client events
+  presence_again: Mutex<CancellationToken>,
   /// held while the groups we put users in change, from the rows to the memberships here, so of
   /// two changes made at once the rows and the memberships keep the same one
   regrouping: tokio::sync::Mutex<()>,
@@ -1060,6 +1063,7 @@ impl Directory {
   /// of each buddy is kept as what we last knew, against which the next session's first word
   /// on them is told of.
   pub fn session_ended(&self) {
+    self.stop_reading_presence();
     self.groups.watched().clear();
     let known: HashMap<String, UserPresence> = self
       .buddy_names()
@@ -1070,6 +1074,65 @@ impl Directory {
       })
       .collect();
     *lock(&self.groups.missed) = known;
+  }
+
+  /// Client events were lost while logged in, and a status the server sent of a watched user
+  /// among them is gone, as it sends the next only when that changes: each watched user's
+  /// status is asked for again in the background, one after another, and the reply's event
+  /// takes it as any status. A watched buddy's move is told against the presence known now. A
+  /// loss after this one starts the asks over; the next connect and the stop end them.
+  pub fn read_presence_again(self: &Arc<Self>) {
+    let Some(client) = self.client.get().cloned() else {
+      return;
+    };
+    let reading = {
+      let mut reading = lock(&self.groups.presence_again);
+      reading.cancel();
+      *reading = CancellationToken::new();
+      reading.clone()
+    };
+    let watched = self.watched_users();
+    let known: Vec<(String, UserPresence)> = watched
+      .iter()
+      .filter(|username| self.buddy(username).is_some())
+      .filter_map(|username| {
+        let presence = self.groups.facts(username)?.presence?;
+        Some((username.clone(), presence))
+      })
+      .collect();
+    {
+      let mut missed = lock(&self.groups.missed);
+      for (username, presence) in known {
+        // a buddy not heard from since the session began keeps the presence it ended with
+        missed.entry(username).or_insert(presence);
+      }
+    }
+    debug!(
+      users = watched.len(),
+      "client events lost; the watched users' status asked again"
+    );
+    let this = self.clone();
+    self.tasks.spawn(
+      async move {
+        for username in watched {
+          if reading.is_cancelled() || !client.state().is_logged_in() {
+            return debug!("the watched users' status no longer asked again");
+          }
+          if !this.is_watched(&username) {
+            continue;
+          }
+          if let Err(e) = this.status_of(&client, &username).await {
+            debug!(username, error = %e, "status of a watched user not asked again");
+          }
+        }
+      }
+      .in_current_span(),
+    );
+  }
+
+  /// Stops the asks [`Directory::read_presence_again`] started.
+  pub(super) fn stop_reading_presence(&self) {
+    lock(&self.groups.presence_again).cancel();
   }
 
   /// Makes `change` to the groups or buddy standing of `usernames`, then has the shares forget

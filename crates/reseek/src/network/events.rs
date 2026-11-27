@@ -168,7 +168,8 @@ pub(super) async fn follow(app: AppState, mut events: Events, drained: Cancellat
 /// Events were missed: the client's state is read again, and each edge of its session that
 /// nothing handled is handled now, so a lost connection is reconnected and what follows a
 /// login is not skipped. Within one session, the messaging engine marks the loss in the rooms'
-/// history; a session that ended or began meanwhile leaves a gap there already.
+/// history and the watched users' status is asked again; a session that ended or began
+/// meanwhile leaves a gap there already and watches them anew.
 async fn caught_up(app: &AppState, missed: u64, session: &mut Session) {
   if let Some(suppressed) = LAGGED.allow() {
     warn!(
@@ -184,6 +185,9 @@ async fn caught_up(app: &AppState, missed: u64, session: &mut Session) {
   let edges = session.catch_up(&status);
   if edges.is_empty() {
     app.messaging.missed().await;
+    if status.state.is_logged_in() {
+      app.users.read_presence_again();
+    }
   }
   for edge in edges {
     match edge {

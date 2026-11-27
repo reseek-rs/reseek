@@ -2440,3 +2440,72 @@ async fn a_profile_refresh_pushes_the_users_summary_once() {
   );
   assert!(leeches(alice));
 }
+
+#[tokio::test]
+async fn a_watched_buddys_status_lost_with_client_events_is_asked_again() {
+  use soulseek_proto::ServerRequest;
+  use std::sync::atomic::{AtomicBool, Ordering};
+
+  let app = crate::testing::soulseek::app(CONFIG).await;
+  let (seen, mut received) = tokio::sync::mpsc::unbounded_channel();
+  app.state.events.subscribe(
+    "test",
+    Some(EventType::BuddyPresenceChanged),
+    move |record| {
+      let seen = seen.clone();
+      async move {
+        seen.send(record).unwrap();
+        Ok(())
+      }
+    },
+  );
+  let users = &app.state.users;
+  let notify = BuddyChange {
+    notify_presence: Some(true),
+  };
+  users.set_buddy("alice", notify).await.unwrap();
+  let gone = Arc::new(AtomicBool::new(false));
+  let offline = gone.clone();
+  let presence = move || {
+    if offline.load(Ordering::SeqCst) {
+      soulseek_proto::UserPresence::Offline
+    } else {
+      soulseek_proto::UserPresence::Online
+    }
+  };
+  let server = crate::testing::soulseek::Server::start(move |request| match request {
+    ServerRequest::WatchUser(_) => vec![alice_is(presence()).1],
+    ServerRequest::GetStatus(_) => vec![alice_is(presence()).0],
+    _ => Vec::new(),
+  })
+  .await;
+  server.login(&app).await;
+  tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    while alice(&app).await["presence"] != "Online" {
+      tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+  })
+  .await
+  .expect("the buddy was never watched");
+  // she went offline, and the status saying so was among the events lost
+  gone.store(true, Ordering::SeqCst);
+  users.read_presence_again();
+  let record = tokio::time::timeout(std::time::Duration::from_secs(5), received.recv())
+    .await
+    .expect("her move was never told")
+    .unwrap();
+  let Event::BuddyPresenceChanged(changed) = &record.event else {
+    panic!("{:?}", record.event);
+  };
+  assert_eq!(
+    (changed.previous, changed.presence),
+    (UserPresence::Online, UserPresence::Offline)
+  );
+  tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    while alice(&app).await["presence"] != "Offline" {
+      tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+  })
+  .await
+  .expect("her row never took the status asked again");
+}
