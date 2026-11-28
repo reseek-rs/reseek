@@ -2,6 +2,12 @@
 # `just test` finds everything compiled
 tested := "--workspace --all-features"
 
+# the licenses of the third-party code the programs and the UI ship, which `just licenses` writes
+notices := "web/src/lib/licenses/third-party.json"
+
+# the targets the release binaries and the nix package are built for, whose crates the notices list
+notice_targets := "x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-apple-darwin aarch64-apple-darwin"
+
 # what the dev recipes run keeps its files here, gitignored: the daemon its config, data and logs,
 # soulfind its database
 devdir := justfile_directory() / ".dev"
@@ -143,6 +149,10 @@ lint: web-install
       || { echo "the settings fixture could not be generated" >&2; exit 1; }; \
       printf '%s\n' "$view" | diff -q web/src/lib/config/fixtures/view.json - > /dev/null \
       || { echo "web/src/lib/config/fixtures/view.json is stale, run \`just config-fixture\`" >&2; exit 1; }
+    @notices="$({{ just_executable() }} --justfile {{ justfile() }} notices-json)" \
+      || { echo "the license notices could not be generated" >&2; exit 1; }; \
+      printf '%s\n' "$notices" | diff -q {{ notices }} - > /dev/null \
+      || { echo "{{ notices }} is stale, run \`just licenses\`" >&2; exit 1; }
 
 # regenerate api/openapi.json from the handlers, then web/src/lib/api/schema.d.ts from it
 api: web-install
@@ -158,6 +168,31 @@ config-fixture:
 config-view:
     @cargo build -q {{ tested }} --profile test --example config_view
     @"${CARGO_TARGET_DIR:-target}/debug/examples/config_view"
+
+[doc("regenerate the licenses of the crates the programs link and the npm packages the UI bundles")]
+licenses:
+    @notices="$({{ just_executable() }} --justfile {{ justfile() }} notices-json)" || exit 1; \
+      printf '%s\n' "$notices" > {{ notices }}
+
+# the crates come from cargo-about, less the proc macros and what only they use, which cargo tree
+# leaves out; the npm packages from a UI build, whose output goes to stderr. cargo-about prints
+# nothing on a clean run, so what it prints, such as a clarification whose file changed, fails it
+[private]
+notices-json: web-install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    targets=()
+    for target in {{ notice_targets }}; do targets+=(--target "$target"); done
+    status=0
+    cargo about generate --locked --format json -m crates/reseek-bin/Cargo.toml "${targets[@]}" \
+      -o "$work/cargo.json" 2> "$work/about.log" || status=$?
+    if [ "$status" != 0 ] || [ -s "$work/about.log" ]; then cat "$work/about.log" >&2; exit 1; fi
+    cargo tree --locked -p reseek-bin -e normal,no-proc-macro "${targets[@]}" --prefix none \
+      --format '{p}' > "$work/tree.txt"
+    RESEEK_WEB_LICENSES="$work/npm.json" pnpm --dir web build >&2
+    node web/scripts/licenses/main.ts "$work/cargo.json" "$work/tree.txt" "$work/npm.json"
 
 # the built UI served by the daemon, driven in a browser
 web-e2e: (web-playwright "e2e")

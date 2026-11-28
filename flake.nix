@@ -135,6 +135,8 @@
               [
                 reseek-rust
                 cargo-nextest
+                # `just licenses` reads the crates' licenses with it
+                cargo-about
                 bacon
                 watchexec
                 just

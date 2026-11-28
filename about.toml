@@ -1,0 +1,166 @@
+# cargo-about's settings for `just licenses`. a crate whose license gives a choice is listed under
+# the first of these it allows
+accepted = [
+  "MIT",
+  "Apache-2.0",
+  "ISC",
+  "BSD-3-Clause",
+  "BSD-2-Clause",
+  "Zlib",
+  "Unicode-3.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "MPL-2.0",
+]
+# what the binaries do not link; `just licenses` also leaves out the proc macros and what only
+# they use
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+private = { ignore = true }
+
+# a clarification names the files that hold a crate's license where cargo-about reads them wrong,
+# with their checksums, so a release that changes them fails `just licenses` until it is checked.
+# cargo-about takes the AGPL text for AGPL-3.0-or-later, and an Apache-2.0 text without its
+# appendix for the Pixar license, whose text is close to it
+
+[choon]
+accepted = ["AGPL-3.0-only"]
+
+[choon.clarify]
+license = "AGPL-3.0-only"
+[[choon.clarify.files]]
+path = "LICENSE"
+checksum = "09f40ca91cd5d8bcfb6ebe340b7946d3151703ea8a88337c8b08f1e7558455f0"
+
+[rpassword.clarify]
+license = "Apache-2.0"
+[[rpassword.clarify.files]]
+path = "LICENSE-APACHE"
+checksum = "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9"
+
+[rtoolbox.clarify]
+license = "Apache-2.0"
+[[rtoolbox.clarify.files]]
+path = "LICENSE-APACHE"
+checksum = "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9"
+
+[sync_wrapper.clarify]
+license = "Apache-2.0"
+[[sync_wrapper.clarify.files]]
+path = "LICENSE"
+checksum = "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+
+[ryu.clarify]
+license = "Apache-2.0 OR BSL-1.0"
+[[ryu.clarify.files]]
+path = "LICENSE-APACHE"
+license = "Apache-2.0"
+checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+[[ryu.clarify.files]]
+path = "LICENSE-BOOST"
+license = "BSL-1.0"
+checksum = "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566"
+
+# the copyright, then both licenses, in one file
+[rcgen.clarify]
+license = "MIT OR Apache-2.0"
+[[rcgen.clarify.files]]
+path = "LICENSE"
+checksum = "debe6fed7ac143217c7f533759c54b14f18cd01d5fe195c51d83c2ae2d136cb4"
+
+[chrono.clarify]
+license = "MIT OR Apache-2.0"
+[[chrono.clarify.files]]
+path = "LICENSE.txt"
+checksum = "946c9835d8034d24404f8cfec5f4654cee5dad17e944afc3d06d742cf2882831"
+
+# the MIT license, then the licenses of the musl and CORE-MATH code the crate holds
+[libm.clarify]
+license = "MIT"
+[[libm.clarify.files]]
+path = "LICENSE.txt"
+checksum = "3823dda7cf046602f4b4e77ec8e227863dc4736037cc85bb33d9f19febe16bb7"
+
+# the MIT license with a clause added, which cargo-about does not take for MIT
+[netlink-sys.clarify]
+license = "MIT"
+[[netlink-sys.clarify.files]]
+path = "LICENSE-MIT"
+checksum = "964a53330f9cd970c1790311024281a994644f9b554ff6d37e233672287bf767"
+
+[netlink-packet-core.clarify]
+license = "MIT"
+[[netlink-packet-core.clarify.files]]
+path = "LICENSE-MIT"
+checksum = "964a53330f9cd970c1790311024281a994644f9b554ff6d37e233672287bf767"
+
+# every license of the code the crate holds, in one file
+[aws-lc-rs.clarify]
+license = "ISC AND (Apache-2.0 OR ISC)"
+[[aws-lc-rs.clarify.files]]
+path = "LICENSE"
+checksum = "b50b376e7d24a0598488b730c3034ffcd0b58dd36c0913a24b9903a3cfd04bf7"
+
+[aws-lc-sys.clarify]
+license = "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)"
+# a file stands for one license at a time, so the one that holds three is named for each
+[[aws-lc-sys.clarify.files]]
+path = "LICENSE"
+license = "Apache-2.0"
+checksum = "728536b4160e051f86d7c9c388f704866b3d512cd7df97ac3516c65279523c4e"
+[[aws-lc-sys.clarify.files]]
+path = "LICENSE"
+license = "ISC"
+checksum = "728536b4160e051f86d7c9c388f704866b3d512cd7df97ac3516c65279523c4e"
+[[aws-lc-sys.clarify.files]]
+path = "LICENSE"
+license = "BSD-3-Clause"
+checksum = "728536b4160e051f86d7c9c388f704866b3d512cd7df97ac3516c65279523c4e"
+[[aws-lc-sys.clarify.files]]
+path = "aws-lc/third_party/fiat/LICENSE"
+license = "MIT"
+checksum = "43e358d7b6eb109d0f51f7b3a090fd82607965767c25fadee39e922475de2061"
+
+# the licenses of code these crates took from other projects are in a file cargo-about does not
+# read; it goes with whichever license the crate is listed under
+[crossbeam-channel.clarify]
+license = "MIT OR Apache-2.0"
+[[crossbeam-channel.clarify.files]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "5734ed989dfca1f625b40281ee9f4530f91b2411ec01cb748223e7eb87e201ab"
+[[crossbeam-channel.clarify.files]]
+path = "LICENSE-APACHE"
+license = "Apache-2.0"
+checksum = "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+[[crossbeam-channel.clarify.files]]
+path = "LICENSE-THIRD-PARTY"
+checksum = "b16db96b93b1d7cf7bea533f572091ec6bca3234fbe0a83038be772ff391a44c"
+
+[atomic-waker.clarify]
+license = "Apache-2.0 OR MIT"
+[[atomic-waker.clarify.files]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+[[atomic-waker.clarify.files]]
+path = "LICENSE-APACHE"
+license = "Apache-2.0"
+checksum = "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+[[atomic-waker.clarify.files]]
+path = "LICENSE-THIRD-PARTY"
+checksum = "6226d0632e2e1a80c23597e964da9812ae193c535fe058154afb034e94167aa5"
+
+[security-framework.clarify]
+license = "MIT OR Apache-2.0"
+[[security-framework.clarify.files]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "91e934255ba3b2f21103d68c5581c23ef34aa95c4628e4405b8c901935e11c69"
+[[security-framework.clarify.files]]
+path = "LICENSE-APACHE"
+license = "Apache-2.0"
+checksum = "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+[[security-framework.clarify.files]]
+path = "THIRD_PARTY"
+checksum = "522fccc56dcbadbe90ab5524a17b8127cde3f951c30c17002641caf44959c22a"
