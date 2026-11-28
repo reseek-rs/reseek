@@ -60,9 +60,11 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos
+          # the licenses cover every platform's binaries, so one job carries them
           path: |
             dist/reseek-macos-universal
             dist/reseek-agent-macos-universal
+            dist/reseek-third-party-licenses.json
 
   # the signing key and the token that attests are only here, where no dependency's code runs
   sign:

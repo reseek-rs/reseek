@@ -18,7 +18,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # the binaries go in only once SHA256SUMS is signed by reseek.pub and lists each one's hash
+      # the binaries and their licenses go in only once SHA256SUMS is signed by reseek.pub and lists
+      # each one's hash
       - name: Gather the build context
         env:
           GH_TOKEN: ${{ github.token }}
@@ -29,10 +30,11 @@ jobs:
           sudo apt-get install -y minisign
           mkdir context
           gh release download "$TAG" --dir context --pattern 'reseek-linux-*' \
-            --pattern SHA256SUMS --pattern SHA256SUMS.minisig
+            --pattern reseek-third-party-licenses.json --pattern SHA256SUMS \
+            --pattern SHA256SUMS.minisig
           minisign -Vm context/SHA256SUMS -p reseek.pub
-          for arch in amd64 arm64; do
-            grep -Eq "^[0-9a-f]{64} [ *]reseek-linux-$arch\$" context/SHA256SUMS
+          for file in reseek-linux-amd64 reseek-linux-arm64 reseek-third-party-licenses.json; do
+            grep -Eq "^[0-9a-f]{64} [ *]$file\$" context/SHA256SUMS
           done
           (cd context && sha256sum --check --strict --ignore-missing SHA256SUMS)
           rm context/SHA256SUMS context/SHA256SUMS.minisig

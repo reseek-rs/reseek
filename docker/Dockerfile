@@ -1,5 +1,5 @@
-# the build context holds entrypoint.sh and the static binaries as reseek-<arch>, which
-# `just docker` puts there
+# the build context holds entrypoint.sh, the static binaries as reseek-<arch> and the licenses of
+# the code they hold, which `just docker` puts there
 FROM docker.io/library/alpine:3.24.4
 
 ARG TARGETARCH
@@ -12,6 +12,7 @@ RUN apk add --no-cache tini su-exec tzdata bash wget \
   && adduser -u 1000 -G reseek -h /app -H -D -s /sbin/nologin reseek
 
 COPY reseek-${TARGETARCH} /usr/bin/reseek
+COPY reseek-third-party-licenses.json /usr/share/doc/reseek/third-party-licenses.json
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # SHELL is what scripts that name no program run in

@@ -199,3 +199,5 @@ I review the shape of the code, not every line of it. If something isn't clear o
 ## License
 
 AGPL-3.0-only
+
+The licenses of the crates and npm packages reseek ships are under System > Info > Licenses in the web UI, and in `reseek-third-party-licenses.json` on each release, `share/doc/reseek` in the Nix package and `/usr/share/doc/reseek` in the image. `just licenses` writes them again after a dependency changes.

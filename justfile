@@ -60,6 +60,7 @@ release *ARCHES="amd64 arm64":
       install -m755 "$out/bin/reseek" "dist/reseek-linux-$arch"
       install -m755 "$out/bin/reseek-agent" "dist/reseek-agent-linux-$arch"
     done
+    install -m644 {{ notices }} dist/reseek-third-party-licenses.json
 
 [doc("run the release binaries for PLATFORM in dist/ and wait for the daemon's /health")]
 release-check PLATFORM:
@@ -93,6 +94,7 @@ release-macos: web-build
       lipo -create -output "dist/$program-macos-universal" \
         "target/x86_64-apple-darwin/dist/$program" "target/aarch64-apple-darwin/dist/$program"
     done
+    install -m644 {{ notices }} dist/reseek-third-party-licenses.json
 
 # the container image `reseek` from the release binaries, with podman or docker
 docker: release
@@ -102,7 +104,7 @@ docker: release
     context="$(mktemp -d)"
     trap 'rm -rf "$context"' EXIT
     for arch in amd64 arm64; do cp "dist/reseek-linux-$arch" "$context/reseek-$arch"; done
-    cp docker/entrypoint.sh "$context/"
+    cp dist/reseek-third-party-licenses.json docker/entrypoint.sh "$context/"
     # podman writes OCI images by default, which have no HEALTHCHECK
     format=()
     if [ "$(basename "$runtime")" = podman ]; then format=(--format docker); fi

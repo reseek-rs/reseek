@@ -31,6 +31,7 @@ let
         ../crates
         ../migrations
         ../api/openapi.json
+        ../web/src/lib/licenses/third-party.json
       ];
     };
     strictDeps = true;
@@ -80,6 +81,8 @@ craneLib.buildPackage (
         --fish <($out/bin/reseek completions fish)
       $out/bin/reseek man > reseek.1
       installManPage reseek.1
+      install -Dm644 web/src/lib/licenses/third-party.json \
+        $out/share/doc/reseek/third-party-licenses.json
     '';
 
     passthru = { inherit web; };
