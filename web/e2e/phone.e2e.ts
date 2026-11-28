@@ -118,6 +118,10 @@ const everyScreen = async (page: Page) => {
   ] as const) {
     await fits(page, `/system/${tab}`, shows(text));
   }
+  // the list, and an open license text, the longest one
+  await fits(page, "/system/info/licenses", shows("aws-lc-sys"));
+  await page.locator("main").getByText("vite", { exact: true }).click();
+  await holds(page, "an open license text", shows("Vite core license"));
 
   // past the end of a long screen, the wheel moves nothing else
   await fits(page, "/system/settings", shows("Listen port"));

@@ -29,9 +29,11 @@
     formatSpeed,
     plural
   } from "#lib/format.js";
+  import { href } from "#lib/nav.js";
   import { serverStateText } from "#lib/reachability.js";
   import { call } from "#lib/request.js";
   import { session } from "#lib/session.svelte.js";
+  import { REPOSITORY } from "#lib/shell/project.js";
   import { diagnostics, latestProblems } from "#lib/system/diagnostics.js";
   import { clock } from "#lib/ui/clock.svelte.js";
   import { RESTART } from "#lib/wording.js";
@@ -156,6 +158,16 @@
           {s.version.latest ?? "Not checked"}
           {#if s.version.isUpdateAvailable}<span class="text-warning-text">(update available)</span
             >{/if}
+        </dd>
+        <dt>Source</dt>
+        <dd>
+          <a href={REPOSITORY} target="_blank" rel="noreferrer" class="text-accent hover:underline"
+            >{REPOSITORY}</a>
+        </dd>
+        <dt>License</dt>
+        <dd>
+          AGPL-3.0-only, <a href={href("/system/info/licenses")} class="text-accent hover:underline"
+            >third-party licenses</a>
         </dd>
         {#if s.pendingRestart || s.pendingReconnect}
           <dt>Pending</dt>
